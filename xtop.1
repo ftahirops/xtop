@@ -1,0 +1,521 @@
+.\" xtop - Incident-first root-cause analysis console for Linux
+.TH WHYTOP 1 "February 2026" "xtop 0.1.0" "System Administration"
+.
+.SH NAME
+xtop \- incident-first root-cause analysis console for Linux
+.
+.SH SYNOPSIS
+.B xtop
+.RI [ OPTIONS ]
+.RI [ INTERVAL ]
+.
+.SH DESCRIPTION
+.B xtop
+is a terminal-based system monitor that goes beyond traditional tools like
+.BR htop (1)
+by correlating signals across CPU, memory, IO, network, and cgroups to produce
+ranked root-cause hypotheses with evidence and confidence scores.
+.PP
+Instead of showing raw metrics, xtop answers:
+.B "What is the bottleneck? Who is causing it? How confident are we? What should I do?"
+.PP
+Key differentiators from htop/top:
+.IP \(bu 2
+PSI (Pressure Stall Information) pressure tracking
+.IP \(bu
+Cgroup-aware throttling and limit detection
+.IP \(bu
+Evidence-based RCA with confidence scoring
+.IP \(bu
+Causal chain reconstruction
+.IP \(bu
+Anomaly onset tracking ("Started T-62s")
+.IP \(bu
+Incident recording and replay
+.IP \(bu
+Markdown incident reports for tickets
+.
+.SH OPTIONS
+.TP
+.BI \-interval " N"
+Collection interval in seconds. Default: 1.
+Can also be specified as a positional argument:
+.B xtop 5
+is equivalent to
+.BR "xtop -interval 5" .
+.TP
+.BI \-history " N"
+Number of snapshots to keep in the ring buffer for trend detection. Default: 300
+(5 minutes at 1-second interval).
+.TP
+.B \-json
+Output a single JSON snapshot (two samples with rate computation) to stdout
+and exit. Useful for scripting, monitoring integrations, and piping to
+.BR jq (1).
+.TP
+.B \-md
+Output a single Markdown incident report to stdout and exit. The report includes
+health status, evidence checklist, causal chain, capacity table, system overview,
+warnings, and suggested actions. Ideal for pasting into tickets or Slack.
+.TP
+.B \-watch
+CLI output mode. Prints metrics directly to the terminal with auto-refresh
+instead of using the interactive TUI. Useful for headless servers, piping,
+scripting, or when a fullscreen TUI is not desired.
+.TP
+.BI \-section " NAME"
+Section to display in
+.B -watch
+mode. Default: overview.
+Valid sections:
+.BR overview ", " cpu ", " mem ", " io ", " net ", " cgroup ", " rca .
+.TP
+.BI \-count " N"
+Number of iterations for
+.B -watch
+mode. Default: 0 (infinite, run until Ctrl+C).
+.TP
+.BI \-record " FILE"
+Run the TUI normally while also recording every snapshot to
+.I FILE
+as JSON lines. Creates an incident flight recorder.
+.TP
+.BI \-replay " FILE"
+Replay a previously recorded file through the TUI. Allows post-incident
+analysis and sharing recordings with teammates.
+.TP
+.B \-daemon
+Run as a background collector without the TUI. Writes detected events to
+.I ~/.xtop/events.jsonl
+and compact per-second summaries to
+.IR ~/.xtop/current.jsonl .
+Use with
+.B -datadir
+to customize the data directory.
+.TP
+.BI \-datadir " PATH"
+Data directory for daemon mode and event log loading. Default:
+.IR ~/.xtop/ .
+The TUI loads events from this directory on startup.
+.TP
+.B \-version
+Print version and exit.
+.
+.SH POSITIONAL ARGUMENTS
+.TP
+.I INTERVAL
+If the first positional argument is a number, it is used as the collection
+interval in seconds. Example:
+.B sudo xtop 5
+refreshes every 5 seconds.
+.
+.SH INTERACTIVE KEYS
+.SS Navigation
+.TP
+.B 0
+Overview page (default) \(em health + PSI + capacity + evidence + RCA
+.TP
+.B 1
+CPU subsystem \(em busy/steal/softirq breakdown, throttling, top cgroups and PIDs
+.TP
+.B 2
+Memory subsystem \(em full breakdown (anon/cache/slab/hugepages), swap, vmstat,
+reclaim stats, top consumers
+.TP
+.B 3
+IO subsystem \(em per-device stats, IO type analysis (sequential vs random),
+D-state tasks, top cgroups and PIDs
+.TP
+.B 4
+Network \(em health summary, throughput, TCP connection states, UDP counters,
+conntrack, softirq, top consumers
+.TP
+.B 5
+Cgroups \(em sortable table of all cgroups by CPU%/throttle%/mem/OOM/IO
+.TP
+.B 6
+Timeline \(em 5-minute multi-line area charts for CPU load, memory, PSI, and D-state
+.TP
+.B 7
+Events \(em detected performance incidents with RCA detail, start/end times,
+peak metrics, and causal chains
+.TP
+.BR b ", " Esc
+Back to Overview
+.
+.SS Scrolling
+.TP
+.BR j ", " Down
+Scroll down (or select next cgroup on Cgroups page)
+.TP
+.BR k ", " Up
+Scroll up (or select previous cgroup on Cgroups page)
+.TP
+.B g
+Jump to top
+.TP
+.B G
+Jump down 20 lines
+.
+.SS Controls
+.TP
+.B a
+Toggle auto-refresh. When paused, [PAUSED] appears in the status bar. Data
+collection stops completely. Press again to resume immediately.
+.TP
+.B S
+Save current RCA snapshot to a JSON file named
+.I xtop-rca-YYYYMMDD-HHMMSS.json
+in the current directory. Confirmation appears in the status bar.
+.TP
+.B s
+Cycle sort column (Cgroups page only). Sorts by CPU%, Throttle%, Memory,
+OOM kills, or IO rate.
+.TP
+.B ?
+Toggle help overlay
+.TP
+.BR q ", " Ctrl+C
+Quit
+.
+.SH PAGES
+.SS Overview (key: 0)
+The main dashboard showing a complete system health picture:
+.IP \(bu 2
+.B Subsystem Gauges
+\(em Four futuristic gauges (CPU, MEM, IO, NET) with color-coded fill bars
+showing per-subsystem health severity. Colors: green (<40%), yellow (40-70%),
+red (>=70%).
+.IP \(bu
+.B Health Banner
+\(em OK/INCONCLUSIVE/DEGRADED/CRITICAL with confidence percentage, primary
+bottleneck score, and anomaly onset timing
+.IP \(bu
+.B Pressure (PSI)
+\(em PSI bars for CPU/Memory/IO with some/full percentages, load average,
+and swap rate
+.IP \(bu
+.B Capacity Left
+\(em Bar charts showing headroom for CPU, memory, swap, disk, file descriptors,
+and conntrack
+.IP \(bu
+.B Fast Warnings
+\(em Early warning signals with severity icons (!! crit, ! warn, i info)
+.IP \(bu
+.B "Why I Think This"
+\(em Evidence ledger with checkmarks (+/-) for each evidence group of the
+primary bottleneck, evidence group count, anomaly trigger, and culprit duration
+.IP \(bu
+.B Top Owners
+\(em Top 3 resource consumers per subsystem (CPU/MEM/IO/NET) with share percentages
+.IP \(bu
+.B Causal Chain
+\(em Arrow-connected event chain from root cause to impact
+.IP \(bu
+.B Root Cause Analysis
+\(em All bottleneck scores with evidence strings, plus suggested diagnostic commands
+.IP \(bu
+.B Trend Sparklines
+\(em Mini sparkline charts (up to 5 minutes) for CPU PSI, MEM PSI, IO PSI, and load%
+.
+.SS CPU Page (key: 1)
+.IP \(bu 2
+CPU utilization summary (busy/user/sys/iowait/steal/softirq/nice percentages)
+.IP \(bu
+Top cgroups by CPU usage with rates
+.IP \(bu
+Top cgroups by throttle percentage
+.IP \(bu
+Top processes by CPU usage with PID, state, and cgroup path
+.
+.SS Memory Page (key: 2)
+.IP \(bu 2
+Full memory breakdown: Total, Used, Available, Buffers, Cached, Active, Inactive,
+Anon/File, Slab (reclaimable/unreclaimable), Mapped, Shmem, KernelStack,
+PageTables, Dirty, Writeback, HugePages
+.IP \(bu
+Swap usage with swap in/out rates
+.IP \(bu
+VMStat counters: page faults, major faults, direct reclaim, kswapd, OOM kills
+.IP \(bu
+Top cgroups by memory and top processes by RSS
+.
+.SS IO Page (key: 3)
+.IP \(bu 2
+Per-device table: read/write MB/s, IOPS, await ms, utilization %, queue depth
+.IP \(bu
+IO type analysis (sequential vs random heuristic based on average IO size)
+.IP \(bu
+D-state tasks listing with process names and PIDs
+.IP \(bu
+Top cgroups and processes by IO rate
+.
+.SS Network Page (key: 4)
+.IP \(bu 2
+Network health verdict (OK/DEGRADED/CRITICAL) with detected issues
+.IP \(bu
+Aggregate throughput: RX/TX rates, packets per second, drops, errors
+.IP \(bu
+TCP connection states with visual bars and warnings for TIME_WAIT/CLOSE_WAIT
+.IP \(bu
+Per-interface breakdown table
+.IP \(bu
+Protocol health: TCP retransmit rate, failure counters, UDP buffer errors
+.IP \(bu
+Conntrack table usage with bar chart
+.IP \(bu
+Top consumers by process IO rate
+.IP \(bu
+Kernel softirq processing overhead
+.
+.SS Cgroups Page (key: 5)
+Sortable table of all discovered cgroups showing:
+CPU%, Throttle%, Memory (bytes and %), OOM kills, IO read/write MB/s, PID count.
+Supports cgroup v1, v2, and hybrid detection.
+.
+.SS Timeline Page (key: 6)
+Multi-line area charts over the last 5 minutes (300 samples at 1s):
+CPU Load %, Memory Used %, CPU PSI (some avg10), IO PSI (full avg10),
+MEM PSI (full avg10), D-State task count. Sub-cell resolution with fractional
+block characters and per-cell coloring. Includes Y-axis labels, time axis,
+and OOM event markers.
+.
+.SS Events Page (key: 7)
+Scrollable list of detected performance incidents. Events are automatically
+created when health degrades for 3+ consecutive ticks and closed when health
+returns to OK. Each event includes:
+.IP \(bu 2
+Start/end time and duration
+.IP \(bu
+Peak health level, bottleneck type, and RCA score
+.IP \(bu
+Culprit process/cgroup with PID
+.IP \(bu
+Evidence strings and causal chain
+.IP \(bu
+Peak CPU, memory, and IO PSI metrics
+.PP
+On startup, the TUI loads events from the daemon's event log
+.RI ( ~/.xtop/events.jsonl )
+if available. Live-detected events are also shown.
+.
+.SH RCA ENGINE
+The root-cause analysis engine scores four bottleneck categories using weighted
+formulas with evidence-group gating:
+.
+.SS Bottleneck Categories
+.TP
+.B "IO Starvation"
+Evidence groups: IO PSI elevated, D-state tasks, disk latency/utilization, dirty pages.
+.br
+Formula: 35*clamp(psi_some/0.5) + 25*clamp(psi_full/0.1) + 15*clamp(d_state/10)
++ 15*clamp(await/50) + 10*clamp(util/95)
+.TP
+.B "Memory Pressure"
+Evidence groups: MEM PSI elevated, MemAvailable low, swap active, direct reclaim,
+major faults, OOM kills.
+.br
+Formula: 30*clamp(psi_some/0.5) + 25*clamp(psi_full/0.1) + 20*clamp(swap_io/50)
++ 15*clamp(direct_reclaim/0.6) + 10*clamp(majfault/500)
+.TP
+.B "CPU Contention"
+Evidence groups: CPU PSI elevated, run queue saturated, context switches high,
+cgroup throttling, CPU steal.
+.br
+Formula: 35*clamp(psi_some/0.5) + 20*clamp(psi_full/0.1) + 15*clamp(rq_ratio/3.0)
++ 15*clamp(ctxsw/150000) + 15*clamp(throttle/0.5)
+.TP
+.B "Network Overload"
+Evidence groups: packet drops, TCP retransmits, conntrack pressure, softirq CPU,
+TCP state anomaly, network errors.
+.br
+Formula: 35*clamp(drops/100) + 25*clamp(retrans/100) + 15*clamp(conntrack/1.0)
++ 15*clamp(softirq/0.25) + 10*clamp(orphans/1000)
+.
+.SS Trust Gating
+.IP \(bu 2
+.B "Minimum 2 evidence groups"
+must fire for any bottleneck to report a non-zero score.
+If fewer than 2 groups fire, the score is forced to zero.
+.IP \(bu
+Scores below 20 are suppressed (noise floor).
+.IP \(bu
+Health is set to
+.B INCONCLUSIVE
+if the formula produces a high score but evidence groups are insufficient.
+.IP \(bu
+Confidence is computed as 30 + 20*(groups-1), clamped to 98%.
+.
+.SH DATA SOURCES
+xtop reads from the following Linux kernel interfaces:
+.TP
+.B /proc/pressure/{cpu,memory,io}
+PSI (Pressure Stall Information) \(em available on Linux 4.20+
+.TP
+.B /proc/stat
+CPU time breakdown per state
+.TP
+.B /proc/loadavg
+Load averages and runnable task count
+.TP
+.B /proc/meminfo
+30+ memory metrics (MemTotal through VmallocUsed)
+.TP
+.B /proc/vmstat
+Page fault, reclaim, swap, and OOM counters
+.TP
+.B /proc/diskstats
+Per-device IO counters (reads, writes, time, queue depth)
+.TP
+.B /proc/net/dev
+Per-interface network counters (bytes, packets, drops, errors)
+.TP
+.B /proc/net/snmp
+TCP and UDP protocol-level counters (retransmits, errors, segments)
+.TP
+.B /proc/net/tcp, /proc/net/tcp6
+Per-connection TCP state (for state distribution counting)
+.TP
+.B /proc/net/sockstat
+Socket summary counts (TCP, UDP, RAW, FRAG)
+.TP
+.B /proc/softirqs
+Per-CPU softirq counters (NET_RX, NET_TX, BLOCK, etc.)
+.TP
+.B /proc/sys/net/netfilter/
+Conntrack table usage and limits
+.TP
+.B /proc/sys/fs/file-nr
+File descriptor allocation and limits
+.TP
+.B /proc/[pid]/stat, status, io, cgroup
+Per-process metrics (CPU, memory, IO, state, cgroup membership)
+.TP
+.B /sys/fs/cgroup/
+Cgroup v2 metrics (cpu.stat, memory.current, memory.events, io.stat, pids.current)
+.
+.SH EXAMPLES
+.TP
+.B sudo xtop
+Start the interactive TUI with default 1-second refresh.
+.TP
+.B sudo xtop 5
+Start TUI with 5-second refresh interval.
+.TP
+.B sudo xtop --json | jq '.analysis.Health'
+Output a JSON snapshot and extract the health status.
+.TP
+.B sudo xtop --md > /tmp/incident.md
+Generate a Markdown incident report for a support ticket.
+.TP
+.B sudo xtop --record /var/log/xtop.wlog
+Run TUI while recording snapshots for later replay.
+.TP
+.B xtop --replay /var/log/xtop.wlog
+Replay a recorded incident file (no root required).
+.TP
+.B sudo xtop --json | jq '.analysis.RCA[] | select(.Score > 0)'
+Extract only active bottleneck entries from JSON output.
+.TP
+.B sudo xtop -watch
+CLI output mode with overview section, 1-second refresh.
+.TP
+.B sudo xtop -watch -section cpu
+CLI mode showing only the CPU subsystem.
+.TP
+.B sudo xtop -watch -section io 3
+CLI mode showing IO subsystem with 3-second refresh.
+.TP
+.B sudo xtop -watch -section rca -count 10
+CLI mode showing RCA analysis for 10 iterations then exit.
+.TP
+.B sudo xtop -watch -section mem -count 5 -interval 2
+CLI mode showing memory, 5 iterations, 2-second interval.
+.TP
+.B sudo xtop -daemon &
+Run as a background daemon, recording events to ~/.xtop/.
+.TP
+.B sudo xtop -daemon -datadir /var/lib/xtop -interval 2
+Background daemon with custom data directory and 2-second interval.
+.TP
+.B xtop -version
+Print version and exit.
+.
+.SH HEALTH LEVELS
+.TP
+.B OK
+No bottleneck detected. All evidence groups inactive. Confidence 95%.
+.TP
+.B INCONCLUSIVE
+Formula suggests possible pressure but fewer than 2 evidence groups confirm it.
+Recommended: investigate manually or wait for more samples.
+.TP
+.B DEGRADED
+Primary bottleneck score 25\(en59% with 2+ evidence groups confirming.
+.TP
+.B CRITICAL
+Primary bottleneck score 60%+ with 2+ evidence groups confirming.
+Immediate investigation recommended.
+.
+.SH FILES
+.TP
+.I xtop-rca-YYYYMMDD-HHMMSS.json
+Saved RCA snapshots (created by pressing S in TUI).
+.TP
+.I ~/.xtop/events.jsonl
+Event log written by daemon mode. One JSON event per line.
+.TP
+.I ~/.xtop/current.jsonl
+Rolling compact per-second summaries (rotated at 10MB).
+.TP
+.I ~/.xtop/daemon.pid
+PID file for the running daemon process.
+.TP
+.I /proc/pressure/
+PSI interface (requires Linux 4.20+ with CONFIG_PSI=y).
+.TP
+.I /sys/fs/cgroup/
+Cgroup v2 filesystem. xtop auto-detects v1/v2/hybrid.
+.
+.SH ENVIRONMENT
+xtop requires no environment variables. It reads directly from procfs, sysfs,
+and cgroupfs. Running as root provides access to per-process IO statistics
+.RI ( /proc/[pid]/io ),
+but the tool runs without root with reduced metrics.
+.
+.SH REQUIREMENTS
+.IP \(bu 2
+Linux kernel 4.20+ (for PSI support; works without PSI but loses key signals)
+.IP \(bu
+Cgroup v2 or v1 (auto-detected)
+.IP \(bu
+Terminal with Unicode support (for sparklines and bars)
+.IP \(bu
+Root recommended (for full /proc/*/io access)
+.
+.SH EXIT STATUS
+.TP
+.B 0
+Normal exit (user pressed q or duration reached).
+.TP
+.B 1
+Error (permission denied, missing /proc, etc.).
+.
+.SH BUGS
+Report bugs at https://github.com/ftahirops/xtop/issues
+.
+.SH SEE ALSO
+.BR htop (1),
+.BR top (1),
+.BR iostat (1),
+.BR vmstat (8),
+.BR sar (1),
+.BR perf (1),
+.BR bpftrace (8),
+.BR systemd-cgtop (1)
+.
+.SH AUTHOR
+Written by rctop.
+.
+.SH COPYRIGHT
+Copyright \(co 2026 rctop. Licensed under the MIT License.

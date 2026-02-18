@@ -1,0 +1,24 @@
+# Binaries
+xtop
+*.exe
+*.deb
+
+# Packaging binaries (keep structure, exclude binary + deb)
+packaging/*/usr/local/bin/xtop
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+/tmp/
+*.test
+*.out
+*.prof
+
