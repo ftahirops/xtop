@@ -62,10 +62,26 @@ func renderNetPage(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 		resetR = rates.TCPResetRate
 	}
 
+	// Find max link speed for throughput context
+	maxSpeedMbps := 0
+	for _, iface := range snap.Global.Network {
+		if iface.SpeedMbps > maxSpeedMbps {
+			maxSpeedMbps = iface.SpeedMbps
+		}
+	}
+
 	var thrLines []string
-	thrLines = append(thrLines, fmt.Sprintf("RX: %s (%s pps)    TX: %s (%s pps)",
+	rxTxLine := fmt.Sprintf("RX: %s (%s pps)    TX: %s (%s pps)",
 		fmtRate(totalRxMBs), fmtPPS(totalRxPPS),
-		fmtRate(totalTxMBs), fmtPPS(totalTxPPS)))
+		fmtRate(totalTxMBs), fmtPPS(totalTxPPS))
+	if maxSpeedMbps > 0 {
+		totalMBs := totalRxMBs + totalTxMBs
+		maxMBs := float64(maxSpeedMbps) / 8
+		utilPct := totalMBs / maxMBs * 100
+		rxTxLine += dimStyle.Render(fmt.Sprintf("    Total: %s / %s (%.1f%%)",
+			fmtRate(totalMBs), fmtRate(maxMBs), utilPct))
+	}
+	thrLines = append(thrLines, rxTxLine)
 
 	dropLine := fmt.Sprintf("Drops: %.0f/s", totalRxDrops+totalTxDrops)
 	errLine := fmt.Sprintf("    Errors: %.0f/s", totalRxErrors+totalTxErrors)

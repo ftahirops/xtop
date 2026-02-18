@@ -589,9 +589,23 @@ func renderTrendBlock(result *model.AnalysisResult, history *engine.History, wid
 	line("await", ioAwait, 100)
 	line("thru", ioThru, 500)
 
+	// Derive network throughput max from link speed
+	netThruMax := float64(100) // default 100 MB/s
+	if latest != nil {
+		for _, iface := range latest.Global.Network {
+			if iface.SpeedMbps > 0 {
+				// Convert Mbps to MB/s (divide by 8)
+				ifaceMaxMBs := float64(iface.SpeedMbps) / 8
+				if ifaceMaxMBs > netThruMax {
+					netThruMax = ifaceMaxMBs
+				}
+			}
+		}
+	}
+
 	sb.WriteString(boxMid(innerW) + "\n")
 	section("Network")
-	line("thru", netThru, 100)
+	line("thru", netThru, netThruMax)
 	line("retx", netRetx, 100)
 	line("drops", netDrops, 100)
 	line("softirq", netSoftIRQ, 100)
@@ -728,9 +742,9 @@ func renderCapacityBlock(result *model.AnalysisResult, withBars bool, barW int) 
 	sb.WriteString(titleStyle.Render(" Capacity Remaining"))
 	sb.WriteString("\n")
 
-	innerW := colKey + barW + 10
+	innerW := colKey + barW + 40
 	if !withBars {
-		innerW = colKey + 20
+		innerW = colKey + 40
 	}
 
 	if result == nil {
@@ -740,7 +754,19 @@ func renderCapacityBlock(result *model.AnalysisResult, withBars bool, barW int) 
 		return sb.String()
 	}
 
-	sb.WriteString(boxTop(innerW) + "\n")
+	// Header
+	if withBars {
+		hdr := fmt.Sprintf("%s %s %s  %s",
+			styledPad(dimStyle.Render("Resource"), colKey),
+			styledPad("", barW),
+			styledPad(dimStyle.Render("Free"), 6),
+			dimStyle.Render("Current / Limit"))
+		sb.WriteString(boxTop(innerW) + "\n")
+		sb.WriteString(boxRow(hdr, innerW) + "\n")
+	} else {
+		sb.WriteString(boxTop(innerW) + "\n")
+	}
+
 	for _, cap := range result.Capacities {
 		style := dimStyle
 		if cap.Pct < 15 {
@@ -752,15 +778,24 @@ func renderCapacityBlock(result *model.AnalysisResult, withBars bool, barW int) 
 		lbl := styledPad(cap.Label, colKey)
 		var content string
 		if withBars {
-			content = fmt.Sprintf("%s %s %s",
+			limitInfo := ""
+			if cap.Current != "" && cap.Limit != "" {
+				limitInfo = dimStyle.Render(fmt.Sprintf("  %s / %s", cap.Current, cap.Limit))
+			} else if cap.Current != "" {
+				limitInfo = dimStyle.Render(fmt.Sprintf("  %s", cap.Current))
+			}
+			content = fmt.Sprintf("%s %s %s%s",
 				lbl,
 				capacityBar(cap.Pct, barW),
-				style.Render(fmtPct(cap.Pct)))
+				style.Render(fmtPct(cap.Pct)),
+				limitInfo)
 		} else {
 			content = fmt.Sprintf("%s %s",
 				lbl,
 				style.Render(fmtPct(cap.Pct)))
-			if cap.Current != "" {
+			if cap.Current != "" && cap.Limit != "" {
+				content += dimStyle.Render(fmt.Sprintf("  %s / %s", cap.Current, cap.Limit))
+			} else if cap.Current != "" {
 				content += dimStyle.Render(fmt.Sprintf("  %s", cap.Current))
 			}
 		}
@@ -811,6 +846,144 @@ func renderExhaustionBlock(result *model.AnalysisResult) string {
 				dimStyle.Render(fmt.Sprintf("  (%.0f%%, +%.2f%%/s)", ex.CurrentPct, ex.TrendPerS))
 			sb.WriteString(boxRow(content, innerW) + "\n")
 		}
+	}
+	sb.WriteString(boxBot(innerW) + "\n")
+	return sb.String()
+}
+
+// ─── SHARED: WHAT CHANGED BLOCK ─────────────────────────────────────────────
+
+func renderChangesBlock(result *model.AnalysisResult) string {
+	var sb strings.Builder
+	sb.WriteString(titleStyle.Render(" What Changed (30s)"))
+	sb.WriteString("\n")
+
+	innerW := 60
+
+	sb.WriteString(boxTop(innerW) + "\n")
+	if result == nil || len(result.TopChanges) == 0 {
+		sb.WriteString(boxRow(dimStyle.Render("no significant changes"), innerW) + "\n")
+	} else {
+		for _, c := range result.TopChanges {
+			arrow := okStyle.Render("\u2193") // ↓
+			if c.Rising {
+				arrow = critStyle.Render("\u2191") // ↑
+			}
+			sign := ""
+			if c.Rising {
+				sign = "+"
+			}
+			pctStr := fmt.Sprintf("%s%.0f%%", sign, c.DeltaPct)
+			style := dimStyle
+			absPct := c.DeltaPct
+			if absPct < 0 {
+				absPct = -absPct
+			}
+			if absPct > 50 {
+				style = critStyle
+			} else if absPct > 20 {
+				style = warnStyle
+			}
+			content := fmt.Sprintf(" %s %s %s  now %s",
+				arrow,
+				styledPad(valueStyle.Render(c.Name), 18),
+				styledPad(style.Render(pctStr), 8),
+				dimStyle.Render(c.Current))
+			sb.WriteString(boxRow(content, innerW) + "\n")
+		}
+	}
+	sb.WriteString(boxBot(innerW) + "\n")
+	return sb.String()
+}
+
+func renderChangesInline(result *model.AnalysisResult) string {
+	var sb strings.Builder
+	sb.WriteString(" ")
+	sb.WriteString(titleStyle.Render("Changed:"))
+	sb.WriteString(" ")
+
+	if result == nil || len(result.TopChanges) == 0 {
+		sb.WriteString(dimStyle.Render("no significant changes"))
+		sb.WriteString("\n")
+		return sb.String()
+	}
+
+	parts := []string{}
+	for i, c := range result.TopChanges {
+		if i >= 5 {
+			break
+		}
+		arrow := "\u2193"
+		if c.Rising {
+			arrow = "\u2191"
+		}
+		sign := ""
+		if c.Rising {
+			sign = "+"
+		}
+		parts = append(parts, fmt.Sprintf("%s%s %s%.0f%%", arrow, c.Name, sign, c.DeltaPct))
+	}
+	sb.WriteString(dimStyle.Render(strings.Join(parts, " | ")))
+	sb.WriteString("\n")
+	return sb.String()
+}
+
+// ─── SHARED: SUGGESTED ACTIONS BLOCK ─────────────────────────────────────────
+
+func renderActionsBlock(result *model.AnalysisResult) string {
+	var sb strings.Builder
+	sb.WriteString(titleStyle.Render(" Suggested Actions"))
+	sb.WriteString("\n")
+
+	innerW := 72
+
+	sb.WriteString(boxTop(innerW) + "\n")
+	if result == nil || len(result.Actions) == 0 {
+		sb.WriteString(boxRow(dimStyle.Render("no actions — system healthy"), innerW) + "\n")
+	} else {
+		shown := result.Actions
+		if len(shown) > 5 {
+			shown = shown[:5]
+		}
+		for i, a := range shown {
+			summary := a.Summary
+			if len(summary) > 55 {
+				summary = summary[:52] + "..."
+			}
+			content := fmt.Sprintf(" %s %s", orangeStyle.Render(fmt.Sprintf("%d.", i+1)), valueStyle.Render(summary))
+			sb.WriteString(boxRow(content, innerW) + "\n")
+			if a.Command != "" {
+				cmd := a.Command
+				if len(cmd) > 60 {
+					cmd = cmd[:57] + "..."
+				}
+				sb.WriteString(boxRow(dimStyle.Render("    $ "+cmd), innerW) + "\n")
+			}
+		}
+	}
+	sb.WriteString(boxBot(innerW) + "\n")
+	return sb.String()
+}
+
+// ─── SHARED: DEGRADATION BLOCK ──────────────────────────────────────────────
+
+func renderDegradationBlock(result *model.AnalysisResult) string {
+	if result == nil || len(result.Degradations) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString(titleStyle.Render(" Slow Degradation"))
+	sb.WriteString("\n")
+
+	innerW := 60
+
+	sb.WriteString(boxTop(innerW) + "\n")
+	for _, d := range result.Degradations {
+		dur := fmtDuration(d.Duration)
+		content := warnStyle.Render(fmt.Sprintf(" %s %s", d.Metric, d.Direction)) +
+			dimStyle.Render(fmt.Sprintf("  %.2f %s for %s", d.Rate, d.Unit, dur))
+		sb.WriteString(boxRow(content, innerW) + "\n")
 	}
 	sb.WriteString(boxBot(innerW) + "\n")
 	return sb.String()

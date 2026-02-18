@@ -54,9 +54,13 @@ func renderLayoutA(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 		left.WriteString(renderKVBox(s.Details, boxInnerW))
 	}
 
-	// Build right column: RCA + Owners + Capacity + Probe + Exhaustion + Trend
+	// Build right column: RCA + Changes + Actions + Owners + Capacity + Probe + Exhaustion + Degradation + Trend
 	var right strings.Builder
 	right.WriteString(renderRCABox(result))
+	right.WriteString("\n")
+	right.WriteString(renderChangesBlock(result))
+	right.WriteString("\n")
+	right.WriteString(renderActionsBlock(result))
 	right.WriteString("\n")
 	right.WriteString(renderOwnersBlock(result))
 	right.WriteString("\n")
@@ -66,6 +70,7 @@ func renderLayoutA(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 	right.WriteString("\n")
 	right.WriteString(renderExhaustionBlock(result))
 	right.WriteString("\n")
+	right.WriteString(renderDegradationBlock(result))
 	right.WriteString(renderTrendBlock(result, history, rightW, true))
 
 	// Join columns with vertical separator

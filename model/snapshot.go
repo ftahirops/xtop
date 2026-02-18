@@ -116,6 +116,7 @@ type ProcessRate struct {
 	Comm         string
 	State        string
 	CgroupPath   string
+	ServiceName  string // resolved from cgroup: k8s pod, systemd unit, or docker container
 	CPUPct       float64
 	MemPct       float64
 	ReadMBs      float64
@@ -227,12 +228,35 @@ type AnalysisResult struct {
 	CulpritSinceAgo    int    // seconds since culprit became top consumer
 
 	// Stability tracking
-	StableSince int    // seconds system has been continuously OK (0=not stable)
-	BiggestChange string // description of biggest metric change in last 30s
+	StableSince      int     // seconds system has been continuously OK (0=not stable)
+	BiggestChange    string  // description of biggest metric change in last 30s
 	BiggestChangePct float64 // magnitude of the biggest change
+	TopChanges       []MetricChange // top N biggest changes for "what changed?" display
 
 	// Predictive exhaustion
 	Exhaustions []ExhaustionPrediction
+
+	// Slow degradation warnings
+	Degradations []DegradationWarning
+}
+
+// MetricChange represents a notable metric delta for the "what changed?" engine.
+type MetricChange struct {
+	Name    string  // e.g. "mysql IO"
+	Delta   float64 // absolute change value
+	DeltaPct float64 // percentage change
+	Current string  // current value string
+	Unit    string  // e.g. "%", "MB/s", "/s"
+	Rising  bool    // true if increasing, false if decreasing
+}
+
+// DegradationWarning describes a slow, sustained trend.
+type DegradationWarning struct {
+	Metric    string  // e.g. "IO latency", "Memory reclaim"
+	Direction string  // "rising", "falling"
+	Duration  int     // seconds the trend has persisted
+	Rate      float64 // change per minute
+	Unit      string  // e.g. "ms/min", "%/min"
 }
 
 // ExhaustionPrediction estimates when a resource will be exhausted.

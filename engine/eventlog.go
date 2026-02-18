@@ -73,6 +73,8 @@ func (d *EventDetector) Process(snap *model.Snapshot, rates *model.RateSnapshot,
 			PeakScore:  result.PrimaryScore,
 			Active:     true,
 		}
+		d.addTimelineEntry(now, fmt.Sprintf("Incident detected: %s (score %d%%)",
+			result.PrimaryBottleneck, result.PrimaryScore))
 		d.updatePeaks(snap, rates, result)
 	}
 }
@@ -82,12 +84,22 @@ func (d *EventDetector) updatePeaks(snap *model.Snapshot, rates *model.RateSnaps
 		return
 	}
 
+	now := snap.Timestamp
+
+	// Track health escalation
 	if result.Health > d.active.PeakHealth {
+		d.addTimelineEntry(now, fmt.Sprintf("Health escalated to %s", result.Health))
 		d.active.PeakHealth = result.Health
 	}
+
+	// Track bottleneck changes
 	if result.PrimaryScore > d.active.PeakScore {
 		d.active.PeakScore = result.PrimaryScore
-		d.active.Bottleneck = result.PrimaryBottleneck
+		if result.PrimaryBottleneck != d.active.Bottleneck {
+			d.addTimelineEntry(now, fmt.Sprintf("Bottleneck shifted: %s -> %s",
+				d.active.Bottleneck, result.PrimaryBottleneck))
+			d.active.Bottleneck = result.PrimaryBottleneck
+		}
 	}
 
 	// Update evidence and chain from latest
@@ -97,10 +109,21 @@ func (d *EventDetector) updatePeaks(snap *model.Snapshot, rates *model.RateSnaps
 	if result.CausalChain != "" {
 		d.active.CausalChain = result.CausalChain
 	}
-	if result.PrimaryCulprit != "" {
+
+	// Track culprit changes
+	if result.PrimaryCulprit != "" && result.PrimaryCulprit != d.active.CulpritCgroup {
+		if d.active.CulpritCgroup != "" {
+			d.addTimelineEntry(now, fmt.Sprintf("Culprit changed to %s", result.PrimaryCulprit))
+		}
 		d.active.CulpritCgroup = result.PrimaryCulprit
 	}
-	if result.PrimaryProcess != "" {
+	if result.PrimaryProcess != "" && result.PrimaryProcess != d.active.CulpritProcess {
+		if d.active.CulpritProcess != "" {
+			d.addTimelineEntry(now, fmt.Sprintf("%s became top consumer (was %s)",
+				result.PrimaryProcess, d.active.CulpritProcess))
+		} else {
+			d.addTimelineEntry(now, fmt.Sprintf("%s identified as culprit", result.PrimaryProcess))
+		}
 		d.active.CulpritProcess = result.PrimaryProcess
 	}
 	if result.PrimaryPID > 0 {
@@ -124,6 +147,33 @@ func (d *EventDetector) updatePeaks(snap *model.Snapshot, rates *model.RateSnaps
 	ioPSI := snap.Global.PSI.IO.Full.Avg10
 	if ioPSI > d.active.PeakIOPSI {
 		d.active.PeakIOPSI = ioPSI
+	}
+
+	// Track specific threshold crossings for timeline
+	if ioPSI > 25 && d.active.PeakIOPSI <= 25 {
+		d.addTimelineEntry(now, fmt.Sprintf("IO PSI crossed 25%% (%.1f%%)", ioPSI))
+	}
+	if rates != nil && rates.SwapInRate > 1 && d.active.PeakCPUBusy < 1 {
+		d.addTimelineEntry(now, "Swap-in activity started")
+	}
+}
+
+// addTimelineEntry appends a milestone to the active event, limited to 20 entries.
+func (d *EventDetector) addTimelineEntry(t time.Time, msg string) {
+	if d.active == nil {
+		return
+	}
+	// Deduplicate: skip if last entry has same message
+	if n := len(d.active.Timeline); n > 0 && d.active.Timeline[n-1].Message == msg {
+		return
+	}
+	d.active.Timeline = append(d.active.Timeline, model.TimelineEntry{
+		Time:    t,
+		Message: msg,
+	})
+	// Cap at 20 entries
+	if len(d.active.Timeline) > 20 {
+		d.active.Timeline = d.active.Timeline[len(d.active.Timeline)-20:]
 	}
 }
 

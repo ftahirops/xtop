@@ -1,9 +1,11 @@
 package engine
 
 import (
+	"strings"
+	"time"
+
 	"github.com/ftahirops/xtop/model"
 	"github.com/ftahirops/xtop/util"
-	"time"
 )
 
 // ComputeRates computes all rates between two snapshots.
@@ -229,6 +231,7 @@ func computeProcessRates(prev, curr *model.Snapshot, dt time.Duration, r *model.
 			Comm:          p.Comm,
 			State:         p.State,
 			CgroupPath:    p.CgroupPath,
+			ServiceName:   resolveServiceName(p.CgroupPath),
 			CPUPct:        float64(cpuDelta) / float64(cpuDtotal) * 100 * float64(curr.Global.CPU.NumCPUs),
 			MemPct:        float64(p.RSS) / float64(totalMem) * 100,
 			ReadMBs:       util.Rate(pp.ReadBytes, p.ReadBytes, dt) / (1024 * 1024),
@@ -245,4 +248,79 @@ func computeProcessRates(prev, curr *model.Snapshot, dt time.Duration, r *model.
 		}
 		r.ProcessRates = append(r.ProcessRates, pr)
 	}
+}
+
+// resolveServiceName extracts a human-readable service/container name from a cgroup path.
+// Examples:
+//   /system.slice/mysql.service                    → mysql.service
+//   /kubepods/pod.../cri-containerd-.../           → k8s:<container-id-prefix>
+//   /docker/abc123...                              → docker:abc123
+//   /user.slice/user-1000.slice/session-1.scope    → session-1.scope
+func resolveServiceName(cgPath string) string {
+	if cgPath == "" || cgPath == "/" {
+		return ""
+	}
+	parts := strings.Split(strings.TrimRight(cgPath, "/"), "/")
+	if len(parts) == 0 {
+		return ""
+	}
+	leaf := parts[len(parts)-1]
+
+	// Kubernetes: /kubepods[.slice]/.../<container-id>
+	for i, p := range parts {
+		if strings.HasPrefix(p, "kubepods") {
+			// The last part is usually the container ID
+			if len(parts) > i+2 {
+				cid := parts[len(parts)-1]
+				// Try to find pod name in middle segments
+				for _, seg := range parts[i+1:] {
+					if strings.HasPrefix(seg, "pod") {
+						podID := strings.TrimPrefix(seg, "pod")
+						if len(podID) > 8 {
+							podID = podID[:8]
+						}
+						if len(cid) > 12 {
+							cid = cid[:12]
+						}
+						return "k8s:" + cid
+					}
+				}
+				if len(cid) > 12 {
+					cid = cid[:12]
+				}
+				return "k8s:" + cid
+			}
+			return "k8s:" + leaf
+		}
+	}
+
+	// Docker: /docker/<container-id> or /system.slice/docker-<id>.scope
+	for _, p := range parts {
+		if p == "docker" {
+			if len(leaf) > 12 {
+				return "docker:" + leaf[:12]
+			}
+			return "docker:" + leaf
+		}
+		if strings.HasPrefix(p, "docker-") && strings.HasSuffix(p, ".scope") {
+			cid := strings.TrimPrefix(p, "docker-")
+			cid = strings.TrimSuffix(cid, ".scope")
+			if len(cid) > 12 {
+				cid = cid[:12]
+			}
+			return "docker:" + cid
+		}
+	}
+
+	// Systemd service: *.service
+	if strings.HasSuffix(leaf, ".service") {
+		return leaf
+	}
+
+	// Systemd scope (e.g., session-1.scope)
+	if strings.HasSuffix(leaf, ".scope") {
+		return leaf
+	}
+
+	return ""
 }

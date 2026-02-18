@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/ftahirops/xtop/model"
@@ -110,7 +111,7 @@ func findTrigger(result *model.AnalysisResult) string {
 }
 
 // trackBiggestChange compares current snapshot to ~30s ago and finds the
-// largest metric change. Reports it in result.BiggestChange.
+// largest metric changes. Reports top 5 in result.TopChanges.
 func trackBiggestChange(result *model.AnalysisResult, hist *History) {
 	if hist == nil || hist.Len() < 10 {
 		return
@@ -127,65 +128,164 @@ func trackBiggestChange(result *model.AnalysisResult, hist *History) {
 		return
 	}
 
-	type change struct {
-		name string
-		pct  float64
-	}
+	oldRates := hist.GetRate(backIdx)
+	currRates := hist.GetRate(hist.Len() - 1)
 
-	var best change
+	var changes []model.MetricChange
 
-	// CPU PSI
-	if old.Global.PSI.CPU.Some.Avg10 > 0.1 || curr.Global.PSI.CPU.Some.Avg10 > 0.1 {
-		diff := curr.Global.PSI.CPU.Some.Avg10 - old.Global.PSI.CPU.Some.Avg10
-		if abs(diff) > abs(best.pct) {
-			best = change{name: fmt.Sprintf("CPU PSI %+.1f%%", diff), pct: diff}
+	addChange := func(name string, oldVal, curVal float64, unit string) {
+		diff := curVal - oldVal
+		if abs(diff) < 0.5 {
+			return
 		}
-	}
-
-	// MEM PSI
-	if old.Global.PSI.Memory.Full.Avg10 > 0.1 || curr.Global.PSI.Memory.Full.Avg10 > 0.1 {
-		diff := curr.Global.PSI.Memory.Full.Avg10 - old.Global.PSI.Memory.Full.Avg10
-		if abs(diff) > abs(best.pct) {
-			best = change{name: fmt.Sprintf("MEM PSI %+.1f%%", diff), pct: diff}
+		pct := float64(0)
+		if oldVal > 0.1 {
+			pct = diff / oldVal * 100
+		} else if curVal > 0.1 {
+			pct = 100 // new from zero
 		}
+		changes = append(changes, model.MetricChange{
+			Name:     name,
+			Delta:    diff,
+			DeltaPct: pct,
+			Current:  fmt.Sprintf("%.1f%s", curVal, unit),
+			Unit:     unit,
+			Rising:   diff > 0,
+		})
 	}
 
-	// IO PSI
-	if old.Global.PSI.IO.Full.Avg10 > 0.1 || curr.Global.PSI.IO.Full.Avg10 > 0.1 {
-		diff := curr.Global.PSI.IO.Full.Avg10 - old.Global.PSI.IO.Full.Avg10
-		if abs(diff) > abs(best.pct) {
-			best = change{name: fmt.Sprintf("IO PSI %+.1f%%", diff), pct: diff}
-		}
-	}
+	// System-wide metrics
+	addChange("CPU PSI", old.Global.PSI.CPU.Some.Avg10, curr.Global.PSI.CPU.Some.Avg10, "%")
+	addChange("MEM PSI", old.Global.PSI.Memory.Full.Avg10, curr.Global.PSI.Memory.Full.Avg10, "%")
+	addChange("IO PSI", old.Global.PSI.IO.Full.Avg10, curr.Global.PSI.IO.Full.Avg10, "%")
 
-	// Memory used %
 	if old.Global.Memory.Total > 0 && curr.Global.Memory.Total > 0 {
 		oldPct := float64(old.Global.Memory.Total-old.Global.Memory.Available) / float64(old.Global.Memory.Total) * 100
 		curPct := float64(curr.Global.Memory.Total-curr.Global.Memory.Available) / float64(curr.Global.Memory.Total) * 100
-		diff := curPct - oldPct
-		if abs(diff) > abs(best.pct) {
-			best = change{name: fmt.Sprintf("MEM usage %+.1f%%", diff), pct: diff}
-		}
+		addChange("MEM usage", oldPct, curPct, "%")
 	}
 
-	// Load average
-	oldLoad := old.Global.CPU.LoadAvg.Load1
-	curLoad := curr.Global.CPU.LoadAvg.Load1
 	nCPU := curr.Global.CPU.NumCPUs
 	if nCPU == 0 {
 		nCPU = 1
 	}
-	if oldLoad > 0.1 || curLoad > 0.1 {
-		// Convert to % of cores
-		diffPct := (curLoad - oldLoad) / float64(nCPU) * 100
-		if abs(diffPct) > abs(best.pct) {
-			best = change{name: fmt.Sprintf("CPU load %+.1f%%", diffPct), pct: diffPct}
+	oldLoadPct := old.Global.CPU.LoadAvg.Load1 / float64(nCPU) * 100
+	curLoadPct := curr.Global.CPU.LoadAvg.Load1 / float64(nCPU) * 100
+	addChange("run queue", oldLoadPct, curLoadPct, "%")
+
+	// Rate-based metrics (need both old and current rates)
+	if oldRates != nil && currRates != nil {
+		addChange("swap in", oldRates.SwapInRate, currRates.SwapInRate, " MB/s")
+		addChange("retransmits", oldRates.RetransRate, currRates.RetransRate, "/s")
+		addChange("ctx switches", oldRates.CtxSwitchRate, currRates.CtxSwitchRate, "/s")
+
+		// Worst disk latency
+		oldWorstAwait := float64(0)
+		for _, d := range oldRates.DiskRates {
+			if d.AvgAwaitMs > oldWorstAwait {
+				oldWorstAwait = d.AvgAwaitMs
+			}
+		}
+		curWorstAwait := float64(0)
+		curWorstDisk := ""
+		for _, d := range currRates.DiskRates {
+			if d.AvgAwaitMs > curWorstAwait {
+				curWorstAwait = d.AvgAwaitMs
+				curWorstDisk = d.Name
+			}
+		}
+		if curWorstDisk != "" {
+			addChange(curWorstDisk+" latency", oldWorstAwait, curWorstAwait, "ms")
+		}
+
+		// Network drops
+		oldDrops := float64(0)
+		curDrops := float64(0)
+		for _, n := range oldRates.NetRates {
+			oldDrops += n.RxDropsPS + n.TxDropsPS
+		}
+		for _, n := range currRates.NetRates {
+			curDrops += n.RxDropsPS + n.TxDropsPS
+		}
+		addChange("net drops", oldDrops, curDrops, "/s")
+
+		// Per-process IO changes: find biggest IO movers
+		oldIO := make(map[string]float64) // comm -> total IO MB/s
+		for _, p := range oldRates.ProcessRates {
+			oldIO[p.Comm] += p.ReadMBs + p.WriteMBs
+		}
+		for _, p := range currRates.ProcessRates {
+			curIO := p.ReadMBs + p.WriteMBs
+			prevIO := oldIO[p.Comm]
+			diff := curIO - prevIO
+			if abs(diff) > 0.5 {
+				pct := float64(0)
+				if prevIO > 0.1 {
+					pct = diff / prevIO * 100
+				} else if curIO > 0.5 {
+					pct = 100
+				}
+				changes = append(changes, model.MetricChange{
+					Name:     p.Comm + " IO",
+					Delta:    diff,
+					DeltaPct: pct,
+					Current:  fmt.Sprintf("%.1f MB/s", curIO),
+					Unit:     "MB/s",
+					Rising:   diff > 0,
+				})
+			}
+		}
+
+		// Per-process CPU changes
+		oldCPU := make(map[string]float64)
+		for _, p := range oldRates.ProcessRates {
+			oldCPU[p.Comm] += p.CPUPct
+		}
+		for _, p := range currRates.ProcessRates {
+			prevCPU := oldCPU[p.Comm]
+			diff := p.CPUPct - prevCPU
+			if abs(diff) > 5 { // only report >5% CPU changes
+				changes = append(changes, model.MetricChange{
+					Name:     p.Comm + " CPU",
+					Delta:    diff,
+					DeltaPct: diff, // already in %
+					Current:  fmt.Sprintf("%.1f%%", p.CPUPct),
+					Unit:     "%",
+					Rising:   diff > 0,
+				})
+			}
 		}
 	}
 
-	if abs(best.pct) > 2 { // Only report changes > 2%
-		result.BiggestChange = best.name
-		result.BiggestChangePct = best.pct
+	// Sort by absolute magnitude
+	sort.Slice(changes, func(i, j int) bool {
+		return abs(changes[i].DeltaPct) > abs(changes[j].DeltaPct)
+	})
+
+	// Deduplicate by name prefix (keep most significant)
+	seen := make(map[string]bool)
+	var top []model.MetricChange
+	for _, c := range changes {
+		if seen[c.Name] {
+			continue
+		}
+		seen[c.Name] = true
+		top = append(top, c)
+		if len(top) >= 7 {
+			break
+		}
+	}
+
+	result.TopChanges = top
+
+	// Backwards compat: keep BiggestChange as first entry
+	if len(top) > 0 {
+		sign := "+"
+		if !top[0].Rising {
+			sign = ""
+		}
+		result.BiggestChange = fmt.Sprintf("%s %s%.0f%%", top[0].Name, sign, top[0].DeltaPct)
+		result.BiggestChangePct = top[0].DeltaPct
 	}
 }
 
@@ -271,6 +371,147 @@ func trackExhaustion(result *model.AnalysisResult, hist *History) {
 					EstMinutes: minutesLeft,
 				})
 			}
+		}
+	}
+
+	// File descriptors
+	if curr.Global.FD.Max > 0 && old.Global.FD.Max > 0 {
+		curPct := float64(curr.Global.FD.Allocated) / float64(curr.Global.FD.Max) * 100
+		oldPct := float64(old.Global.FD.Allocated) / float64(old.Global.FD.Max) * 100
+		trendPerSec := (curPct - oldPct) / elapsed
+		remaining := 100 - curPct
+		if trendPerSec > 0.01 && remaining > 0 {
+			minutesLeft := remaining / trendPerSec / 60
+			if minutesLeft < 60 && minutesLeft > 0 {
+				result.Exhaustions = append(result.Exhaustions, model.ExhaustionPrediction{
+					Resource:   "File descriptors",
+					CurrentPct: curPct,
+					TrendPerS:  trendPerSec,
+					EstMinutes: minutesLeft,
+				})
+			}
+		}
+	}
+
+	// Ephemeral ports
+	curEph := curr.Global.EphemeralPorts
+	oldEph := old.Global.EphemeralPorts
+	if curEph.RangeHi > 0 && oldEph.RangeHi > 0 {
+		ephRange := curEph.RangeHi - curEph.RangeLo + 1
+		if ephRange > 0 {
+			curPct := float64(curEph.InUse) / float64(ephRange) * 100
+			oldPct := float64(oldEph.InUse) / float64(ephRange) * 100
+			trendPerSec := (curPct - oldPct) / elapsed
+			remaining := 100 - curPct
+			if trendPerSec > 0.01 && remaining > 0 {
+				minutesLeft := remaining / trendPerSec / 60
+				if minutesLeft < 60 && minutesLeft > 0 {
+					result.Exhaustions = append(result.Exhaustions, model.ExhaustionPrediction{
+						Resource:   "Ephemeral ports",
+						CurrentPct: curPct,
+						TrendPerS:  trendPerSec,
+						EstMinutes: minutesLeft,
+					})
+				}
+			}
+		}
+	}
+
+	// Slow degradation detection
+	trackDegradation(result, hist)
+}
+
+// trackDegradation detects slowly worsening trends over 5+ minutes.
+func trackDegradation(result *model.AnalysisResult, hist *History) {
+	n := hist.Len()
+	if n < 300 { // need ~5 minutes of data
+		return
+	}
+
+	// Compare 5-minute-ago rates to now
+	backIdx := n - 300
+	if backIdx < 0 {
+		backIdx = 0
+	}
+	oldR := hist.GetRate(backIdx)
+	curR := hist.GetRate(n - 1)
+	if oldR == nil || curR == nil {
+		return
+	}
+
+	old := hist.Get(backIdx)
+	curr := hist.Latest()
+	if old == nil || curr == nil {
+		return
+	}
+
+	elapsed := curr.Timestamp.Sub(old.Timestamp).Minutes()
+	if elapsed < 3 {
+		return
+	}
+
+	addDeg := func(metric, dir string, ratePerMin float64, unit string) {
+		result.Degradations = append(result.Degradations, model.DegradationWarning{
+			Metric:    metric,
+			Direction: dir,
+			Duration:  int(elapsed * 60),
+			Rate:      ratePerMin,
+			Unit:      unit,
+		})
+	}
+
+	// IO latency trend
+	oldWorstAwait := float64(0)
+	curWorstAwait := float64(0)
+	for _, d := range oldR.DiskRates {
+		if d.AvgAwaitMs > oldWorstAwait {
+			oldWorstAwait = d.AvgAwaitMs
+		}
+	}
+	for _, d := range curR.DiskRates {
+		if d.AvgAwaitMs > curWorstAwait {
+			curWorstAwait = d.AvgAwaitMs
+		}
+	}
+	if curWorstAwait > oldWorstAwait+2 && curWorstAwait > 5 {
+		ratePerMin := (curWorstAwait - oldWorstAwait) / elapsed
+		if ratePerMin > 0.5 {
+			addDeg("IO latency", "rising", ratePerMin, "ms/min")
+		}
+	}
+
+	// Memory available % trend (decreasing)
+	if old.Global.Memory.Total > 0 && curr.Global.Memory.Total > 0 {
+		oldAvail := float64(old.Global.Memory.Available) / float64(old.Global.Memory.Total) * 100
+		curAvail := float64(curr.Global.Memory.Available) / float64(curr.Global.Memory.Total) * 100
+		if curAvail < oldAvail-2 {
+			ratePerMin := (oldAvail - curAvail) / elapsed
+			if ratePerMin > 0.1 {
+				addDeg("Memory available", "falling", ratePerMin, "%/min")
+			}
+		}
+	}
+
+	// Swap usage trend (increasing)
+	if curr.Global.Memory.SwapTotal > 0 {
+		curSwapPct := float64(curr.Global.Memory.SwapUsed) / float64(curr.Global.Memory.SwapTotal) * 100
+		oldSwapPct := float64(0)
+		if old.Global.Memory.SwapTotal > 0 {
+			oldSwapPct = float64(old.Global.Memory.SwapUsed) / float64(old.Global.Memory.SwapTotal) * 100
+		}
+		if curSwapPct > oldSwapPct+1 {
+			ratePerMin := (curSwapPct - oldSwapPct) / elapsed
+			if ratePerMin > 0.05 {
+				addDeg("Swap usage", "rising", ratePerMin, "%/min")
+			}
+		}
+	}
+
+	// Retransmit trend
+	if curR.RetransRate > oldR.RetransRate+5 && curR.RetransRate > 10 {
+		ratePerMin := (curR.RetransRate - oldR.RetransRate) / elapsed
+		if ratePerMin > 1 {
+			addDeg("TCP retransmits", "rising", ratePerMin, "/s/min")
 		}
 	}
 }

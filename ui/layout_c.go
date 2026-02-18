@@ -45,6 +45,10 @@ func renderLayoutC(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 	sb.WriteString(renderRCAInline(result))
 	sb.WriteString("\n")
 
+	// What Changed
+	sb.WriteString(renderChangesInline(result))
+	sb.WriteString("\n")
+
 	// Owners (top-3 per resource)
 	sb.WriteString(renderOwnersInline(result))
 	sb.WriteString("\n")
@@ -57,8 +61,9 @@ func renderLayoutC(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 	sb.WriteString(renderProbeStatusLine(pm))
 	sb.WriteString("\n")
 
-	// Exhaustion
+	// Exhaustion + Degradation
 	sb.WriteString(renderExhaustionBlock(result))
+	sb.WriteString(renderDegradationBlock(result))
 
 	// Trend (full 16 metrics)
 	sb.WriteString(renderTrendBlock(result, history, width, true))

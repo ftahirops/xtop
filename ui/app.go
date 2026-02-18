@@ -25,10 +25,11 @@ const (
 	PageTimeline
 	PageEvents
 	PageProbe
+	PageThresholds
 	pageCount
 )
 
-var pageNames = []string{"Overview", "CPU", "Memory", "IO", "Network", "CGroups", "Timeline", "Events", "Probe"}
+var pageNames = []string{"Overview", "CPU", "Memory", "IO", "Network", "CGroups", "Timeline", "Events", "Probe", "Thresholds"}
 
 type tickMsg time.Time
 
@@ -206,6 +207,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "8":
 			m.page = PageProbe
 			m.scroll = 0
+		case "9":
+			m.page = PageThresholds
+			m.scroll = 0
 		case "I":
 			if m.probeManager.State() != engine.ProbeRunning {
 				_ = m.probeManager.Start("auto")
@@ -266,6 +270,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.layoutMode = LayoutAdaptive
 		case "f4":
 			m.layoutMode = LayoutGrid
+		case "enter":
+			// Culprit jump: from overview or events, go to bottleneck detail page
+			if m.page == PageOverview && m.result != nil && m.result.PrimaryBottleneck != "" {
+				m.page = bottleneckToPage(m.result.PrimaryBottleneck)
+				m.scroll = 0
+			} else if m.page == PageEvents {
+				_, completed := m.eventDetector.AllEvents()
+				if m.evtSelected < len(completed) {
+					evt := completed[m.evtSelected]
+					m.page = bottleneckToPage(evt.Bottleneck)
+					m.scroll = 0
+				}
+			}
+		case "E":
+			// Export incident report as markdown
+			active, completed := m.eventDetector.AllEvents()
+			return m, exportIncidentMarkdown(m.snap, m.rates, m.result, active, completed)
 		case "D":
 			// Set current layout as default
 			if err := saveDefaultLayout(m.layoutMode); err != nil {
@@ -338,6 +359,8 @@ func (m Model) View() string {
 		content = renderEventsPage(active, completed, m.evtSelected, m.width, m.height)
 	case PageProbe:
 		content = renderProbePage(m.probeManager, m.width, m.height)
+	case PageThresholds:
+		content = renderThresholdsPage(m.snap, m.rates, m.result, m.width, m.height)
 	}
 
 	// Apply scroll
@@ -382,7 +405,7 @@ func (m Model) renderStatusBar() string {
 		left += "  " + dimStyle.Render(fmt.Sprintf("[%s]", m.layoutMode))
 	}
 
-	help := helpStyle.Render("I:investigate  v:layout  D:default  a:pause  S:save  ?:help  q:quit")
+	help := helpStyle.Render("I:investigate  E:export  v:layout  a:pause  S:save  ?:help  q:quit")
 
 	gap := m.width - len(stripAnsi(left)) - len(stripAnsi(help))
 	if gap < 1 {
@@ -411,6 +434,153 @@ func stripAnsi(s string) string {
 	return out.String()
 }
 
+// bottleneckToPage maps a bottleneck name to its detail page.
+func bottleneckToPage(bneck string) Page {
+	switch {
+	case strings.Contains(bneck, "CPU"):
+		return PageCPU
+	case strings.Contains(bneck, "Memory"):
+		return PageMemory
+	case strings.Contains(bneck, "IO"), strings.Contains(bneck, "Disk"):
+		return PageIO
+	case strings.Contains(bneck, "Network"), strings.Contains(bneck, "Net"):
+		return PageNetwork
+	default:
+		return PageOverview
+	}
+}
+
+// exportIncidentMarkdown generates a markdown report for the current state.
+func exportIncidentMarkdown(snap *model.Snapshot, rates *model.RateSnapshot, result *model.AnalysisResult,
+	active *model.Event, completed []model.Event) tea.Cmd {
+	return func() tea.Msg {
+		ts := time.Now().Format("20060102-150405")
+		path := fmt.Sprintf("xtop-incident-%s.md", ts)
+
+		var sb strings.Builder
+		sb.WriteString("# xtop Incident Report\n\n")
+		sb.WriteString(fmt.Sprintf("**Generated**: %s\n\n", time.Now().Format(time.RFC3339)))
+
+		if result != nil {
+			sb.WriteString("## System Health\n\n")
+			sb.WriteString(fmt.Sprintf("- **Health**: %s\n", result.Health))
+			sb.WriteString(fmt.Sprintf("- **Primary Bottleneck**: %s (score %d%%)\n", result.PrimaryBottleneck, result.PrimaryScore))
+			sb.WriteString(fmt.Sprintf("- **Confidence**: %d%%\n", result.Confidence))
+			if result.PrimaryProcess != "" {
+				sb.WriteString(fmt.Sprintf("- **Culprit Process**: %s (PID %d)\n", result.PrimaryProcess, result.PrimaryPID))
+			}
+			if result.PrimaryCulprit != "" {
+				sb.WriteString(fmt.Sprintf("- **Culprit Cgroup**: %s\n", result.PrimaryCulprit))
+			}
+			if result.CausalChain != "" {
+				sb.WriteString(fmt.Sprintf("- **Causal Chain**: %s\n", result.CausalChain))
+			}
+			sb.WriteString("\n")
+
+			if len(result.TopChanges) > 0 {
+				sb.WriteString("## What Changed (last 30s)\n\n")
+				sb.WriteString("| Metric | Change | Current |\n")
+				sb.WriteString("|--------|--------|--------|\n")
+				for _, c := range result.TopChanges {
+					arrow := "↓"
+					sign := ""
+					if c.Rising {
+						arrow = "↑"
+						sign = "+"
+					}
+					sb.WriteString(fmt.Sprintf("| %s %s | %s%.0f%% | %s |\n",
+						arrow, c.Name, sign, c.DeltaPct, c.Current))
+				}
+				sb.WriteString("\n")
+			}
+
+			if len(result.PrimaryEvidence) > 0 {
+				sb.WriteString("## Evidence\n\n")
+				for _, e := range result.PrimaryEvidence {
+					sb.WriteString(fmt.Sprintf("- %s\n", e))
+				}
+				sb.WriteString("\n")
+			}
+
+			if len(result.Actions) > 0 {
+				sb.WriteString("## Suggested Actions\n\n")
+				for i, a := range result.Actions {
+					sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, a.Summary))
+					if a.Command != "" {
+						sb.WriteString(fmt.Sprintf("   ```\n   %s\n   ```\n", a.Command))
+					}
+				}
+				sb.WriteString("\n")
+			}
+
+			if len(result.Exhaustions) > 0 {
+				sb.WriteString("## Exhaustion Predictions\n\n")
+				for _, ex := range result.Exhaustions {
+					sb.WriteString(fmt.Sprintf("- **%s**: %.0f%% used, exhaustion in ~%.0f min\n",
+						ex.Resource, ex.CurrentPct, ex.EstMinutes))
+				}
+				sb.WriteString("\n")
+			}
+
+			if len(result.Degradations) > 0 {
+				sb.WriteString("## Slow Degradation Trends\n\n")
+				for _, d := range result.Degradations {
+					sb.WriteString(fmt.Sprintf("- **%s** %s at %.2f %s\n",
+						d.Metric, d.Direction, d.Rate, d.Unit))
+				}
+				sb.WriteString("\n")
+			}
+		}
+
+		// Active incident
+		if active != nil {
+			sb.WriteString("## Active Incident\n\n")
+			sb.WriteString(fmt.Sprintf("- **Start**: %s\n", active.StartTime.Format(time.RFC3339)))
+			sb.WriteString(fmt.Sprintf("- **Bottleneck**: %s (peak score %d%%)\n", active.Bottleneck, active.PeakScore))
+			if active.CulpritProcess != "" {
+				sb.WriteString(fmt.Sprintf("- **Culprit**: %s (PID %d)\n", active.CulpritProcess, active.CulpritPID))
+			}
+			if len(active.Timeline) > 0 {
+				sb.WriteString("\n### Timeline\n\n")
+				sb.WriteString("| Time | Event |\n")
+				sb.WriteString("|------|-------|\n")
+				for _, te := range active.Timeline {
+					sb.WriteString(fmt.Sprintf("| %s | %s |\n", te.Time.Format("15:04:05"), te.Message))
+				}
+			}
+			sb.WriteString("\n")
+		}
+
+		// Recent completed events
+		if len(completed) > 0 {
+			sb.WriteString("## Recent Events\n\n")
+			sb.WriteString("| Time | Duration | Health | Bottleneck | Score | Culprit |\n")
+			sb.WriteString("|------|----------|--------|------------|-------|--------|\n")
+			shown := completed
+			if len(shown) > 10 {
+				shown = shown[:10]
+			}
+			for _, evt := range shown {
+				dur := fmt.Sprintf("%ds", evt.Duration)
+				if evt.Duration >= 60 {
+					dur = fmt.Sprintf("%dm%ds", evt.Duration/60, evt.Duration%60)
+				}
+				sb.WriteString(fmt.Sprintf("| %s | %s | %s | %s | %d%% | %s |\n",
+					evt.StartTime.Format("15:04:05"), dur, evt.PeakHealth,
+					evt.Bottleneck, evt.PeakScore, evt.CulpritProcess))
+			}
+			sb.WriteString("\n")
+		}
+
+		sb.WriteString("---\n*Generated by xtop*\n")
+
+		if err := os.WriteFile(path, []byte(sb.String()), 0644); err != nil {
+			return saveConfirmMsg{err: err}
+		}
+		return saveConfirmMsg{path: path}
+	}
+}
+
 func (m Model) renderHelp() string {
 	var sb strings.Builder
 	sb.WriteString(titleStyle.Render("xtop — Root-Cause Oriented System Monitor"))
@@ -426,6 +596,7 @@ func (m Model) renderHelp() string {
 	sb.WriteString("  6         Timeline (5m history charts)\n")
 	sb.WriteString("  7         Events (detected incidents)\n")
 	sb.WriteString("  8         Probe investigation (eBPF)\n")
+	sb.WriteString("  9         Thresholds & limits reference\n")
 	sb.WriteString("  b / Esc   Back to overview\n")
 	sb.WriteString("\n")
 	sb.WriteString(headerStyle.Render("Controls"))
@@ -435,6 +606,8 @@ func (m Model) renderHelp() string {
 	sb.WriteString("  a         Toggle auto-refresh (pause/resume)\n")
 	sb.WriteString("  I         Start eBPF probe investigation (auto-detect)\n")
 	sb.WriteString("  S         Save RCA snapshot to JSON file\n")
+	sb.WriteString("  E         Export incident report as markdown\n")
+	sb.WriteString("  Enter     Jump to bottleneck detail page\n")
 	sb.WriteString("  j/k       Scroll down/up\n")
 	sb.WriteString("  g/G       Top / jump down\n")
 	sb.WriteString("  s         Cycle sort column (Cgroups page)\n")
@@ -459,6 +632,7 @@ func (m Model) renderHelp() string {
 	sb.WriteString("  Timeline   5m history charts for PSI/load/D-state\n")
 	sb.WriteString("  Events     Detected incidents with RCA detail\n")
 	sb.WriteString("  Probe      eBPF investigation (off-CPU/IO latency/locks/retrans)\n")
+	sb.WriteString("  Thresholds All metrics with thresholds, limits, and scoring rules\n")
 	sb.WriteString("\n")
 	sb.WriteString(helpStyle.Render("Press any key to close"))
 	return sb.String()

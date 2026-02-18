@@ -48,8 +48,9 @@ func renderLayoutD(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 	sb.WriteString(separator(width))
 	sb.WriteString("\n")
 
-	// Bottom: RCA + Owners + Capacity + Probe + Trend (all stable)
+	// Bottom: RCA + Changes + Owners + Capacity + Probe + Trend (all stable)
 	sb.WriteString(renderRCAInline(result))
+	sb.WriteString(renderChangesInline(result))
 	sb.WriteString(renderOwnersInline(result))
 	sb.WriteString(renderCapacityInline(result))
 	sb.WriteString(renderProbeStatusLine(pm))

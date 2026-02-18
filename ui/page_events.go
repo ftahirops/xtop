@@ -99,11 +99,20 @@ func renderEventsPage(active *model.Event, completed []model.Event, selected int
 				sb.WriteString(fmt.Sprintf("    Peaks: CPU=%.1f%%  Mem=%.1f%%  IO PSI=%.1f%%\n",
 					evt.PeakCPUBusy, evt.PeakMemUsedPct, evt.PeakIOPSI))
 			}
+			// Timeline milestones
+			if len(evt.Timeline) > 0 {
+				sb.WriteString(dimStyle.Render("    Timeline:") + "\n")
+				for _, te := range evt.Timeline {
+					ts := te.Time.Format("15:04:05")
+					sb.WriteString(fmt.Sprintf("      %s  %s\n",
+						dimStyle.Render(ts), valueStyle.Render(te.Message)))
+				}
+			}
 		}
 	}
 
 	sb.WriteString("\n")
-	sb.WriteString(dimStyle.Render("  j/k: navigate  Events auto-detect from health transitions"))
+	sb.WriteString(dimStyle.Render("  j/k: navigate  Enter: jump to bottleneck page  E: export markdown"))
 
 	return sb.String()
 }

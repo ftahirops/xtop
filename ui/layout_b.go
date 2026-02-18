@@ -104,8 +104,9 @@ func renderLayoutB(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 	}
 	sb.WriteString(renderKVBox(worst.Details, detailInnerW))
 
-	// RCA + Owners + Probe
+	// RCA + Changes + Owners + Probe
 	sb.WriteString(renderRCAInline(result))
+	sb.WriteString(renderChangesInline(result))
 	sb.WriteString(renderOwnersInline(result))
 	sb.WriteString(renderProbeStatusLine(pm))
 
