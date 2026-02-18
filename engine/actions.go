@@ -1,6 +1,10 @@
 package engine
 
-import "github.com/ftahirops/xtop/model"
+import (
+	"path"
+
+	"github.com/ftahirops/xtop/model"
+)
 
 // SuggestActions recommends actions based on the primary bottleneck.
 func SuggestActions(result *model.AnalysisResult) []model.Action {
@@ -18,7 +22,7 @@ func SuggestActions(result *model.AnalysisResult) []model.Action {
 		)
 		if result.PrimaryCulprit != "" {
 			actions = append(actions,
-				model.Action{Summary: "Inspect cgroup IO limits", Command: "cat /sys/fs/cgroup" + result.PrimaryCulprit + "/io.max"},
+				model.Action{Summary: "Inspect cgroup IO limits", Command: "cat " + path.Join("/sys/fs/cgroup", result.PrimaryCulprit, "io.max")},
 			)
 		}
 	case BottleneckMemory:
@@ -28,7 +32,7 @@ func SuggestActions(result *model.AnalysisResult) []model.Action {
 		)
 		if result.PrimaryCulprit != "" {
 			actions = append(actions,
-				model.Action{Summary: "Check cgroup memory limit", Command: "cat /sys/fs/cgroup" + result.PrimaryCulprit + "/memory.max"},
+				model.Action{Summary: "Check cgroup memory limit", Command: "cat " + path.Join("/sys/fs/cgroup", result.PrimaryCulprit, "memory.max")},
 			)
 		}
 	case BottleneckCPU:
@@ -37,7 +41,7 @@ func SuggestActions(result *model.AnalysisResult) []model.Action {
 		)
 		if result.PrimaryCulprit != "" {
 			actions = append(actions,
-				model.Action{Summary: "Check cgroup CPU quota", Command: "cat /sys/fs/cgroup" + result.PrimaryCulprit + "/cpu.max"},
+				model.Action{Summary: "Check cgroup CPU quota", Command: "cat " + path.Join("/sys/fs/cgroup", result.PrimaryCulprit, "cpu.max")},
 			)
 		}
 	case BottleneckNetwork:

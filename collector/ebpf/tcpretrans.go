@@ -72,7 +72,11 @@ func (p *tcpretransProbe) close() {
 	p.objs.Close()
 }
 
-// formatIPv4Port formats a network-order IPv4 address and port as "a.b.c.d:port".
+// formatIPv4Port formats a BPF-captured IPv4 address and port as "a.b.c.d:port".
+// The address bytes are stored in memory order from bpf_probe_read_kernel of __u8[4],
+// which on x86 little-endian means byte[0] is the lowest byte of the uint32.
+// Network byte order: byte[0]=MSB of IP. After read into uint32 LE: byte[0]=LSB.
+// So addr&0xff = first octet of the IP address.
 func formatIPv4Port(addr uint32, port uint16) string {
 	return fmt.Sprintf("%d.%d.%d.%d:%d",
 		addr&0xff, (addr>>8)&0xff, (addr>>16)&0xff, (addr>>24)&0xff, port)

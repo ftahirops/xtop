@@ -8,6 +8,9 @@ import (
 
 // ComputeCapacity calculates headroom for key resources.
 func ComputeCapacity(snap *model.Snapshot, rates *model.RateSnapshot) []model.Capacity {
+	if rates == nil {
+		return nil
+	}
 	var caps []model.Capacity
 
 	// CPU headroom
@@ -53,10 +56,18 @@ func ComputeCapacity(snap *model.Snapshot, rates *model.RateSnapshot) []model.Ca
 				worstDisk = d.Name
 			}
 		}
+		// Find the worst disk's await time
+		var worstAwait float64
+		for _, d := range rates.DiskRates {
+			if d.Name == worstDisk {
+				worstAwait = d.AvgAwaitMs
+				break
+			}
+		}
 		caps = append(caps, model.Capacity{
 			Label:   fmt.Sprintf("Disk %s", worstDisk),
 			Pct:     100 - worstUtil,
-			Current: fmt.Sprintf("%.0f%% util, %.1fms await", worstUtil, rates.DiskRates[0].AvgAwaitMs),
+			Current: fmt.Sprintf("%.0f%% util, %.1fms await", worstUtil, worstAwait),
 			Limit:   "100%",
 		})
 	}

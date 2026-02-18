@@ -34,7 +34,11 @@ func (m *MemoryCollector) collectMeminfo(snap *model.Snapshot) error {
 	mem.Cached = parseKB(kv["Cached"])
 	mem.SwapTotal = parseKB(kv["SwapTotal"])
 	mem.SwapFree = parseKB(kv["SwapFree"])
-	mem.SwapUsed = mem.SwapTotal - mem.SwapFree
+	if mem.SwapFree > mem.SwapTotal {
+		mem.SwapUsed = 0
+	} else {
+		mem.SwapUsed = mem.SwapTotal - mem.SwapFree
+	}
 	mem.SwapCached = parseKB(kv["SwapCached"])
 	mem.Dirty = parseKB(kv["Dirty"])
 	mem.Writeback = parseKB(kv["Writeback"])

@@ -11,6 +11,9 @@ const topN = 3
 
 // ComputeOwners computes top resource consumers per subsystem.
 func ComputeOwners(snap *model.Snapshot, rates *model.RateSnapshot) (cpu, mem, io, net []model.Owner) {
+	if rates == nil {
+		return
+	}
 	cpu = topCPUOwners(rates)
 	mem = topMemOwners(snap, rates)
 	io = topIOOwners(rates)

@@ -138,9 +138,15 @@ func percentilesFromSlots64(slots []uint64, total uint64) (p50, p95, p99 uint64)
 		return 0, 0, 0
 	}
 	targets := [3]uint64{
-		(total + 1) / 2,  // p50
-		total*95/100 + 1, // p95
-		total*99/100 + 1, // p99
+		total * 50 / 100, // p50
+		total * 95 / 100, // p95
+		total * 99 / 100, // p99
+	}
+	// Ensure targets are at least 1 to avoid finding slot 0 on empty-ish data
+	for i := range targets {
+		if targets[i] == 0 {
+			targets[i] = 1
+		}
 	}
 	var results [3]uint64
 	var cumul uint64

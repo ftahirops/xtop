@@ -233,7 +233,7 @@ func analyzeIO(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEntry {
 		15*clamp(worstAwait, 50) +
 		10*clamp(worstUtil, 95)
 
-	r.Score = int(score * 100)
+	r.Score = int(score)
 
 	// TRUST GATE: require minimum 2 evidence groups to report
 	if groupsPassed < minEvidenceGroups {
@@ -388,7 +388,7 @@ func analyzeMemory(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEnt
 		15*clamp(directPct, 0.6) +
 		10*clamp(majFaultRate, 500)
 
-	r.Score = int(score * 100)
+	r.Score = int(score)
 
 	// TRUST GATE: require minimum 2 evidence groups to report
 	if groupsPassed < minEvidenceGroups {
@@ -582,7 +582,7 @@ func analyzeCPU(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEntry 
 		15*clamp(ctxRate, 150000) +
 		15*clamp(maxThrottlePct/100, 0.5)
 
-	r.Score = int(score * 100)
+	r.Score = int(score)
 
 	// TRUST GATE: require minimum 2 evidence groups to report
 	if groupsPassed < minEvidenceGroups {
@@ -764,7 +764,7 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEn
 		15*clamp(softirqPct, 0.25) +
 		10*clamp(float64(curr.Global.Sockets.TCPOrphan), 1000)
 
-	r.Score = int(score * 100)
+	r.Score = int(score)
 
 	// TRUST GATE: require minimum 2 evidence groups to report
 	if groupsPassed < minEvidenceGroups {

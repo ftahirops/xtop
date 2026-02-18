@@ -108,33 +108,36 @@ func (pm *ProbeManager) Start(pack string) error {
 		return fmt.Errorf("probe already running")
 	}
 	pm.state = ProbeRunning
-	pm.start = time.Now()
-	pm.duration = 10 * time.Second
+	start := time.Now()
+	duration := 10 * time.Second
+	pm.start = start
+	pm.duration = duration
 	pm.pack = pack
 	pm.findings = nil
 	pm.doneAt = time.Time{}
 	pm.mu.Unlock()
 
-	go pm.runProbe()
+	// Capture local copies to avoid reading pm fields without lock in goroutine
+	go pm.runProbe(start, duration, pack)
 	return nil
 }
 
 // runProbe executes the eBPF probe collection in a goroutine.
-func (pm *ProbeManager) runProbe() {
-	results, err := bpf.RunProbe(pm.duration)
+func (pm *ProbeManager) runProbe(start time.Time, duration time.Duration, pack string) {
+	results, err := bpf.RunProbe(duration)
 
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
 	if err != nil {
 		pm.findings = &ProbeFindings{
-			StartTime: pm.start,
-			Duration:  pm.duration,
-			Pack:      pm.pack,
+			StartTime: start,
+			Duration:  duration,
+			Pack:      pack,
 			Summary:   "Error: " + err.Error(),
 		}
 	} else {
-		pm.findings = convertResults(results, pm.start, pm.duration, pm.pack)
+		pm.findings = convertResults(results, start, duration, pack)
 	}
 	pm.state = ProbeDone
 	pm.doneAt = time.Now()

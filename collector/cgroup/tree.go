@@ -140,7 +140,7 @@ func walkCgroupDirs(root string, fn func(path string)) {
 			continue
 		}
 		for _, se := range subEntries {
-			if se.IsDir() && !strings.HasPrefix(se.Name(), "sys-") {
+			if se.IsDir() && !strings.HasPrefix(se.Name(), "sys-") && se.Name() != "init.scope" {
 				fn(filepath.Join(subPath, se.Name()))
 			}
 		}

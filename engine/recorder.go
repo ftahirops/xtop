@@ -42,6 +42,11 @@ func (r *Recorder) Close() {
 
 // RecordTick calls the engine's Tick and records the result.
 func (r *Recorder) RecordTick() (*model.Snapshot, *model.RateSnapshot, *model.AnalysisResult) {
+	return r.RecordTickWithProbe(nil)
+}
+
+// RecordTickWithProbe calls the engine's Tick and records the result along with probe findings.
+func (r *Recorder) RecordTickWithProbe(probe *ProbeFindings) (*model.Snapshot, *model.RateSnapshot, *model.AnalysisResult) {
 	snap, rates, result := r.inner.Tick()
 	if snap != nil {
 		r.mu.Lock()
@@ -49,6 +54,7 @@ func (r *Recorder) RecordTick() (*model.Snapshot, *model.RateSnapshot, *model.An
 			Snapshot: *snap,
 			Rates:    rates,
 			Result:   result,
+			Probe:    probe,
 		})
 		r.mu.Unlock()
 	}

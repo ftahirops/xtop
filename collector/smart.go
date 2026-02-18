@@ -1,6 +1,7 @@
 package collector
 
 import (
+	"context"
 	"encoding/json"
 	"os/exec"
 	"strings"
@@ -89,8 +90,10 @@ func collectSMART() []model.SMARTDisk {
 		return nil
 	}
 
-	// Scan for devices
-	scanOut, err := exec.Command(path, "--scan", "--json").Output()
+	// Scan for devices (with timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	scanOut, err := exec.CommandContext(ctx, path, "--scan", "--json").Output()
 	if err != nil {
 		return nil
 	}
@@ -131,7 +134,9 @@ func querySMARTDevice(smartctlPath, device, devType string) model.SMARTDisk {
 		args = []string{"-a", "--json", "-d", devType, device}
 	}
 
-	out, err := exec.Command(smartctlPath, args...).Output()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, smartctlPath, args...).Output()
 	if err != nil {
 		// smartctl returns non-zero for many non-error reasons
 		if len(out) == 0 {
@@ -154,7 +159,13 @@ func querySMARTDevice(smartctlPath, device, devType string) model.SMARTDisk {
 
 	// NVMe specific
 	if data.NVMeSmartHealthLog.PercentageUsed > 0 || data.NVMeSmartHealthLog.Temperature > 0 {
-		disk.WearLevelPct = 100 - data.NVMeSmartHealthLog.PercentageUsed
+		pctUsed := data.NVMeSmartHealthLog.PercentageUsed
+		if pctUsed < 0 {
+			pctUsed = 0
+		} else if pctUsed > 100 {
+			pctUsed = 100
+		}
+		disk.WearLevelPct = 100 - pctUsed
 		if disk.Temperature == 0 {
 			disk.Temperature = data.NVMeSmartHealthLog.Temperature
 		}

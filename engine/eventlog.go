@@ -127,11 +127,15 @@ func (d *EventDetector) updatePeaks(snap *model.Snapshot, rates *model.RateSnaps
 	}
 }
 
-// ActiveEvent returns the current active event, or nil.
+// ActiveEvent returns a copy of the current active event, or nil.
 func (d *EventDetector) ActiveEvent() *model.Event {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return d.active
+	if d.active == nil {
+		return nil
+	}
+	cpy := *d.active
+	return &cpy
 }
 
 // Events returns completed events in reverse chronological order.

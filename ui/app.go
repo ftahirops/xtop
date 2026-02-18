@@ -217,7 +217,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.scroll = 0
 		case "j", "down":
 			if m.page == PageCgroups {
-				if m.snap != nil && m.cgSelected < len(m.snap.Cgroups)-1 {
+				maxIdx := 0
+				if m.snap != nil && len(m.snap.Cgroups) > 0 {
+					maxIdx = len(m.snap.Cgroups) - 1
+				}
+				if m.cgSelected < maxIdx {
 					m.cgSelected++
 				}
 			} else if m.page == PageEvents {
