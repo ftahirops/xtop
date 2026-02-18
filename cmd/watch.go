@@ -828,6 +828,37 @@ func watchNet(snap *model.Snapshot, rates *model.RateSnapshot) {
 		fmt.Printf(" %-12s  %s%8d%s\n", "SYN_SENT", D, tcp.SynSent, R)
 	}
 
+	// Ephemeral ports
+	eph := snap.Global.EphemeralPorts
+	if eph.RangeHi > 0 {
+		ephRange := eph.RangeHi - eph.RangeLo + 1
+		ephPct := float64(eph.InUse) / float64(ephRange) * 100
+		fmt.Println()
+		fmt.Println(titleLine(fmt.Sprintf("EPHEMERAL PORTS (%d\u2013%d)", eph.RangeLo, eph.RangeHi)))
+		w := ""
+		if ephPct >= 80 {
+			w = critTag()
+		} else if ephPct >= 50 {
+			w = warnTag()
+		}
+		fmt.Printf(" [%-20s] %s  %s%d%s / %s%d%s %s\n",
+			bar(ephPct, 20), cpct(ephPct, 50, 80),
+			FBWht, eph.InUse, R, D, ephRange, R, w)
+		fmt.Printf(" %sESTAB: %d  TIME_WAIT: %d  CLOSE_WAIT: %d  SYN_SENT: %d%s\n",
+			D, eph.EstablishedIn, eph.TimeWaitIn, eph.CloseWaitIn, eph.SynSentIn, R)
+		if len(eph.TopUsers) > 0 {
+			fmt.Printf(" %sTop users:%s\n", D, R)
+			for i, u := range eph.TopUsers {
+				if i >= 5 {
+					break
+				}
+				uPct := float64(u.Ports) / float64(ephRange) * 100
+				fmt.Printf("   %-12s %s%6d ports%s (%.1f%%)\n",
+					u.Comm, FBWht, u.Ports, R, uPct)
+			}
+		}
+	}
+
 	// Protocol health
 	if rates != nil {
 		fmt.Println()
@@ -954,6 +985,20 @@ func netHealth(snap *model.Snapshot, rates *model.RateSnapshot) (string, []strin
 	if tcp.CloseWait >= 50 {
 		issues = append(issues, fmt.Sprintf("High CLOSE_WAIT: %d", tcp.CloseWait))
 		h = "CRITICAL"
+	}
+	eph := snap.Global.EphemeralPorts
+	if eph.RangeHi > 0 {
+		ephRange := eph.RangeHi - eph.RangeLo + 1
+		ephPct := float64(eph.InUse) / float64(ephRange) * 100
+		if ephPct >= 80 {
+			issues = append(issues, fmt.Sprintf("Ephemeral port exhaustion: %.0f%% (%d/%d)", ephPct, eph.InUse, ephRange))
+			h = "CRITICAL"
+		} else if ephPct >= 50 {
+			issues = append(issues, fmt.Sprintf("Ephemeral port pressure: %.0f%%", ephPct))
+			if h == "OK" {
+				h = "DEGRADED"
+			}
+		}
 	}
 	return h, issues
 }

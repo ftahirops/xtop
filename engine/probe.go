@@ -64,6 +64,34 @@ type TCPRetransEntry struct {
 	Iface   string
 }
 
+// NetThroughputEntry holds per-process TCP throughput.
+type NetThroughputEntry struct {
+	PID   int
+	Comm  string
+	TxMBs float64
+	RxMBs float64
+}
+
+// TCPRTTEntry holds RTT data for one remote endpoint.
+type TCPRTTEntry struct {
+	DstAddr  string
+	AvgRTTMs float64
+	MinRTTMs float64
+	MaxRTTMs float64
+	Samples  int
+	TopComm  string
+}
+
+// TCPConnLatEntry holds TCP connection establishment latency.
+type TCPConnLatEntry struct {
+	PID     int
+	Comm    string
+	DstAddr string
+	AvgMs   float64
+	MaxMs   float64
+	Count   int
+}
+
 // ProbeFindings holds the output of a probe session.
 type ProbeFindings struct {
 	StartTime     time.Time
@@ -76,6 +104,9 @@ type ProbeFindings struct {
 	IOLatency     []IOLatEntry
 	LockWaiters   []LockEntry
 	TCPRetrans    []TCPRetransEntry
+	NetThroughput []NetThroughputEntry
+	TCPRTT        []TCPRTTEntry
+	TCPConnLat    []TCPConnLatEntry
 }
 
 // ─── ProbeManager ───────────────────────────────────────────────────────────
@@ -203,6 +234,42 @@ func convertResults(r *bpf.ProbeResults, start time.Time, duration time.Duration
 		})
 	}
 
+	// Convert net throughput results
+	for _, nt := range r.NetThroughput {
+		f.NetThroughput = append(f.NetThroughput, NetThroughputEntry{
+			PID:   int(nt.PID),
+			Comm:  nt.Comm,
+			TxMBs: float64(nt.TxBytes) / (1024 * 1024) / durationSec,
+			RxMBs: float64(nt.RxBytes) / (1024 * 1024) / durationSec,
+		})
+	}
+
+	// Convert TCP RTT results
+	for _, rt := range r.TCPRTT {
+		avgUs := float64(rt.SumUs) / float64(rt.Count)
+		f.TCPRTT = append(f.TCPRTT, TCPRTTEntry{
+			DstAddr:  rt.DstStr,
+			AvgRTTMs: avgUs / 1000.0,
+			MinRTTMs: float64(rt.MinUs) / 1000.0,
+			MaxRTTMs: float64(rt.MaxUs) / 1000.0,
+			Samples:  int(rt.Count),
+			TopComm:  rt.LastComm,
+		})
+	}
+
+	// Convert TCP connect latency results
+	for _, cl := range r.TCPConnLat {
+		avgNs := float64(cl.TotalNs) / float64(cl.Count)
+		f.TCPConnLat = append(f.TCPConnLat, TCPConnLatEntry{
+			PID:     int(cl.PID),
+			Comm:    cl.Comm,
+			DstAddr: cl.DstStr,
+			AvgMs:   avgNs / 1e6,
+			MaxMs:   float64(cl.MaxNs) / 1e6,
+			Count:   int(cl.Count),
+		})
+	}
+
 	// Determine dominant bottleneck from findings
 	f.Bottleneck, f.ConfBoost = classifyBottleneck(f)
 
@@ -233,9 +300,19 @@ func classifyBottleneck(f *ProbeFindings) (string, int) {
 		lockScore += e.WaitPct
 	}
 
-	// Network score: based on retransmits
+	// Network score: based on retransmits + high RTT + connect latency
 	for _, e := range f.TCPRetrans {
 		netScore += float64(e.Retrans)
+	}
+	for _, e := range f.TCPRTT {
+		if e.AvgRTTMs > 10 {
+			netScore += e.AvgRTTMs / 10
+		}
+	}
+	for _, e := range f.TCPConnLat {
+		if e.AvgMs > 100 {
+			netScore += e.AvgMs / 100
+		}
 	}
 
 	// Pick the dominant signal
@@ -292,6 +369,18 @@ func generateSummary(f *ProbeFindings) string {
 	if len(f.TCPRetrans) > 0 {
 		top := f.TCPRetrans[0]
 		parts = append(parts, fmt.Sprintf("Retrans: %d/s", top.Retrans))
+	}
+	if len(f.NetThroughput) > 0 {
+		top := f.NetThroughput[0]
+		parts = append(parts, fmt.Sprintf("Net: %s tx=%.1f rx=%.1f MB/s", top.Comm, top.TxMBs, top.RxMBs))
+	}
+	if len(f.TCPRTT) > 0 {
+		top := f.TCPRTT[0]
+		parts = append(parts, fmt.Sprintf("RTT: %s avg=%.1fms", top.DstAddr, top.AvgRTTMs))
+	}
+	if len(f.TCPConnLat) > 0 {
+		top := f.TCPConnLat[0]
+		parts = append(parts, fmt.Sprintf("ConnLat: %s avg=%.1fms", top.Comm, top.AvgMs))
 	}
 
 	if len(parts) == 0 {

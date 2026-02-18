@@ -255,21 +255,54 @@ type FDStats struct {
 	Max       uint64
 }
 
+// EphemeralPorts holds ephemeral port usage data.
+type EphemeralPorts struct {
+	RangeLo       int // from /proc/sys/net/ipv4/ip_local_port_range
+	RangeHi       int
+	InUse         int // count of connections with local port in ephemeral range
+	TimeWaitIn    int // TIME_WAIT specifically in ephemeral range
+	EstablishedIn int // ESTABLISHED in ephemeral range
+	CloseWaitIn   int // CLOSE_WAIT in ephemeral range
+	SynSentIn     int // SYN_SENT in ephemeral range
+	TopUsers      []PortUser
+}
+
+// PortUser holds per-process ephemeral port consumption.
+type PortUser struct {
+	PID         int
+	Comm        string
+	Ports       int // total ephemeral ports held
+	Established int
+	TimeWait    int // note: TIME_WAIT usually has inode 0, so this tracks indirect attribution
+	CloseWait   int
+}
+
+// RemoteIPStats holds aggregated connection counts per remote IP.
+type RemoteIPStats struct {
+	IP          string
+	Connections int
+	Established int
+	TimeWait    int
+	CloseWait   int
+}
+
 // GlobalMetrics is the full system-wide metric snapshot.
 type GlobalMetrics struct {
-	PSI       PSIMetrics
-	CPU       CPUMetrics
-	Memory    MemoryMetrics
-	VMStat    VMStatMetrics
-	Disks     []DiskStats
-	Network   []NetworkStats
-	TCP       TCPMetrics
-	UDP       UDPMetrics
-	Sockets   SocketStats
-	TCPStates TCPConnState
-	SoftIRQ   SoftIRQStats
-	Conntrack ConntrackStats
-	FD        FDStats
+	PSI            PSIMetrics
+	CPU            CPUMetrics
+	Memory         MemoryMetrics
+	VMStat         VMStatMetrics
+	Disks          []DiskStats
+	Network        []NetworkStats
+	TCP            TCPMetrics
+	UDP            UDPMetrics
+	Sockets        SocketStats
+	TCPStates      TCPConnState
+	SoftIRQ        SoftIRQStats
+	Conntrack      ConntrackStats
+	FD             FDStats
+	EphemeralPorts EphemeralPorts
+	TopRemoteIPs   []RemoteIPStats
 }
 
 // CgroupMetrics holds metrics for a single cgroup.
@@ -334,4 +367,8 @@ type ProcessMetrics struct {
 	// Context switches
 	VoluntaryCtxSwitches    uint64
 	NonVoluntaryCtxSwitches uint64
+
+	// File descriptors
+	FDCount     int    // count of open FDs from /proc/PID/fd
+	FDSoftLimit uint64 // soft limit from /proc/PID/limits
 }

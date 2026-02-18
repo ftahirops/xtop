@@ -116,10 +116,12 @@ func computeNetRates(prev, curr *model.Snapshot, dt time.Duration, r *model.Rate
 		if !ok {
 			continue
 		}
+		rxMBs := util.Rate(pn.RxBytes, n.RxBytes, dt) / (1024 * 1024)
+		txMBs := util.Rate(pn.TxBytes, n.TxBytes, dt) / (1024 * 1024)
 		nr := model.NetRate{
 			Name:       n.Name,
-			RxMBs:      util.Rate(pn.RxBytes, n.RxBytes, dt) / (1024 * 1024),
-			TxMBs:      util.Rate(pn.TxBytes, n.TxBytes, dt) / (1024 * 1024),
+			RxMBs:      rxMBs,
+			TxMBs:      txMBs,
 			RxPPS:      util.Rate(pn.RxPackets, n.RxPackets, dt),
 			TxPPS:      util.Rate(pn.TxPackets, n.TxPackets, dt),
 			RxDropsPS:  util.Rate(pn.RxDrops, n.RxDrops, dt),
@@ -130,6 +132,13 @@ func computeNetRates(prev, curr *model.Snapshot, dt time.Duration, r *model.Rate
 			SpeedMbps:  n.SpeedMbps,
 			Master:     n.Master,
 			IfType:     n.IfType,
+			UtilPct:    -1,
+		}
+		if n.SpeedMbps > 0 {
+			nr.UtilPct = (rxMBs + txMBs) * 8 * 1024 / float64(n.SpeedMbps) * 100
+			if nr.UtilPct > 100 {
+				nr.UtilPct = 100
+			}
 		}
 		r.NetRates = append(r.NetRates, nr)
 	}
@@ -211,6 +220,10 @@ func computeProcessRates(prev, curr *model.Snapshot, dt time.Duration, r *model.
 			continue
 		}
 		cpuDelta := util.Delta(pp.UTime+pp.STime, p.UTime+p.STime)
+		var fdPct float64
+		if p.FDSoftLimit > 0 {
+			fdPct = float64(p.FDCount) / float64(p.FDSoftLimit) * 100
+		}
 		pr := model.ProcessRate{
 			PID:           p.PID,
 			Comm:          p.Comm,
@@ -226,6 +239,9 @@ func computeProcessRates(prev, curr *model.Snapshot, dt time.Duration, r *model.
 			RSS:           p.RSS,
 			VmSwap:        p.VmSwap,
 			NumThreads:    p.NumThreads,
+			FDCount:       p.FDCount,
+			FDSoftLimit:   p.FDSoftLimit,
+			FDPct:         fdPct,
 		}
 		r.ProcessRates = append(r.ProcessRates, pr)
 	}

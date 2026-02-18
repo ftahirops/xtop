@@ -78,40 +78,84 @@ func renderNetPage(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 	sb.WriteString(boxSection("THROUGHPUT", thrLines, iw))
 
 	// === Connections ===
+	eph := snap.Global.EphemeralPorts
+	ephRange := eph.RangeHi - eph.RangeLo + 1
+	if ephRange <= 0 {
+		ephRange = 28232 // fallback: default range 32768-60999
+	}
+	fdMax := snap.Global.FD.Max
+	if fdMax == 0 {
+		fdMax = 1048576 // fallback
+	}
+
 	totalConns := st.Established + st.SynSent + st.SynRecv + st.FinWait1 + st.FinWait2 +
 		st.TimeWait + st.Close + st.CloseWait + st.LastAck + st.Listen + st.Closing
 
 	var connLines []string
-	connLines = append(connLines, fmt.Sprintf("Total: %d    Active: %d    Listening: %d",
-		totalConns, st.Established, st.Listen))
+
+	// Capacity context line
+	ephUsedPct := float64(eph.InUse) / float64(ephRange) * 100
+	fdUsedPct := float64(sock.SocketsUsed) / float64(fdMax) * 100
+	capLine := fmt.Sprintf("Total: %d    Ephemeral: %d/%d (%.0f%%)    FDs: %d/%d (%.0f%%)",
+		totalConns, eph.InUse, ephRange, ephUsedPct, sock.SocketsUsed, fdMax, fdUsedPct)
+	connLines = append(connLines, capLine)
 
 	type connState struct {
-		name  string
-		count int
-		warn  bool
+		name     string
+		count    int
+		limit    int    // effective limit for this state
+		limName  string // what constrains it
+		warn     bool
 	}
+
+	// Determine smart limits: outbound states are limited by ephemeral ports,
+	// listen by FD, TIME_WAIT by ephemeral (holds port, no FD)
 	states := []connState{
-		{"ESTABLISHED", st.Established, false},
-		{"TIME_WAIT", st.TimeWait, st.TimeWait > 1000},
-		{"CLOSE_WAIT", st.CloseWait, st.CloseWait > 100},
-		{"SYN_SENT", st.SynSent, st.SynSent > 50},
-		{"SYN_RECV", st.SynRecv, st.SynRecv > 100},
-		{"FIN_WAIT1", st.FinWait1, st.FinWait1 > 50},
-		{"FIN_WAIT2", st.FinWait2, st.FinWait2 > 50},
-		{"CLOSING", st.Closing, false},
-		{"LAST_ACK", st.LastAck, false},
+		{"ESTABLISHED", st.Established, ephRange, "eph", false},
+		{"TIME_WAIT", st.TimeWait, ephRange, "eph", false},
+		{"CLOSE_WAIT", st.CloseWait, int(fdMax), "fd", false},
+		{"SYN_SENT", st.SynSent, ephRange, "eph", false},
+		{"SYN_RECV", st.SynRecv, ephRange, "eph", false},
+		{"FIN_WAIT1", st.FinWait1, ephRange, "eph", false},
+		{"FIN_WAIT2", st.FinWait2, ephRange, "eph", false},
+		{"CLOSING", st.Closing, ephRange, "eph", false},
+		{"LAST_ACK", st.LastAck, ephRange, "eph", false},
+	}
+
+	// Compute warn thresholds relative to limits
+	for i := range states {
+		s := &states[i]
+		if s.limit > 0 {
+			pct := float64(s.count) / float64(s.limit) * 100
+			if pct > 5 {
+				s.warn = true // using significant portion of limit
+			}
+		}
+		// Hard-coded warnings for known-bad states at any count
+		switch s.name {
+		case "CLOSE_WAIT":
+			if s.count > 100 {
+				s.warn = true
+			}
+		case "SYN_SENT":
+			if s.count > 50 {
+				s.warn = true
+			}
+		}
 	}
 
 	bw := 15
 	for _, s := range states {
 		pct := float64(0)
-		if totalConns > 0 {
-			pct = float64(s.count) / float64(totalConns) * 100
+		if s.limit > 0 {
+			pct = float64(s.count) / float64(s.limit) * 100
 		}
 		label := fmt.Sprintf("%-12s %5d ", s.name, s.count)
 		barStr := miniBar(pct, bw)
-		pctStr := fmt.Sprintf(" %5.1f%%", pct)
-		if s.warn {
+		pctStr := fmt.Sprintf(" %5.1f%% of %s", pct, s.limName)
+		if pct > 50 {
+			connLines = append(connLines, critStyle.Render(label)+barStr+critStyle.Render(pctStr))
+		} else if s.warn {
 			connLines = append(connLines, warnStyle.Render(label)+barStr+warnStyle.Render(pctStr))
 		} else if s.count == 0 {
 			connLines = append(connLines, dimStyle.Render(label)+barStr+dimStyle.Render(pctStr))
@@ -120,32 +164,109 @@ func renderNetPage(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 		}
 	}
 
-	connWarnings := []string{}
-	if st.TimeWait > 1000 {
-		connWarnings = append(connWarnings, warnStyle.Render(fmt.Sprintf("  -> %d TIME_WAIT \u2014 possible port exhaustion risk", st.TimeWait)))
+	// Smart warnings relative to actual limits
+	if ephRange > 0 {
+		twEphPct := float64(eph.TimeWaitIn) / float64(ephRange) * 100
+		if twEphPct > 50 {
+			connLines = append(connLines, critStyle.Render(fmt.Sprintf(
+				"  -> TIME_WAIT holds %.0f%% of ephemeral ports (%d/%d) \u2014 EXHAUSTION IMMINENT",
+				twEphPct, eph.TimeWaitIn, ephRange)))
+		} else if twEphPct > 20 {
+			connLines = append(connLines, warnStyle.Render(fmt.Sprintf(
+				"  -> TIME_WAIT holds %.0f%% of ephemeral ports (%d/%d) \u2014 consider tcp_tw_reuse",
+				twEphPct, eph.TimeWaitIn, ephRange)))
+		}
 	}
 	if st.CloseWait > 100 {
-		connWarnings = append(connWarnings, warnStyle.Render(fmt.Sprintf("  -> %d CLOSE_WAIT \u2014 app not closing connections", st.CloseWait)))
+		connLines = append(connLines, warnStyle.Render(fmt.Sprintf(
+			"  -> %d CLOSE_WAIT \u2014 app not closing connections (FD leak)", st.CloseWait)))
 	}
 	if st.SynSent > 50 {
-		connWarnings = append(connWarnings, warnStyle.Render(fmt.Sprintf("  -> %d SYN_SENT \u2014 outbound connection attempts backing up", st.SynSent)))
-	}
-	for _, w := range connWarnings {
-		connLines = append(connLines, w)
+		connLines = append(connLines, warnStyle.Render(fmt.Sprintf(
+			"  -> %d SYN_SENT \u2014 outbound connection attempts backing up", st.SynSent)))
 	}
 
-	connLines = append(connLines, fmt.Sprintf("Sockets in use: %d   TCP alloc: %d   Orphans: %d",
-		sock.SocketsUsed, sock.TCPAlloc, sock.TCPOrphan))
+	connLines = append(connLines, fmt.Sprintf("Sockets: %d   TCP alloc: %d   Orphans: %d   Listening: %d",
+		sock.SocketsUsed, sock.TCPAlloc, sock.TCPOrphan, st.Listen))
 	if sock.TCPOrphan > 100 {
 		connLines = append(connLines, warnStyle.Render(fmt.Sprintf("  -> %d orphaned TCP sockets", sock.TCPOrphan)))
 	}
 	sb.WriteString(boxSection("CONNECTIONS", connLines, iw))
 
+	// === Ephemeral Ports ===
+	if eph.RangeHi > 0 {
+		var ephLines []string
+		ephPct := float64(eph.InUse) / float64(ephRange) * 100
+		ephLines = append(ephLines, fmt.Sprintf("Range: %d\u2013%d (%d available)", eph.RangeLo, eph.RangeHi, ephRange))
+
+		usageLine := fmt.Sprintf("In Use: %d / %d (%.1f%%)  %s %.1f%%",
+			eph.InUse, ephRange, ephPct, miniBar(ephPct, 20), ephPct)
+		if ephPct > 80 {
+			ephLines = append(ephLines, critStyle.Render(usageLine))
+		} else if ephPct > 50 {
+			ephLines = append(ephLines, warnStyle.Render(usageLine))
+		} else {
+			ephLines = append(ephLines, usageLine)
+		}
+
+		// Per-state breakdown within ephemeral range
+		if eph.InUse > 0 {
+			ephLines = append(ephLines, dimStyle.Render(fmt.Sprintf(
+				"  ESTABLISHED: %-6d  TIME_WAIT: %-6d  CLOSE_WAIT: %-6d  SYN_SENT: %d",
+				eph.EstablishedIn, eph.TimeWaitIn, eph.CloseWaitIn, eph.SynSentIn)))
+
+			twPct := float64(eph.TimeWaitIn) / float64(eph.InUse) * 100
+			if twPct > 60 {
+				ephLines = append(ephLines, warnStyle.Render(fmt.Sprintf(
+					"  TIME_WAIT is %.0f%% of in-use \u2014 ports held 60s after close, consider tcp_tw_reuse", twPct)))
+			}
+		}
+
+		// Top port users (abusers)
+		if len(eph.TopUsers) > 0 {
+			ephLines = append(ephLines, "")
+			ephLines = append(ephLines, dimStyle.Render(fmt.Sprintf(
+				"  %-14s %7s %6s  %6s  %10s  %s",
+				"PROCESS", "PID", "PORTS", "ESTAB", "CLOSE_WAIT", "% OF EPH")))
+			for _, u := range eph.TopUsers {
+				portPct := float64(u.Ports) / float64(ephRange) * 100
+				portPctStr := fmt.Sprintf("%.1f%%", portPct)
+				row := fmt.Sprintf("  %-14s %7d %6d  %6d  %10d  %s",
+					truncate(u.Comm, 14), u.PID, u.Ports, u.Established, u.CloseWait, portPctStr)
+				if portPct > 20 {
+					ephLines = append(ephLines, critStyle.Render(row))
+				} else if portPct > 5 {
+					ephLines = append(ephLines, warnStyle.Render(row))
+				} else {
+					ephLines = append(ephLines, row)
+				}
+			}
+		}
+		sb.WriteString(boxSection("EPHEMERAL PORTS", ephLines, iw))
+	}
+
+	// === Top Remote IPs ===
+	if len(snap.Global.TopRemoteIPs) > 0 {
+		var remLines []string
+		remLines = append(remLines, dimStyle.Render(fmt.Sprintf("%-18s %6s %6s %10s %10s",
+			"REMOTE IP", "TOTAL", "ESTAB", "TIME_WAIT", "CLOSE_WAIT")))
+		for _, r := range snap.Global.TopRemoteIPs {
+			row := fmt.Sprintf("%-18s %6d %6d %10d %10d",
+				r.IP, r.Connections, r.Established, r.TimeWait, r.CloseWait)
+			if r.TimeWait > 500 || r.CloseWait > 50 {
+				remLines = append(remLines, warnStyle.Render(row))
+			} else {
+				remLines = append(remLines, row)
+			}
+		}
+		sb.WriteString(boxSection("TOP REMOTE IPs", remLines, iw))
+	}
+
 	// === Interfaces ===
 	var ifLines []string
 	if rates != nil && len(rates.NetRates) > 0 {
-		ifLines = append(ifLines, dimStyle.Render(fmt.Sprintf("%-16s %5s %6s %7s %10s %10s %8s %8s %7s %7s",
-			"INTERFACE", "STATE", "SPEED", "TYPE", "RX", "TX", "RX pps", "TX pps", "Drops", "Errors")))
+		ifLines = append(ifLines, dimStyle.Render(fmt.Sprintf("%-16s %5s %6s %7s %10s %10s %6s %8s %8s %7s %7s",
+			"INTERFACE", "STATE", "SPEED", "TYPE", "RX", "TX", "UTIL%", "RX pps", "TX pps", "Drops", "Errors")))
 
 		for _, nr := range rates.NetRates {
 			drops := nr.RxDropsPS + nr.TxDropsPS
@@ -171,6 +292,17 @@ func renderNetPage(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 				speedStr = fmt.Sprintf("%6s", speedStr)
 			}
 
+			// Format utilization
+			utilStr := dimStyle.Render(fmt.Sprintf("%6s", "—"))
+			if nr.UtilPct >= 0 {
+				utilStr = fmt.Sprintf("%5.1f%%", nr.UtilPct)
+				if nr.UtilPct > 90 {
+					utilStr = critStyle.Render(utilStr)
+				} else if nr.UtilPct > 70 {
+					utilStr = warnStyle.Render(utilStr)
+				}
+			}
+
 			// Format type
 			ifType := nr.IfType
 			if len(ifType) > 7 {
@@ -182,9 +314,10 @@ func renderNetPage(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 				name = name[:13] + "..."
 			}
 
-			row := fmt.Sprintf("%-16s %s %s %-7s %10s %10s %8s %8s %6.0f/s %6.0f/s",
+			row := fmt.Sprintf("%-16s %s %s %-7s %10s %10s %s %8s %8s %6.0f/s %6.0f/s",
 				name, stateStr, speedStr, ifType,
 				fmtRate(nr.RxMBs), fmtRate(nr.TxMBs),
+				utilStr,
 				fmtPPS(nr.RxPPS), fmtPPS(nr.TxPPS),
 				drops, errors)
 			if drops > 0 || errors > 0 {
@@ -288,6 +421,55 @@ func renderNetPage(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 		ctLines = append(ctLines, dimStyle.Render("Conntrack inactive"))
 	}
 	sb.WriteString(boxSection("CONNTRACK", ctLines, iw))
+
+	// === Top processes by FD usage ===
+	if rates != nil && len(rates.ProcessRates) > 0 {
+		fdProcs := make([]model.ProcessRate, len(rates.ProcessRates))
+		copy(fdProcs, rates.ProcessRates)
+		sort.Slice(fdProcs, func(i, j int) bool {
+			return fdProcs[i].FDCount > fdProcs[j].FDCount
+		})
+
+		var fdLines []string
+		fdLines = append(fdLines, dimStyle.Render(fmt.Sprintf("%-20s %6s %8s %10s %6s",
+			"PROCESS", "PID", "FDs", "LIMIT", "USED%")))
+
+		shown := 0
+		seen := make(map[string]bool)
+		for _, p := range fdProcs {
+			if shown >= 10 || p.FDCount == 0 {
+				break
+			}
+			if seen[p.Comm] {
+				continue
+			}
+			seen[p.Comm] = true
+
+			name := p.Comm
+			if len(name) > 20 {
+				name = name[:17] + "..."
+			}
+			limitStr := "—"
+			pctStr := "—"
+			if p.FDSoftLimit > 0 {
+				limitStr = fmt.Sprintf("%d", p.FDSoftLimit)
+				pctStr = fmt.Sprintf("%.1f%%", p.FDPct)
+			}
+			row := fmt.Sprintf("%-20s %6d %8d %10s %6s",
+				name, p.PID, p.FDCount, limitStr, pctStr)
+			if p.FDPct > 80 {
+				fdLines = append(fdLines, critStyle.Render(row))
+			} else if p.FDPct > 50 {
+				fdLines = append(fdLines, warnStyle.Render(row))
+			} else {
+				fdLines = append(fdLines, row)
+			}
+			shown++
+		}
+		if shown > 0 {
+			sb.WriteString(boxSection("TOP PROCESSES BY FD USAGE", fdLines, iw))
+		}
+	}
 
 	// === Top consumers ===
 	var consLines []string

@@ -63,6 +63,15 @@ func renderProbeIdle(width int) string {
 	sb.WriteString(boxRow(fmt.Sprintf("  %s  %s",
 		styledPad(valueStyle.Render("tcpretrans"), 14),
 		dimStyle.Render("TCP retransmit tracing per connection")), innerW) + "\n")
+	sb.WriteString(boxRow(fmt.Sprintf("  %s  %s",
+		styledPad(valueStyle.Render("netthroughput"), 14),
+		dimStyle.Render("Per-process TCP send/receive throughput")), innerW) + "\n")
+	sb.WriteString(boxRow(fmt.Sprintf("  %s  %s",
+		styledPad(valueStyle.Render("tcprtt"), 14),
+		dimStyle.Render("TCP RTT per remote endpoint")), innerW) + "\n")
+	sb.WriteString(boxRow(fmt.Sprintf("  %s  %s",
+		styledPad(valueStyle.Render("tcpconnlat"), 14),
+		dimStyle.Render("TCP connection establishment latency")), innerW) + "\n")
 	sb.WriteString(boxMid(innerW) + "\n")
 	sb.WriteString(boxRow(headerStyle.Render("Press I")+dimStyle.Render(" to auto-detect and run all packs (10s)"), innerW) + "\n")
 	sb.WriteString(boxBot(innerW) + "\n")
@@ -96,7 +105,9 @@ func renderProbeRunning(pm *engine.ProbeManager, width int) string {
 	sb.WriteString("\n")
 	sb.WriteString(dimStyle.Render("  Collecting eBPF samples... please wait."))
 	sb.WriteString("\n\n")
-	sb.WriteString(dimStyle.Render("  Attached probes: sched_switch, block_rq_issue/complete, futex, tcp_retransmit_skb"))
+	sb.WriteString(dimStyle.Render("  Attached probes: sched_switch, block_rq_issue/complete, futex, tcp_retransmit_skb,"))
+	sb.WriteString("\n")
+	sb.WriteString(dimStyle.Render("                   tcp_sendmsg, tcp_cleanup_rbuf, tcp_rcv_established, tcp_v4_connect"))
 	sb.WriteString("\n")
 
 	return sb.String()
@@ -242,6 +253,104 @@ func renderProbeDone(pm *engine.ProbeManager, width int) string {
 				styledPad(valueStyle.Render(truncate(e.Comm, 12)), 14),
 				styledPad(rs.Render(fmt.Sprintf("%d/s", e.Retrans)), 10),
 				dimStyle.Render(e.Iface))
+			sb.WriteString(boxRow(row, innerW) + "\n")
+		}
+		sb.WriteString(boxBot(innerW) + "\n\n")
+	}
+
+	// Network throughput
+	if len(f.NetThroughput) > 0 {
+		sb.WriteString(titleStyle.Render(" Network Throughput"))
+		sb.WriteString("\n")
+		sb.WriteString(boxTop(innerW) + "\n")
+		hdr := fmt.Sprintf("  %s %s %s %s %s",
+			styledPad(dimStyle.Render("PID"), 8),
+			styledPad(dimStyle.Render("CMD"), 14),
+			styledPad(dimStyle.Render("TX MB/s"), 10),
+			styledPad(dimStyle.Render("RX MB/s"), 10),
+			dimStyle.Render("TOTAL"))
+		sb.WriteString(boxRow(hdr, innerW) + "\n")
+		sb.WriteString(boxMid(innerW) + "\n")
+		for _, e := range f.NetThroughput {
+			total := e.TxMBs + e.RxMBs
+			ts := valueStyle
+			if total >= 100 {
+				ts = critStyle
+			} else if total >= 10 {
+				ts = warnStyle
+			}
+			row := fmt.Sprintf("  %s %s %s %s %s",
+				styledPad(dimStyle.Render(fmt.Sprintf("%d", e.PID)), 8),
+				styledPad(valueStyle.Render(truncate(e.Comm, 12)), 14),
+				styledPad(dimStyle.Render(fmt.Sprintf("%.1f", e.TxMBs)), 10),
+				styledPad(dimStyle.Render(fmt.Sprintf("%.1f", e.RxMBs)), 10),
+				ts.Render(fmt.Sprintf("%.1f MB/s", total)))
+			sb.WriteString(boxRow(row, innerW) + "\n")
+		}
+		sb.WriteString(boxBot(innerW) + "\n\n")
+	}
+
+	// TCP RTT
+	if len(f.TCPRTT) > 0 {
+		sb.WriteString(titleStyle.Render(" TCP RTT"))
+		sb.WriteString("\n")
+		sb.WriteString(boxTop(innerW) + "\n")
+		hdr := fmt.Sprintf("  %s %s %s %s %s %s",
+			styledPad(dimStyle.Render("DEST"), 18),
+			styledPad(dimStyle.Render("AVG"), 10),
+			styledPad(dimStyle.Render("MIN"), 10),
+			styledPad(dimStyle.Render("MAX"), 10),
+			styledPad(dimStyle.Render("SAMPLES"), 8),
+			dimStyle.Render("PROCESS"))
+		sb.WriteString(boxRow(hdr, innerW) + "\n")
+		sb.WriteString(boxMid(innerW) + "\n")
+		for _, e := range f.TCPRTT {
+			rs := valueStyle
+			if e.AvgRTTMs >= 50 {
+				rs = critStyle
+			} else if e.AvgRTTMs >= 10 {
+				rs = warnStyle
+			}
+			row := fmt.Sprintf("  %s %s %s %s %s %s",
+				styledPad(dimStyle.Render(truncate(e.DstAddr, 16)), 18),
+				styledPad(rs.Render(fmt.Sprintf("%.1fms", e.AvgRTTMs)), 10),
+				styledPad(dimStyle.Render(fmt.Sprintf("%.1fms", e.MinRTTMs)), 10),
+				styledPad(dimStyle.Render(fmt.Sprintf("%.1fms", e.MaxRTTMs)), 10),
+				styledPad(dimStyle.Render(fmt.Sprintf("%d", e.Samples)), 8),
+				valueStyle.Render(truncate(e.TopComm, 12)))
+			sb.WriteString(boxRow(row, innerW) + "\n")
+		}
+		sb.WriteString(boxBot(innerW) + "\n\n")
+	}
+
+	// TCP connect latency
+	if len(f.TCPConnLat) > 0 {
+		sb.WriteString(titleStyle.Render(" TCP Connect Latency"))
+		sb.WriteString("\n")
+		sb.WriteString(boxTop(innerW) + "\n")
+		hdr := fmt.Sprintf("  %s %s %s %s %s %s",
+			styledPad(dimStyle.Render("PID"), 8),
+			styledPad(dimStyle.Render("CMD"), 14),
+			styledPad(dimStyle.Render("DEST"), 16),
+			styledPad(dimStyle.Render("AVG"), 10),
+			styledPad(dimStyle.Render("MAX"), 10),
+			dimStyle.Render("COUNT"))
+		sb.WriteString(boxRow(hdr, innerW) + "\n")
+		sb.WriteString(boxMid(innerW) + "\n")
+		for _, e := range f.TCPConnLat {
+			cs := valueStyle
+			if e.AvgMs >= 500 {
+				cs = critStyle
+			} else if e.AvgMs >= 100 {
+				cs = warnStyle
+			}
+			row := fmt.Sprintf("  %s %s %s %s %s %s",
+				styledPad(dimStyle.Render(fmt.Sprintf("%d", e.PID)), 8),
+				styledPad(valueStyle.Render(truncate(e.Comm, 12)), 14),
+				styledPad(dimStyle.Render(truncate(e.DstAddr, 14)), 16),
+				styledPad(cs.Render(fmt.Sprintf("%.1fms", e.AvgMs)), 10),
+				styledPad(dimStyle.Render(fmt.Sprintf("%.1fms", e.MaxMs)), 10),
+				dimStyle.Render(fmt.Sprintf("%d", e.Count)))
 			sb.WriteString(boxRow(row, innerW) + "\n")
 		}
 		sb.WriteString(boxBot(innerW) + "\n")

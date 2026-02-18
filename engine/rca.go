@@ -755,6 +755,23 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEn
 		groupsPassed++
 	}
 
+	// Group 7: Ephemeral port exhaustion
+	eph := curr.Global.EphemeralPorts
+	ephRange := eph.RangeHi - eph.RangeLo + 1
+	var ephPct float64
+	if ephRange > 0 {
+		ephPct = float64(eph.InUse) / float64(ephRange) * 100
+	}
+	ephPassed := ephPct > 50
+	r.Checks = append(r.Checks, model.EvidenceCheck{
+		Group: "Ephemeral", Label: "Ephemeral port pressure",
+		Passed: ephPassed,
+		Value:  fmt.Sprintf("%.0f%% (%d/%d)", ephPct, eph.InUse, ephRange),
+	})
+	if ephPassed {
+		groupsPassed++
+	}
+
 	r.EvidenceGroups = groupsPassed
 
 	// Weighted score
@@ -812,6 +829,9 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEn
 	}
 	if errorsPassed {
 		r.Evidence = append(r.Evidence, fmt.Sprintf("Network errors=%.0f/s", totalErrors))
+	}
+	if ephPassed {
+		r.Evidence = append(r.Evidence, fmt.Sprintf("Ephemeral ports=%.0f%% (%d/%d)", ephPct, eph.InUse, ephRange))
 	}
 
 	// Chain

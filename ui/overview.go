@@ -390,10 +390,33 @@ func extractSubsystems(snap *model.Snapshot, rates *model.RateSnapshot, result *
 		softIRQ = rates.CPUSoftIRQPct
 	}
 
+	// Ephemeral port pressure
+	eph := snap.Global.EphemeralPorts
+	ephStr := "OK"
+	if eph.RangeHi > 0 {
+		ephRange := eph.RangeHi - eph.RangeLo + 1
+		ephPct := float64(eph.InUse) / float64(ephRange) * 100
+		ephStr = fmt.Sprintf("%d/%d (%.0f%%)", eph.InUse, ephRange, ephPct)
+		if ephPct > 80 {
+			net.Status = "RED"
+			net.StatusStyle = critStyle
+		} else if ephPct > 50 && net.Status != "RED" {
+			net.Status = "YELLOW"
+			net.StatusStyle = warnStyle
+		}
+		// Also factor ephemeral into capacity
+		ephFree := 100 - ephPct
+		if ephFree < net.CapacityPct {
+			net.CapacityPct = ephFree
+			net.CapacityStr = fmt.Sprintf("%.1f%%", ephFree)
+		}
+	}
+
 	net.Details = []kv{
 		{"RX/TX", rxTx},
 		{"Drops", fmt.Sprintf("%.0f/s", totalDrops)},
 		{"Retransmits", fmt.Sprintf("%.0f/s", retransRate)},
+		{"Ephemeral", ephStr},
 		{"Conntrack", ctStr},
 		{"SoftIRQ load", fmt.Sprintf("%.1f%%", softIRQ)},
 	}

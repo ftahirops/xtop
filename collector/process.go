@@ -76,6 +76,9 @@ func readProcess(pid int) (model.ProcessMetrics, error) {
 	// Read cgroup
 	readProcCgroup(pidDir, &pm)
 
+	// Read FD count and limits
+	readProcFD(pidDir, &pm)
+
 	return pm, nil
 }
 
@@ -175,6 +178,31 @@ func readProcCgroup(pidDir string, pm *model.ProcessMetrics) {
 		if len(parts) == 3 {
 			pm.CgroupPath = parts[2]
 			return
+		}
+	}
+}
+
+func readProcFD(pidDir string, pm *model.ProcessMetrics) {
+	entries, err := os.ReadDir(filepath.Join(pidDir, "fd"))
+	if err != nil {
+		return
+	}
+	pm.FDCount = len(entries)
+
+	// Parse /proc/PID/limits for "Max open files" soft limit
+	lines, err := util.ReadFileLines(filepath.Join(pidDir, "limits"))
+	if err != nil {
+		return
+	}
+	for _, line := range lines {
+		if strings.HasPrefix(line, "Max open files") {
+			fields := strings.Fields(line)
+			// Format: "Max open files            1048576              1048576              files"
+			// The fields after splitting: ["Max", "open", "files", "SOFT", "HARD", "units"]
+			if len(fields) >= 4 {
+				pm.FDSoftLimit = util.ParseUint64(fields[3])
+			}
+			break
 		}
 	}
 }

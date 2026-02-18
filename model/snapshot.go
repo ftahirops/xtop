@@ -94,6 +94,9 @@ type NetRate struct {
 	SpeedMbps int    // -1 if unknown
 	Master    string // bridge/bond master name
 	IfType    string // "physical", "bridge", "bond", "veth", etc.
+
+	// Computed
+	UtilPct float64 // link utilization % ((RxMBs+TxMBs)*8*1024/SpeedMbps*100), -1 if unknown
 }
 
 // CgroupRate holds computed per-cgroup rates.
@@ -123,6 +126,9 @@ type ProcessRate struct {
 	RSS          uint64
 	VmSwap       uint64
 	NumThreads   int
+	FDCount      int
+	FDSoftLimit  uint64
+	FDPct        float64 // FDCount / FDSoftLimit * 100
 }
 
 // RateSnapshot holds all computed rates between two snapshots.

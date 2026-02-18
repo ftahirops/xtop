@@ -96,6 +96,19 @@ func ComputeCapacity(snap *model.Snapshot, rates *model.RateSnapshot) []model.Ca
 		})
 	}
 
+	// Ephemeral ports
+	eph := snap.Global.EphemeralPorts
+	ephRange := eph.RangeHi - eph.RangeLo + 1
+	if ephRange > 0 {
+		ephFree := 100 - float64(eph.InUse)/float64(ephRange)*100
+		caps = append(caps, model.Capacity{
+			Label:   "Ephemeral ports",
+			Pct:     ephFree,
+			Current: fmt.Sprintf("%d in use", eph.InUse),
+			Limit:   fmt.Sprintf("%d–%d (%d)", eph.RangeLo, eph.RangeHi, ephRange),
+		})
+	}
+
 	return caps
 }
 

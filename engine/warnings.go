@@ -117,7 +117,7 @@ func ComputeWarnings(snap *model.Snapshot, rates *model.RateSnapshot) []model.Wa
 		})
 	}
 
-	// Network drops
+	// Network drops and link utilization
 	for _, nr := range rates.NetRates {
 		totalDrops := nr.RxDropsPS + nr.TxDropsPS
 		if totalDrops > 0 {
@@ -126,6 +126,29 @@ func ComputeWarnings(snap *model.Snapshot, rates *model.RateSnapshot) []model.Wa
 				Signal:   fmt.Sprintf("%s drops", nr.Name),
 				Detail:   "Network drops",
 				Value:    fmt.Sprintf("%.0f/s", totalDrops),
+			})
+		}
+		if nr.UtilPct > 70 {
+			warns = append(warns, model.Warning{
+				Severity: severity(nr.UtilPct, 85, 95),
+				Signal:   fmt.Sprintf("%s util", nr.Name),
+				Detail:   "Link utilization high",
+				Value:    fmt.Sprintf("%.0f%% of %dMbps", nr.UtilPct, nr.SpeedMbps),
+			})
+		}
+	}
+
+	// Ephemeral port pressure
+	eph := snap.Global.EphemeralPorts
+	ephRange := eph.RangeHi - eph.RangeLo + 1
+	if ephRange > 0 {
+		ephPct := float64(eph.InUse) / float64(ephRange) * 100
+		if ephPct > 50 {
+			warns = append(warns, model.Warning{
+				Severity: severity(ephPct, 70, 90),
+				Signal:   "ephemeral ports",
+				Detail:   "Ephemeral port usage high",
+				Value:    fmt.Sprintf("%.0f%% (%d/%d)", ephPct, eph.InUse, ephRange),
 			})
 		}
 	}

@@ -12,12 +12,15 @@ import (
 
 // ProbeResults holds the aggregated output from all eBPF probe packs.
 type ProbeResults struct {
-	Duration   time.Duration
-	OffCPU     []OffCPUResult
-	IOLatency  []IOLatDeviceResult
-	LockWait   []LockWaitResult
-	TCPRetrans []TCPRetransResult
-	Errors     []string
+	Duration      time.Duration
+	OffCPU        []OffCPUResult
+	IOLatency     []IOLatDeviceResult
+	LockWait      []LockWaitResult
+	TCPRetrans    []TCPRetransResult
+	NetThroughput []NetThroughputResult
+	TCPRTT        []TCPRTTResult
+	TCPConnLat    []TCPConnLatResult
+	Errors        []string
 }
 
 // RunProbe attaches all available eBPF probes, collects data for the given
@@ -145,6 +148,101 @@ func RunProbe(duration time.Duration) (*ProbeResults, error) {
 				return nil
 			},
 			closer: tr.close,
+		})
+	}
+
+	// Attach net throughput
+	nt, err := attachNetThroughput()
+	if err != nil {
+		results.Errors = append(results.Errors, "netthroughput: "+err.Error())
+	} else {
+		packs = append(packs, packEntry{
+			name: "netthroughput",
+			reader: func() error {
+				r, err := nt.read()
+				if err != nil {
+					return err
+				}
+				// Filter self
+				filtered := r[:0]
+				for _, e := range r {
+					if e.PID != selfPID {
+						filtered = append(filtered, e)
+					}
+				}
+				sort.Slice(filtered, func(i, j int) bool {
+					return (filtered[i].TxBytes + filtered[i].RxBytes) > (filtered[j].TxBytes + filtered[j].RxBytes)
+				})
+				if len(filtered) > 10 {
+					filtered = filtered[:10]
+				}
+				results.NetThroughput = filtered
+				return nil
+			},
+			closer: nt.close,
+		})
+	}
+
+	// Attach TCP RTT
+	rtt, err := attachTCPRTT()
+	if err != nil {
+		results.Errors = append(results.Errors, "tcprtt: "+err.Error())
+	} else {
+		packs = append(packs, packEntry{
+			name: "tcprtt",
+			reader: func() error {
+				r, err := rtt.read()
+				if err != nil {
+					return err
+				}
+				// Sort by average RTT descending
+				sort.Slice(r, func(i, j int) bool {
+					avgI := float64(r[i].SumUs) / float64(r[i].Count)
+					avgJ := float64(r[j].SumUs) / float64(r[j].Count)
+					return avgI > avgJ
+				})
+				if len(r) > 10 {
+					r = r[:10]
+				}
+				results.TCPRTT = r
+				return nil
+			},
+			closer: rtt.close,
+		})
+	}
+
+	// Attach TCP connect latency
+	cl, err := attachTCPConnLat()
+	if err != nil {
+		results.Errors = append(results.Errors, "tcpconnlat: "+err.Error())
+	} else {
+		packs = append(packs, packEntry{
+			name: "tcpconnlat",
+			reader: func() error {
+				r, err := cl.read()
+				if err != nil {
+					return err
+				}
+				// Filter self
+				filtered := r[:0]
+				for _, e := range r {
+					if e.PID != selfPID {
+						filtered = append(filtered, e)
+					}
+				}
+				// Sort by average latency descending
+				sort.Slice(filtered, func(i, j int) bool {
+					avgI := float64(filtered[i].TotalNs) / float64(filtered[i].Count)
+					avgJ := float64(filtered[j].TotalNs) / float64(filtered[j].Count)
+					return avgI > avgJ
+				})
+				if len(filtered) > 10 {
+					filtered = filtered[:10]
+				}
+				results.TCPConnLat = filtered
+				return nil
+			},
+			closer: cl.close,
 		})
 	}
 

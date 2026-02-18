@@ -42,10 +42,13 @@ func Detect() ProbeCapability {
 	}
 
 	checks := map[string][]string{
-		"offcpu":     {"sched/sched_switch"},
-		"iolatency":  {"block/block_rq_issue", "block/block_rq_complete"},
-		"lockwait":   {"syscalls/sys_enter_futex", "syscalls/sys_exit_futex"},
-		"tcpretrans": {"tcp/tcp_retransmit_skb"},
+		"offcpu":        {"sched/sched_switch"},
+		"iolatency":     {"block/block_rq_issue", "block/block_rq_complete"},
+		"lockwait":      {"syscalls/sys_enter_futex", "syscalls/sys_exit_futex"},
+		"tcpretrans":    {"tcp/tcp_retransmit_skb"},
+		"netthroughput": {}, // kprobes — always available with BTF
+		"tcprtt":        {}, // kprobe — always available with BTF
+		"tcpconnlat":    {"sock/inet_sock_set_state"},
 	}
 
 	for pack, tps := range checks {
