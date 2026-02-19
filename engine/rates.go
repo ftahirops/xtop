@@ -64,8 +64,8 @@ func computeMemRates(prev, curr *model.Snapshot, dt time.Duration, r *model.Rate
 	pv := prev.Global.VMStat
 	cv := curr.Global.VMStat
 	// Swap rates in pages/s, convert to approx MB/s (4KB pages)
-	r.SwapInRate = util.Rate(pv.PswpIn, cv.PswpIn, dt) * 4 / 1024
-	r.SwapOutRate = util.Rate(pv.PswpOut, cv.PswpOut, dt) * 4 / 1024
+	r.SwapInRate = util.Rate(pv.PswpIn, cv.PswpIn, dt) * (4.0 / 1024.0)
+	r.SwapOutRate = util.Rate(pv.PswpOut, cv.PswpOut, dt) * (4.0 / 1024.0)
 	r.PgFaultRate = util.Rate(pv.PgFault, cv.PgFault, dt)
 	r.MajFaultRate = util.Rate(pv.PgMajFault, cv.PgMajFault, dt)
 	r.DirectReclaimRate = util.Rate(pv.PgScanDirect, cv.PgScanDirect, dt)
@@ -125,14 +125,19 @@ func computeMountRates(prev, curr *model.Snapshot, dt time.Duration, r *model.Ra
 
 	for _, m := range curr.Global.Mounts {
 		var usedPct, freePct, inodeUsedPct float64
-		if m.TotalBytes > 0 {
+		if m.TotalBytes > 0 && m.FreeBytes >= m.AvailBytes {
 			// Match df: usable = total - reserved; used% = used / usable
 			// Reserved blocks = Bfree - Bavail (space only root can use)
-			usable := m.TotalBytes - (m.FreeBytes - m.AvailBytes)
-			if usable > 0 {
+			reserved := m.FreeBytes - m.AvailBytes
+			if m.TotalBytes > reserved {
+				usable := m.TotalBytes - reserved
 				usedPct = float64(m.UsedBytes) / float64(usable) * 100
+				freePct = float64(m.AvailBytes) / float64(usable) * 100
 			}
-			freePct = float64(m.AvailBytes) / float64(usable) * 100
+		} else if m.TotalBytes > 0 {
+			// Fallback: AvailBytes > FreeBytes (unusual fs) — use simple math
+			usedPct = float64(m.UsedBytes) / float64(m.TotalBytes) * 100
+			freePct = float64(m.FreeBytes) / float64(m.TotalBytes) * 100
 		}
 		if m.TotalInodes > 0 {
 			inodeUsedPct = float64(m.UsedInodes) / float64(m.TotalInodes) * 100

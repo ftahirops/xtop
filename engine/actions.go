@@ -53,13 +53,13 @@ func SuggestActions(result *model.AnalysisResult) []model.Action {
 				}
 			}
 		}
-		if result.PrimaryCulprit != "" {
+		if result.PrimaryCulprit != "" && !strings.Contains(result.PrimaryCulprit, "..") {
 			actions = append(actions,
 				model.Action{Summary: fmt.Sprintf("Inspect IO limits for %s", cleanCgroupName(result.PrimaryCulprit)),
 					Command: "cat " + path.Join("/sys/fs/cgroup", result.PrimaryCulprit, "io.max")},
 			)
 		}
-		if result.PrimaryProcess != "" {
+		if result.PrimaryProcess != "" && result.PrimaryPID > 1 {
 			actions = append(actions,
 				model.Action{Summary: fmt.Sprintf("Check what %s is writing", result.PrimaryProcess),
 					Command: fmt.Sprintf("ls -la /proc/%d/fd/ 2>/dev/null | head -30", result.PrimaryPID)},
@@ -92,7 +92,7 @@ func SuggestActions(result *model.AnalysisResult) []model.Action {
 				}
 			}
 		}
-		if result.PrimaryCulprit != "" {
+		if result.PrimaryCulprit != "" && !strings.Contains(result.PrimaryCulprit, "..") {
 			actions = append(actions,
 				model.Action{Summary: fmt.Sprintf("Check memory limit for %s", cleanCgroupName(result.PrimaryCulprit)),
 					Command: "cat " + path.Join("/sys/fs/cgroup", result.PrimaryCulprit, "memory.max")},
@@ -124,7 +124,7 @@ func SuggestActions(result *model.AnalysisResult) []model.Action {
 				}
 			}
 		}
-		if result.PrimaryCulprit != "" {
+		if result.PrimaryCulprit != "" && !strings.Contains(result.PrimaryCulprit, "..") {
 			actions = append(actions,
 				model.Action{Summary: fmt.Sprintf("Check CPU quota for %s", cleanCgroupName(result.PrimaryCulprit)),
 					Command: "cat " + path.Join("/sys/fs/cgroup", result.PrimaryCulprit, "cpu.max")},

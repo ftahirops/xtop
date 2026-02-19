@@ -58,6 +58,13 @@ func (e *Engine) Tick() (*model.Snapshot, *model.RateSnapshot, *model.AnalysisRe
 		rates = &r
 		e.History.PushRate(r)
 		result = AnalyzeRCA(snap, rates, e.History)
+
+		// Trigger disk scanners when filesystem pressure detected
+		worst := WorstDiskGuardState(r.MountRates)
+		if worst == "WARN" || worst == "CRIT" {
+			e.registry.TriggerByName("bigfiles")
+			e.registry.TriggerByName("deleted_open")
+		}
 	}
 
 	return snap, rates, result

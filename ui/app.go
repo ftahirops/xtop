@@ -53,6 +53,32 @@ type frozenProc struct {
 	Comm      string
 	WritePath string
 	FrozenAt  time.Time
+	StartTime string // /proc/PID/stat field 22 — unique per PID lifecycle
+}
+
+// readProcStartTime reads field 22 (starttime) from /proc/PID/stat.
+// Returns empty string on error. Used to detect PID reuse.
+func readProcStartTime(pid int) string {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return ""
+	}
+	content := string(data)
+	closeIdx := strings.LastIndex(content, ")")
+	if closeIdx < 0 || closeIdx+2 >= len(content) {
+		return ""
+	}
+	fields := strings.Fields(content[closeIdx+2:])
+	if len(fields) < 20 {
+		return ""
+	}
+	return fields[19] // field 22 = starttime (0-indexed after comm: index 19)
+}
+
+// verifyFrozenPID checks that a frozen PID still belongs to the same process.
+func verifyFrozenPID(pid int, fp frozenProc) bool {
+	st := readProcStartTime(pid)
+	return st != "" && st == fp.StartTime
 }
 
 // Model is the bubbletea model.
@@ -339,18 +365,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if len(procs) > 0 && procs[0].WriteMBs > 0.1 {
 					pid := procs[0].PID
 					comm := procs[0].Comm
-					path := procs[0].WritePath
-					err := syscall.Kill(pid, syscall.SIGKILL)
-					if err != nil {
-						m.diskGuardMsg = fmt.Sprintf("Failed to kill PID %d (%s): %v", pid, comm, err)
+					wp := procs[0].WritePath
+					// Verify PID identity before killing
+					st := readProcStartTime(pid)
+					if st == "" {
+						m.diskGuardMsg = fmt.Sprintf("PID %d no longer exists", pid)
 					} else {
-						if path != "" {
-							m.diskGuardMsg = fmt.Sprintf("KILLED PID %d (%s) — was writing to %s", pid, comm, path)
+						err := syscall.Kill(pid, syscall.SIGKILL)
+						if err != nil {
+							m.diskGuardMsg = fmt.Sprintf("Failed to kill PID %d (%s): %v", pid, comm, err)
 						} else {
-							m.diskGuardMsg = fmt.Sprintf("KILLED PID %d (%s)", pid, comm)
+							if wp != "" {
+								m.diskGuardMsg = fmt.Sprintf("KILLED PID %d (%s) — was writing to %s", pid, comm, wp)
+							} else {
+								m.diskGuardMsg = fmt.Sprintf("KILLED PID %d (%s)", pid, comm)
+							}
 						}
-						delete(m.frozenPIDs, pid) // remove from frozen if was frozen
 					}
+					delete(m.frozenPIDs, pid)
 					m.diskGuardMsgT = time.Now()
 				} else {
 					m.diskGuardMsg = "No active writer to kill"
@@ -370,6 +402,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if _, already := m.frozenPIDs[pid]; already {
 						m.diskGuardMsg = fmt.Sprintf("PID %d (%s) already frozen", pid, procs[0].Comm)
 					} else {
+						st := readProcStartTime(pid)
 						err := syscall.Kill(pid, syscall.SIGSTOP)
 						if err != nil {
 							m.diskGuardMsg = fmt.Sprintf("Failed to freeze PID %d: %v", pid, err)
@@ -378,6 +411,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 								Comm:      procs[0].Comm,
 								WritePath: procs[0].WritePath,
 								FrozenAt:  time.Now(),
+								StartTime: st,
 							}
 							m.diskGuardMsg = fmt.Sprintf("FROZEN PID %d (%s) — writing paused", pid, procs[0].Comm)
 						}
@@ -386,15 +420,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case "r", "R":
-			// Resume all frozen processes
+			// Resume all frozen processes (verify PID identity first)
 			if m.page == PageDiskGuard && len(m.frozenPIDs) > 0 {
 				resumed := 0
 				for pid, fp := range m.frozenPIDs {
-					err := syscall.Kill(pid, syscall.SIGCONT)
-					if err == nil {
-						resumed++
+					if verifyFrozenPID(pid, fp) {
+						if err := syscall.Kill(pid, syscall.SIGCONT); err == nil {
+							resumed++
+						}
 					}
-					_ = fp
 					delete(m.frozenPIDs, pid)
 				}
 				m.diskGuardMsg = fmt.Sprintf("RESUMED %d frozen process(es)", resumed)
@@ -769,7 +803,6 @@ func (m *Model) diskGuardContain() {
 
 	// Contain mode: auto-freeze top writers when CRIT
 	if m.diskGuardMode == "Contain" && worst == "CRIT" {
-		// Find top writers not already frozen
 		procs := make([]model.ProcessRate, len(m.rates.ProcessRates))
 		copy(procs, m.rates.ProcessRates)
 		sort.Slice(procs, func(i, j int) bool {
@@ -778,17 +811,19 @@ func (m *Model) diskGuardContain() {
 
 		for _, p := range procs {
 			if p.WriteMBs < 0.5 {
-				break // only freeze significant writers
+				break
 			}
 			if _, already := m.frozenPIDs[p.PID]; already {
 				continue
 			}
+			st := readProcStartTime(p.PID)
 			err := syscall.Kill(p.PID, syscall.SIGSTOP)
 			if err == nil {
 				m.frozenPIDs[p.PID] = frozenProc{
 					Comm:      p.Comm,
 					WritePath: p.WritePath,
 					FrozenAt:  time.Now(),
+					StartTime: st,
 				}
 				m.diskGuardMsg = fmt.Sprintf("AUTO-FROZEN PID %d (%s) — disk CRIT, writing paused", p.PID, p.Comm)
 				m.diskGuardMsgT = time.Now()
@@ -796,12 +831,14 @@ func (m *Model) diskGuardContain() {
 		}
 	}
 
-	// Auto-resume when disk drops to OK (any mode)
+	// Auto-resume when disk drops to OK (any mode) — verify PID identity
 	if worst == "OK" && len(m.frozenPIDs) > 0 {
 		resumed := 0
-		for pid := range m.frozenPIDs {
-			if err := syscall.Kill(pid, syscall.SIGCONT); err == nil {
-				resumed++
+		for pid, fp := range m.frozenPIDs {
+			if verifyFrozenPID(pid, fp) {
+				if err := syscall.Kill(pid, syscall.SIGCONT); err == nil {
+					resumed++
+				}
 			}
 			delete(m.frozenPIDs, pid)
 		}
@@ -811,9 +848,9 @@ func (m *Model) diskGuardContain() {
 		}
 	}
 
-	// Clean up dead PIDs from frozen map
-	for pid := range m.frozenPIDs {
-		if err := syscall.Kill(pid, 0); err != nil {
+	// Clean up dead or reused PIDs from frozen map
+	for pid, fp := range m.frozenPIDs {
+		if !verifyFrozenPID(pid, fp) {
 			delete(m.frozenPIDs, pid)
 		}
 	}

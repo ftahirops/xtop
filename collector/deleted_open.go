@@ -6,18 +6,47 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/ftahirops/xtop/model"
 )
 
 // DeletedOpenCollector scans /proc/*/fd/* for deleted-but-open files.
+// Time-gated: rescans every 30 seconds or when triggered by disk pressure.
 type DeletedOpenCollector struct {
-	MaxFiles int // max results to return
+	MaxFiles int
+
+	mu        sync.Mutex
+	cache     []model.DeletedOpenFile
+	lastScan  time.Time
+	triggered bool
 }
+
+const deletedOpenScanInterval = 30 * time.Second
 
 func (d *DeletedOpenCollector) Name() string { return "deleted_open" }
 
+// Trigger forces a rescan on the next Collect call.
+func (d *DeletedOpenCollector) Trigger() {
+	d.mu.Lock()
+	d.triggered = true
+	d.mu.Unlock()
+}
+
 func (d *DeletedOpenCollector) Collect(snap *model.Snapshot) error {
+	d.mu.Lock()
+	needScan := d.triggered || time.Since(d.lastScan) >= deletedOpenScanInterval
+	d.triggered = false
+	d.mu.Unlock()
+
+	if !needScan {
+		d.mu.Lock()
+		snap.Global.DeletedOpen = d.cache
+		d.mu.Unlock()
+		return nil
+	}
+
 	maxFiles := d.MaxFiles
 	if maxFiles <= 0 {
 		maxFiles = 20
@@ -69,7 +98,6 @@ func (d *DeletedOpenCollector) Collect(snap *model.Snapshot) error {
 				continue
 			}
 
-			// Get size from stat on the fd
 			var sizeBytes uint64
 			info, err := os.Stat(linkPath)
 			if err == nil {
@@ -86,7 +114,6 @@ func (d *DeletedOpenCollector) Collect(snap *model.Snapshot) error {
 		}
 	}
 
-	// Sort by size descending
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].SizeBytes > results[j].SizeBytes
 	})
@@ -94,6 +121,11 @@ func (d *DeletedOpenCollector) Collect(snap *model.Snapshot) error {
 	if len(results) > maxFiles {
 		results = results[:maxFiles]
 	}
+
+	d.mu.Lock()
+	d.cache = results
+	d.lastScan = time.Now()
+	d.mu.Unlock()
 
 	snap.Global.DeletedOpen = results
 	return nil

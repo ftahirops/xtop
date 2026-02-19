@@ -8,9 +8,25 @@ type Collector interface {
 	Collect(snap *model.Snapshot) error
 }
 
+// Triggerable is a collector that supports on-demand rescans.
+type Triggerable interface {
+	Trigger()
+}
+
 // Registry holds all registered collectors.
 type Registry struct {
 	collectors []Collector
+}
+
+// TriggerByName triggers a rescan on a named collector if it supports Triggerable.
+func (r *Registry) TriggerByName(name string) {
+	for _, c := range r.collectors {
+		if c.Name() == name {
+			if t, ok := c.(Triggerable); ok {
+				t.Trigger()
+			}
+		}
+	}
 }
 
 // NewRegistry creates a registry with all default collectors.

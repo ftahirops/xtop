@@ -134,20 +134,24 @@ func readProcStat(pidDir string, pm *model.ProcessMetrics) error {
 	}
 
 	pm.Comm = content[openIdx+1 : closeIdx]
-	rest := strings.Fields(content[closeIdx+2:]) // skip ") "
-
-	if len(rest) < 40 {
+	if closeIdx+2 >= len(content) {
 		return fmt.Errorf("stat too short")
 	}
+	rest := strings.Fields(content[closeIdx+2:]) // skip ") "
 
+	if len(rest) < 37 {
+		return fmt.Errorf("stat too short: %d fields", len(rest))
+	}
+
+	// Fields after "(comm) ": 0=state 1=ppid 7=minflt 9=majflt 11=utime 12=stime 17=threads 36=processor
 	pm.State = rest[0]
 	pm.PPID = util.ParseInt(rest[1])
+	pm.MinFault = util.ParseUint64(rest[7])
+	pm.MajFault = util.ParseUint64(rest[9])
 	pm.UTime = util.ParseUint64(rest[11])
 	pm.STime = util.ParseUint64(rest[12])
 	pm.NumThreads = util.ParseInt(rest[17])
 	pm.Processor = util.ParseInt(rest[36])
-	pm.MinFault = util.ParseUint64(rest[7])
-	pm.MajFault = util.ParseUint64(rest[9])
 
 	return nil
 }

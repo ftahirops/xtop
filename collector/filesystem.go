@@ -31,8 +31,12 @@ func (f *FilesystemCollector) Collect(snap *model.Snapshot) error {
 
 	seen := make(map[string]bool) // deduplicate by device
 	var mounts []model.MountStats
+	const maxMounts = 128 // prevent runaway on systems with thousands of bind mounts
 
 	for _, line := range lines {
+		if len(mounts) >= maxMounts {
+			break
+		}
 		fields := strings.Fields(line)
 		if len(fields) < 3 {
 			continue
