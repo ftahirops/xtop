@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -26,10 +28,11 @@ const (
 	PageEvents
 	PageProbe
 	PageThresholds
+	PageDiskGuard
 	pageCount
 )
 
-var pageNames = []string{"Overview", "CPU", "Memory", "IO", "Network", "CGroups", "Timeline", "Events", "Probe", "Thresholds"}
+var pageNames = []string{"Overview", "CPU", "Memory", "IO", "Network", "CGroups", "Timeline", "Events", "Probe", "Thresholds", "DiskGuard"}
 
 type tickMsg time.Time
 
@@ -43,6 +46,13 @@ type collectMsg struct {
 type saveConfirmMsg struct {
 	path string
 	err  error
+}
+
+// frozenProc tracks a process frozen by Contain mode.
+type frozenProc struct {
+	Comm      string
+	WritePath string
+	FrozenAt  time.Time
 }
 
 // Model is the bubbletea model.
@@ -82,6 +92,12 @@ type Model struct {
 
 	// Probe state
 	probeManager *engine.ProbeManager
+
+	// DiskGuard mode
+	diskGuardMode  string
+	diskGuardMsg   string    // action feedback message
+	diskGuardMsgT  time.Time // when message was set
+	frozenPIDs     map[int]frozenProc // PIDs frozen by Contain mode
 }
 
 // NewModel creates a new TUI model.
@@ -109,6 +125,8 @@ func NewModel(eng *engine.Engine, interval time.Duration, dataDir string) Model 
 		eventDetector: detector,
 		layoutMode:    layout,
 		probeManager:  engine.NewProbeManager(),
+		diskGuardMode: "Monitor",
+		frozenPIDs:    make(map[int]frozenProc),
 	}
 }
 
@@ -288,6 +306,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			active, completed := m.eventDetector.AllEvents()
 			return m, exportIncidentMarkdown(m.snap, m.rates, m.result, active, completed)
 		case "D":
+			m.page = PageDiskGuard
+			m.scroll = 0
+		case "ctrl+d":
 			// Set current layout as default
 			if err := saveDefaultLayout(m.layoutMode); err != nil {
 				m.saveMsg = fmt.Sprintf("Config error: %v", err)
@@ -295,6 +316,90 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.saveMsg = fmt.Sprintf("Default layout set: %s", m.layoutMode)
 			}
 			m.saveMsgTime = time.Now()
+		case "m", "M":
+			// Cycle DiskGuard mode (only on DiskGuard page)
+			if m.page == PageDiskGuard {
+				switch m.diskGuardMode {
+				case "Monitor":
+					m.diskGuardMode = "Contain"
+				case "Contain":
+					m.diskGuardMode = "Action"
+				default:
+					m.diskGuardMode = "Monitor"
+				}
+			}
+		case "x", "X":
+			// Action mode: kill top writer (only on DiskGuard page in Action mode)
+			if m.page == PageDiskGuard && m.diskGuardMode == "Action" && m.rates != nil {
+				procs := make([]model.ProcessRate, len(m.rates.ProcessRates))
+				copy(procs, m.rates.ProcessRates)
+				sort.Slice(procs, func(i, j int) bool {
+					return procs[i].WriteMBs > procs[j].WriteMBs
+				})
+				if len(procs) > 0 && procs[0].WriteMBs > 0.1 {
+					pid := procs[0].PID
+					comm := procs[0].Comm
+					path := procs[0].WritePath
+					err := syscall.Kill(pid, syscall.SIGKILL)
+					if err != nil {
+						m.diskGuardMsg = fmt.Sprintf("Failed to kill PID %d (%s): %v", pid, comm, err)
+					} else {
+						if path != "" {
+							m.diskGuardMsg = fmt.Sprintf("KILLED PID %d (%s) — was writing to %s", pid, comm, path)
+						} else {
+							m.diskGuardMsg = fmt.Sprintf("KILLED PID %d (%s)", pid, comm)
+						}
+						delete(m.frozenPIDs, pid) // remove from frozen if was frozen
+					}
+					m.diskGuardMsgT = time.Now()
+				} else {
+					m.diskGuardMsg = "No active writer to kill"
+					m.diskGuardMsgT = time.Now()
+				}
+			}
+		case "f", "F":
+			// Contain/Action mode: manually freeze top writer
+			if m.page == PageDiskGuard && (m.diskGuardMode == "Contain" || m.diskGuardMode == "Action") && m.rates != nil {
+				procs := make([]model.ProcessRate, len(m.rates.ProcessRates))
+				copy(procs, m.rates.ProcessRates)
+				sort.Slice(procs, func(i, j int) bool {
+					return procs[i].WriteMBs > procs[j].WriteMBs
+				})
+				if len(procs) > 0 && procs[0].WriteMBs > 0.1 {
+					pid := procs[0].PID
+					if _, already := m.frozenPIDs[pid]; already {
+						m.diskGuardMsg = fmt.Sprintf("PID %d (%s) already frozen", pid, procs[0].Comm)
+					} else {
+						err := syscall.Kill(pid, syscall.SIGSTOP)
+						if err != nil {
+							m.diskGuardMsg = fmt.Sprintf("Failed to freeze PID %d: %v", pid, err)
+						} else {
+							m.frozenPIDs[pid] = frozenProc{
+								Comm:      procs[0].Comm,
+								WritePath: procs[0].WritePath,
+								FrozenAt:  time.Now(),
+							}
+							m.diskGuardMsg = fmt.Sprintf("FROZEN PID %d (%s) — writing paused", pid, procs[0].Comm)
+						}
+					}
+					m.diskGuardMsgT = time.Now()
+				}
+			}
+		case "r", "R":
+			// Resume all frozen processes
+			if m.page == PageDiskGuard && len(m.frozenPIDs) > 0 {
+				resumed := 0
+				for pid, fp := range m.frozenPIDs {
+					err := syscall.Kill(pid, syscall.SIGCONT)
+					if err == nil {
+						resumed++
+					}
+					_ = fp
+					delete(m.frozenPIDs, pid)
+				}
+				m.diskGuardMsg = fmt.Sprintf("RESUMED %d frozen process(es)", resumed)
+				m.diskGuardMsgT = time.Now()
+			}
 		}
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -313,6 +418,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.eventDetector.Process(msg.snap, msg.rates, msg.result)
 			// Check probe state transitions
 			m.probeManager.Tick()
+			// DiskGuard Contain mode: auto-freeze top writers when CRIT
+			m.diskGuardContain()
 		}
 	case saveConfirmMsg:
 		if msg.err != nil {
@@ -361,6 +468,12 @@ func (m Model) View() string {
 		content = renderProbePage(m.probeManager, m.width, m.height)
 	case PageThresholds:
 		content = renderThresholdsPage(m.snap, m.rates, m.result, m.width, m.height)
+	case PageDiskGuard:
+		dgMsg := ""
+		if time.Since(m.diskGuardMsgT) < 10*time.Second {
+			dgMsg = m.diskGuardMsg
+		}
+		content = renderDiskGuardPage(m.snap, m.rates, m.result, m.probeManager, m.diskGuardMode, dgMsg, m.frozenPIDs, m.width, m.height)
 	}
 
 	// Apply scroll
@@ -382,10 +495,14 @@ func (m Model) renderStatusBar() string {
 	// Page tabs
 	var tabs []string
 	for i, name := range pageNames {
+		label := fmt.Sprintf("%d:%s", i, name)
+		if Page(i) == PageDiskGuard {
+			label = "D:" + name
+		}
 		if Page(i) == m.page {
-			tabs = append(tabs, headerStyle.Render(fmt.Sprintf("[%d:%s]", i, name)))
+			tabs = append(tabs, headerStyle.Render("["+label+"]"))
 		} else {
-			tabs = append(tabs, dimStyle.Render(fmt.Sprintf(" %d:%s ", i, name)))
+			tabs = append(tabs, dimStyle.Render(" "+label+" "))
 		}
 	}
 	left := strings.Join(tabs, "")
@@ -405,7 +522,7 @@ func (m Model) renderStatusBar() string {
 		left += "  " + dimStyle.Render(fmt.Sprintf("[%s]", m.layoutMode))
 	}
 
-	help := helpStyle.Render("I:investigate  E:export  v:layout  a:pause  S:save  ?:help  q:quit")
+	help := helpStyle.Render("D:disk  I:investigate  E:export  v:layout  a:pause  S:save  ?:help  q:quit")
 
 	gap := m.width - len(stripAnsi(left)) - len(stripAnsi(help))
 	if gap < 1 {
@@ -441,6 +558,8 @@ func bottleneckToPage(bneck string) Page {
 		return PageCPU
 	case strings.Contains(bneck, "Memory"):
 		return PageMemory
+	case strings.Contains(bneck, "Filesystem"), strings.Contains(bneck, "Disk Space"):
+		return PageDiskGuard
 	case strings.Contains(bneck, "IO"), strings.Contains(bneck, "Disk"):
 		return PageIO
 	case strings.Contains(bneck, "Network"), strings.Contains(bneck, "Net"):
@@ -602,7 +721,8 @@ func (m Model) renderHelp() string {
 	sb.WriteString(headerStyle.Render("Controls"))
 	sb.WriteString("\n")
 	sb.WriteString("  v/V       Cycle overview layout (F1-F4 for direct)\n")
-	sb.WriteString("  D         Set current layout as default\n")
+	sb.WriteString("  D         DiskGuard page (filesystem space monitor)\n")
+	sb.WriteString("  Ctrl+D    Set current layout as default\n")
 	sb.WriteString("  a         Toggle auto-refresh (pause/resume)\n")
 	sb.WriteString("  I         Start eBPF probe investigation (auto-detect)\n")
 	sb.WriteString("  S         Save RCA snapshot to JSON file\n")
@@ -633,7 +753,68 @@ func (m Model) renderHelp() string {
 	sb.WriteString("  Events     Detected incidents with RCA detail\n")
 	sb.WriteString("  Probe      eBPF investigation (off-CPU/IO latency/locks/retrans)\n")
 	sb.WriteString("  Thresholds All metrics with thresholds, limits, and scoring rules\n")
+	sb.WriteString("  DiskGuard  Filesystem monitor: growth, ETA, big files, writers\n")
 	sb.WriteString("\n")
 	sb.WriteString(helpStyle.Render("Press any key to close"))
 	return sb.String()
+}
+
+// diskGuardContain handles automatic freeze/resume in Contain mode.
+func (m *Model) diskGuardContain() {
+	if m.result == nil || m.rates == nil {
+		return
+	}
+
+	worst := m.result.DiskGuardWorst
+
+	// Contain mode: auto-freeze top writers when CRIT
+	if m.diskGuardMode == "Contain" && worst == "CRIT" {
+		// Find top writers not already frozen
+		procs := make([]model.ProcessRate, len(m.rates.ProcessRates))
+		copy(procs, m.rates.ProcessRates)
+		sort.Slice(procs, func(i, j int) bool {
+			return procs[i].WriteMBs > procs[j].WriteMBs
+		})
+
+		for _, p := range procs {
+			if p.WriteMBs < 0.5 {
+				break // only freeze significant writers
+			}
+			if _, already := m.frozenPIDs[p.PID]; already {
+				continue
+			}
+			err := syscall.Kill(p.PID, syscall.SIGSTOP)
+			if err == nil {
+				m.frozenPIDs[p.PID] = frozenProc{
+					Comm:      p.Comm,
+					WritePath: p.WritePath,
+					FrozenAt:  time.Now(),
+				}
+				m.diskGuardMsg = fmt.Sprintf("AUTO-FROZEN PID %d (%s) — disk CRIT, writing paused", p.PID, p.Comm)
+				m.diskGuardMsgT = time.Now()
+			}
+		}
+	}
+
+	// Auto-resume when disk drops to OK (any mode)
+	if worst == "OK" && len(m.frozenPIDs) > 0 {
+		resumed := 0
+		for pid := range m.frozenPIDs {
+			if err := syscall.Kill(pid, syscall.SIGCONT); err == nil {
+				resumed++
+			}
+			delete(m.frozenPIDs, pid)
+		}
+		if resumed > 0 {
+			m.diskGuardMsg = fmt.Sprintf("AUTO-RESUMED %d process(es) — disk OK", resumed)
+			m.diskGuardMsgT = time.Now()
+		}
+	}
+
+	// Clean up dead PIDs from frozen map
+	for pid := range m.frozenPIDs {
+		if err := syscall.Kill(pid, 0); err != nil {
+			delete(m.frozenPIDs, pid)
+		}
+	}
 }

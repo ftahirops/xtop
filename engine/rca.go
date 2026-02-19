@@ -69,6 +69,13 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History) 
 		result.Confidence = 95
 	}
 
+	// DiskGuard state
+	if rates != nil && len(rates.MountRates) > 0 {
+		result.DiskGuardMounts = rates.MountRates
+		result.DiskGuardWorst = WorstDiskGuardState(rates.MountRates)
+	}
+	result.DiskGuardMode = "Monitor"
+
 	// Capacity
 	result.Capacities = ComputeCapacity(curr, rates)
 
@@ -224,6 +231,31 @@ func analyzeIO(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEntry {
 		groupsPassed++
 	}
 
+	// Group 5: Filesystem full
+	var worstFreePct float64 = 100
+	var worstMount string
+	if rates != nil {
+		for _, mr := range rates.MountRates {
+			if mr.FreePct < worstFreePct {
+				worstFreePct = mr.FreePct
+				worstMount = mr.MountPoint
+			}
+		}
+	}
+	fsFull := worstFreePct < 15
+	fsVal := "all OK"
+	if worstMount != "" {
+		fsVal = fmt.Sprintf("%s %.0f%% free", worstMount, worstFreePct)
+	}
+	r.Checks = append(r.Checks, model.EvidenceCheck{
+		Group: "FSFull", Label: "Filesystem space low",
+		Passed: fsFull,
+		Value:  fsVal,
+	})
+	if fsFull {
+		groupsPassed++
+	}
+
 	r.EvidenceGroups = groupsPassed
 
 	// Compute weighted score
@@ -232,6 +264,11 @@ func analyzeIO(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEntry {
 		15*clamp(float64(dCount), 10) +
 		15*clamp(worstAwait, 50) +
 		10*clamp(worstUtil, 95)
+
+	// Filesystem full contributes to IO bottleneck
+	if fsFull {
+		score += 10 * clamp(100-worstFreePct, 90)
+	}
 
 	r.Score = int(score)
 
@@ -267,6 +304,9 @@ func analyzeIO(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEntry {
 	}
 	if dirtyPct > 5 {
 		r.Evidence = append(r.Evidence, fmt.Sprintf("Dirty=%.1f%% of RAM (%s)", dirtyPct, formatB(mem.Dirty)))
+	}
+	if fsFull {
+		r.Evidence = append(r.Evidence, fmt.Sprintf("%s %.0f%% full (%.0f%% free)", worstMount, 100-worstFreePct, worstFreePct))
 	}
 
 	// Chain

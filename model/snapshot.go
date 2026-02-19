@@ -65,6 +65,23 @@ type Owner struct {
 	Value   string
 }
 
+// MountRate holds computed per-filesystem rates.
+type MountRate struct {
+	MountPoint        string
+	Device            string
+	FSType            string
+	TotalBytes        uint64
+	UsedPct           float64
+	FreePct           float64
+	FreeBytes         uint64
+	InodeUsedPct      float64
+	GrowthBytesPerSec float64   // EWMA-smoothed
+	PrevGrowthBPS     float64   // previous tick's smoothed rate (for trend detection)
+	ETASeconds        float64   // seconds until full (-1 = not growing)
+	GrowthStarted     time.Time // when sustained growth first detected
+	State             string    // "OK", "WARN", "CRIT"
+}
+
 // DiskRate holds computed per-device rates.
 type DiskRate struct {
 	Name         string
@@ -130,6 +147,7 @@ type ProcessRate struct {
 	FDCount      int
 	FDSoftLimit  uint64
 	FDPct        float64 // FDCount / FDSoftLimit * 100
+	WritePath    string  // primary file being written to (resolved from /proc/PID/fd)
 }
 
 // RateSnapshot holds all computed rates between two snapshots.
@@ -158,7 +176,8 @@ type RateSnapshot struct {
 	KswapdRate      float64
 
 	// Disks
-	DiskRates []DiskRate
+	DiskRates  []DiskRate
+	MountRates []MountRate
 
 	// Network
 	NetRates     []NetRate
@@ -238,6 +257,11 @@ type AnalysisResult struct {
 
 	// Slow degradation warnings
 	Degradations []DegradationWarning
+
+	// DiskGuard
+	DiskGuardMounts []MountRate
+	DiskGuardWorst  string // worst state across all mounts: "OK", "WARN", "CRIT"
+	DiskGuardMode   string // "Monitor", "Contain", "Action"
 }
 
 // MetricChange represents a notable metric delta for the "what changed?" engine.

@@ -4,7 +4,7 @@ Section: admin
 Priority: optional
 Architecture: amd64
 Depends: libc6
-Installed-Size: 5708
+Installed-Size: 5728
 Maintainer: Farhan Tahir <farhan.003@gmail.com>
 Homepage: https://github.com/ftahirops/xtop
 Description: Incident-first root-cause analysis console for Linux

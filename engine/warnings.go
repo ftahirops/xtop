@@ -66,6 +66,39 @@ func ComputeWarnings(snap *model.Snapshot, rates *model.RateSnapshot) []model.Wa
 		}
 	}
 
+	// Filesystem space
+	for _, mr := range rates.MountRates {
+		if mr.FreePct < 15 {
+			warns = append(warns, model.Warning{
+				Severity: severity(100-mr.FreePct, 85, 95),
+				Signal:   fmt.Sprintf("FS %s", mr.MountPoint),
+				Detail:   "Filesystem space low",
+				Value:    fmt.Sprintf("%.0f%% used (%.0f%% free)", mr.UsedPct, mr.FreePct),
+			})
+		}
+		if mr.ETASeconds > 0 && mr.ETASeconds < 7200 {
+			etaMin := mr.ETASeconds / 60
+			sev := "warn"
+			if mr.ETASeconds < 1800 {
+				sev = "crit"
+			}
+			warns = append(warns, model.Warning{
+				Severity: sev,
+				Signal:   fmt.Sprintf("FS ETA %s", mr.MountPoint),
+				Detail:   "Filesystem filling",
+				Value:    fmt.Sprintf("ETA %.0fm", etaMin),
+			})
+		}
+		if mr.InodeUsedPct > 80 {
+			warns = append(warns, model.Warning{
+				Severity: severity(mr.InodeUsedPct, 90, 97),
+				Signal:   fmt.Sprintf("inode %s", mr.MountPoint),
+				Detail:   "Inode usage high",
+				Value:    fmt.Sprintf("%.0f%% used", mr.InodeUsedPct),
+			})
+		}
+	}
+
 	// Context switches
 	nCPU := snap.Global.CPU.NumCPUs
 	if nCPU == 0 {

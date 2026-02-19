@@ -72,6 +72,44 @@ func ComputeCapacity(snap *model.Snapshot, rates *model.RateSnapshot) []model.Ca
 		})
 	}
 
+	// Filesystem space per real mount
+	if rates != nil {
+		for _, mr := range rates.MountRates {
+			etaStr := "not growing"
+			if mr.ETASeconds > 0 {
+				etaMin := mr.ETASeconds / 60
+				if etaMin < 60 {
+					etaStr = fmt.Sprintf("ETA %.0fm", etaMin)
+				} else {
+					etaStr = fmt.Sprintf("ETA %.0fh", etaMin/60)
+				}
+			}
+			caps = append(caps, model.Capacity{
+				Label:   fmt.Sprintf("FS %s", mr.MountPoint),
+				Pct:     mr.FreePct,
+				Current: fmt.Sprintf("%.0f%% used, %s", mr.UsedPct, etaStr),
+				Limit:   formatB(mr.TotalBytes),
+			})
+		}
+		// Inode capacity for worst mount if high
+		var worstInodePct float64
+		var worstInodeMount string
+		for _, mr := range rates.MountRates {
+			if mr.InodeUsedPct > worstInodePct {
+				worstInodePct = mr.InodeUsedPct
+				worstInodeMount = mr.MountPoint
+			}
+		}
+		if worstInodePct > 50 {
+			caps = append(caps, model.Capacity{
+				Label:   fmt.Sprintf("Inodes %s", worstInodeMount),
+				Pct:     100 - worstInodePct,
+				Current: fmt.Sprintf("%.0f%% used", worstInodePct),
+				Limit:   "inode table",
+			})
+		}
+	}
+
 	// FD usage
 	fd := snap.Global.FD
 	if fd.Max > 0 {

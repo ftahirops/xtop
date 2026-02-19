@@ -393,6 +393,36 @@ func trackExhaustion(result *model.AnalysisResult, hist *History) {
 		}
 	}
 
+	// Disk filesystem space
+	oldMountMap := make(map[string]model.MountStats)
+	for _, m := range old.Global.Mounts {
+		oldMountMap[m.MountPoint] = m
+	}
+	for _, m := range curr.Global.Mounts {
+		if m.TotalBytes == 0 {
+			continue
+		}
+		om, ok := oldMountMap[m.MountPoint]
+		if !ok || om.TotalBytes == 0 {
+			continue
+		}
+		curUsedPct := float64(m.UsedBytes) / float64(m.TotalBytes) * 100
+		oldUsedPct := float64(om.UsedBytes) / float64(om.TotalBytes) * 100
+		trendPerSec := (curUsedPct - oldUsedPct) / elapsed
+		remaining := 100 - curUsedPct
+		if trendPerSec > 0.001 && remaining > 0 {
+			minutesLeft := remaining / trendPerSec / 60
+			if minutesLeft < 120 && minutesLeft > 0 {
+				result.Exhaustions = append(result.Exhaustions, model.ExhaustionPrediction{
+					Resource:   "Disk " + m.MountPoint,
+					CurrentPct: curUsedPct,
+					TrendPerS:  trendPerSec,
+					EstMinutes: minutesLeft,
+				})
+			}
+		}
+	}
+
 	// Ephemeral ports
 	curEph := curr.Global.EphemeralPorts
 	oldEph := old.Global.EphemeralPorts

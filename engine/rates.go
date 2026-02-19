@@ -1,6 +1,9 @@
 package engine
 
 import (
+	"fmt"
+	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -19,6 +22,7 @@ func ComputeRates(prev, curr *model.Snapshot) model.RateSnapshot {
 	computeCPURates(prev, curr, &r)
 	computeMemRates(prev, curr, dt, &r)
 	computeDiskRates(prev, curr, dt, &r)
+	computeMountRates(prev, curr, dt, &r)
 	computeNetRates(prev, curr, dt, &r)
 	computeSoftIRQRates(prev, curr, dt, &r)
 	computeCgroupRates(prev, curr, dt, &r)
@@ -105,6 +109,59 @@ func computeDiskRates(prev, curr *model.Snapshot, dt time.Duration, r *model.Rat
 			QueueDepth: d.IOsInProgress,
 		}
 		r.DiskRates = append(r.DiskRates, dr)
+	}
+}
+
+func computeMountRates(prev, curr *model.Snapshot, dt time.Duration, r *model.RateSnapshot) {
+	dtSec := dt.Seconds()
+	if dtSec <= 0 {
+		dtSec = 1
+	}
+
+	prevMap := make(map[string]model.MountStats)
+	for _, m := range prev.Global.Mounts {
+		prevMap[m.MountPoint] = m
+	}
+
+	for _, m := range curr.Global.Mounts {
+		var usedPct, freePct, inodeUsedPct float64
+		if m.TotalBytes > 0 {
+			// Match df: usable = total - reserved; used% = used / usable
+			// Reserved blocks = Bfree - Bavail (space only root can use)
+			usable := m.TotalBytes - (m.FreeBytes - m.AvailBytes)
+			if usable > 0 {
+				usedPct = float64(m.UsedBytes) / float64(usable) * 100
+			}
+			freePct = float64(m.AvailBytes) / float64(usable) * 100
+		}
+		if m.TotalInodes > 0 {
+			inodeUsedPct = float64(m.UsedInodes) / float64(m.TotalInodes) * 100
+		}
+
+		var growthBPS float64
+		if pm, ok := prevMap[m.MountPoint]; ok && m.UsedBytes > pm.UsedBytes {
+			growthBPS = float64(m.UsedBytes-pm.UsedBytes) / dtSec
+		}
+
+		var etaSec float64 = -1
+		if growthBPS > 0 && m.FreeBytes > 0 {
+			etaSec = float64(m.FreeBytes) / growthBPS
+		}
+
+		mr := model.MountRate{
+			MountPoint:        m.MountPoint,
+			Device:            m.Device,
+			FSType:            m.FSType,
+			TotalBytes:        m.TotalBytes,
+			UsedPct:           usedPct,
+			FreePct:           freePct,
+			FreeBytes:         m.FreeBytes,
+			InodeUsedPct:      inodeUsedPct,
+			GrowthBytesPerSec: growthBPS,
+			ETASeconds:        etaSec,
+			State:             "OK",
+		}
+		r.MountRates = append(r.MountRates, mr)
 	}
 }
 
@@ -248,6 +305,100 @@ func computeProcessRates(prev, curr *model.Snapshot, dt time.Duration, r *model.
 		}
 		r.ProcessRates = append(r.ProcessRates, pr)
 	}
+
+	// Resolve write paths for top writers (budget: top 20 by WriteMBs)
+	resolveWritePaths(r.ProcessRates)
+}
+
+// resolveWritePaths populates WritePath for the top writer processes by
+// reading /proc/<pid>/fd/ symlinks to find open regular files.
+func resolveWritePaths(rates []model.ProcessRate) {
+	// Sort indices by WriteMBs descending to find top writers
+	type idx struct {
+		i    int
+		rate float64
+	}
+	var writers []idx
+	for i, pr := range rates {
+		if pr.WriteMBs > 0.001 {
+			writers = append(writers, idx{i, pr.WriteMBs})
+		}
+	}
+	sort.Slice(writers, func(a, b int) bool {
+		return writers[a].rate > writers[b].rate
+	})
+	if len(writers) > 20 {
+		writers = writers[:20]
+	}
+
+	for _, w := range writers {
+		pid := rates[w.i].PID
+		path := resolveProcessWritePath(pid)
+		if path != "" {
+			rates[w.i].WritePath = path
+		}
+	}
+}
+
+// resolveProcessWritePath reads /proc/<pid>/fd/ to find the primary file being written.
+// It picks the largest open regular file, skipping deleted files, pipes, sockets, and internal tool paths.
+func resolveProcessWritePath(pid int) string {
+	fdDir := fmt.Sprintf("/proc/%d/fd", pid)
+	entries, err := os.ReadDir(fdDir)
+	if err != nil {
+		return ""
+	}
+
+	type candidate struct {
+		path string
+		size int64
+	}
+	var candidates []candidate
+
+	for _, e := range entries {
+		fdPath := fmt.Sprintf("%s/%s", fdDir, e.Name())
+		link, err := os.Readlink(fdPath)
+		if err != nil {
+			continue
+		}
+		// Skip non-file FDs
+		if strings.HasPrefix(link, "pipe:") ||
+			strings.HasPrefix(link, "socket:") ||
+			strings.HasPrefix(link, "anon_inode:") ||
+			strings.HasPrefix(link, "/dev/") ||
+			strings.HasPrefix(link, "/proc/") ||
+			strings.HasPrefix(link, "/sys/") {
+			continue
+		}
+		if link == "" {
+			continue
+		}
+		// Skip deleted files
+		if strings.HasSuffix(link, " (deleted)") {
+			continue
+		}
+		// Stat via the fd path (works even if filename has special chars)
+		info, err := os.Stat(fdPath)
+		if err != nil {
+			// Can't stat — still include but with size 0
+			candidates = append(candidates, candidate{path: link, size: 0})
+			continue
+		}
+		candidates = append(candidates, candidate{path: link, size: info.Size()})
+	}
+
+	if len(candidates) == 0 {
+		return ""
+	}
+
+	// Pick the largest file — most likely the write target
+	best := candidates[0]
+	for _, c := range candidates[1:] {
+		if c.size > best.size {
+			best = c
+		}
+	}
+	return best.path
 }
 
 // resolveServiceName extracts a human-readable service/container name from a cgroup path.

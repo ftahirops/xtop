@@ -10,10 +10,11 @@ import (
 
 // Engine orchestrates collection, analysis, and scoring.
 type Engine struct {
-	registry  *collector.Registry
-	cgCollect *cgcollector.Collector
-	History   *History
-	Smart     *collector.SMARTCollector
+	registry       *collector.Registry
+	cgCollect      *cgcollector.Collector
+	History        *History
+	Smart          *collector.SMARTCollector
+	growthTracker  *MountGrowthTracker
 }
 
 // NewEngine creates a new engine with all collectors registered.
@@ -23,10 +24,11 @@ func NewEngine(historySize int) *Engine {
 	reg.Add(cgc)
 
 	return &Engine{
-		registry:  reg,
-		cgCollect: cgc,
-		History:   NewHistory(historySize),
-		Smart:     collector.NewSMARTCollector(5 * time.Minute),
+		registry:      reg,
+		cgCollect:     cgc,
+		History:       NewHistory(historySize),
+		Smart:         collector.NewSMARTCollector(5 * time.Minute),
+		growthTracker: NewMountGrowthTracker(),
 	}
 }
 
@@ -52,6 +54,7 @@ func (e *Engine) Tick() (*model.Snapshot, *model.RateSnapshot, *model.AnalysisRe
 
 	if prev != nil {
 		r := ComputeRates(prev, snap)
+		e.growthTracker.Smooth(r.MountRates)
 		rates = &r
 		e.History.PushRate(r)
 		result = AnalyzeRCA(snap, rates, e.History)

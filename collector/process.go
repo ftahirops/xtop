@@ -40,20 +40,54 @@ func (p *ProcessCollector) Collect(snap *model.Snapshot) error {
 		procs = append(procs, pm)
 	}
 
-	// Sort by CPU time (utime+stime) descending, keep top N
-	sort.Slice(procs, func(i, j int) bool {
-		a := procs[i].UTime + procs[i].STime
-		b := procs[j].UTime + procs[j].STime
-		return a > b
-	})
 	maxProcs := p.MaxProcs
 	if maxProcs <= 0 {
 		maxProcs = 50
 	}
-	if len(procs) > maxProcs {
-		procs = procs[:maxProcs]
+
+	if len(procs) <= maxProcs {
+		snap.Processes = procs
+		return nil
 	}
-	snap.Processes = procs
+
+	// Keep top N/2 by CPU time AND top N/2 by IO writes, merged and deduped.
+	// This ensures IO-heavy processes (disk writers) are always tracked.
+	half := maxProcs / 2
+
+	// Top by CPU time
+	sort.Slice(procs, func(i, j int) bool {
+		return (procs[i].UTime + procs[i].STime) > (procs[j].UTime + procs[j].STime)
+	})
+	seen := make(map[int]bool)
+	var merged []model.ProcessMetrics
+	for i := 0; i < len(procs) && len(merged) < half; i++ {
+		merged = append(merged, procs[i])
+		seen[procs[i].PID] = true
+	}
+
+	// Top by IO writes
+	sort.Slice(procs, func(i, j int) bool {
+		return procs[i].WriteBytes > procs[j].WriteBytes
+	})
+	for i := 0; i < len(procs) && len(merged) < maxProcs; i++ {
+		if !seen[procs[i].PID] {
+			merged = append(merged, procs[i])
+			seen[procs[i].PID] = true
+		}
+	}
+
+	// Fill remaining slots with top CPU if space left
+	sort.Slice(procs, func(i, j int) bool {
+		return (procs[i].UTime + procs[i].STime) > (procs[j].UTime + procs[j].STime)
+	})
+	for i := 0; i < len(procs) && len(merged) < maxProcs; i++ {
+		if !seen[procs[i].PID] {
+			merged = append(merged, procs[i])
+			seen[procs[i].PID] = true
+		}
+	}
+
+	snap.Processes = merged
 	return nil
 }
 

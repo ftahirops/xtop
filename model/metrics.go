@@ -145,6 +145,37 @@ type DiskStats struct {
 	FlushTimeMs       uint64
 }
 
+// MountStats holds per-filesystem stats from statfs(2).
+type MountStats struct {
+	MountPoint  string
+	Device      string
+	FSType      string
+	TotalBytes  uint64
+	FreeBytes   uint64
+	AvailBytes  uint64 // available to non-root (statvfs f_bavail)
+	UsedBytes   uint64
+	TotalInodes uint64
+	FreeInodes  uint64
+	UsedInodes  uint64
+}
+
+// BigFile represents a large file found on disk.
+type BigFile struct {
+	Path      string
+	Dir       string
+	SizeBytes uint64
+	ModTime   int64 // unix timestamp
+}
+
+// DeletedOpenFile represents a file that was deleted but is still held open.
+type DeletedOpenFile struct {
+	PID       int
+	Comm      string
+	FD        int
+	Path      string
+	SizeBytes uint64
+}
+
 // NetworkStats holds per-interface counters from /proc/net/dev
 // plus metadata from /sys/class/net/.
 type NetworkStats struct {
@@ -303,6 +334,9 @@ type GlobalMetrics struct {
 	FD             FDStats
 	EphemeralPorts EphemeralPorts
 	TopRemoteIPs   []RemoteIPStats
+	Mounts         []MountStats
+	DeletedOpen    []DeletedOpenFile
+	BigFiles       []BigFile
 }
 
 // CgroupMetrics holds metrics for a single cgroup.

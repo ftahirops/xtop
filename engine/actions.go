@@ -3,6 +3,7 @@ package engine
 import (
 	"fmt"
 	"path"
+	"strings"
 
 	"github.com/ftahirops/xtop/model"
 )
@@ -37,6 +38,13 @@ func SuggestActions(result *model.AnalysisResult) []model.Action {
 					continue
 				}
 				switch c.Group {
+				case "FSFull":
+					actions = append(actions,
+						model.Action{Summary: "Check filesystem usage", Command: "df -h"},
+						model.Action{Summary: "Find large files", Command: "find / -xdev -type f -size +100M -exec ls -lh {} \\; 2>/dev/null | head -20"},
+						model.Action{Summary: "Check deleted-open files", Command: "lsof +L1 2>/dev/null | head -20"},
+						model.Action{Summary: "Rotate logs", Command: "journalctl --vacuum-size=100M"},
+					)
 				case "Dirty pages":
 					actions = append(actions,
 						model.Action{Summary: "Check for large write bursts or backup jobs", Command: "grep -r . /proc/sys/vm/dirty_*"},
@@ -169,6 +177,12 @@ func SuggestActions(result *model.AnalysisResult) []model.Action {
 			actions = append(actions,
 				model.Action{Summary: fmt.Sprintf("FD exhaustion in ~%.0fm — check for FD leaks", ex.EstMinutes),
 					Command: "ls /proc/*/fd 2>/dev/null | wc -l"})
+		default:
+			if strings.HasPrefix(ex.Resource, "Disk ") {
+				actions = append(actions,
+					model.Action{Summary: fmt.Sprintf("Disk %s exhaustion in ~%.0fm — free space urgently", strings.TrimPrefix(ex.Resource, "Disk "), ex.EstMinutes),
+						Command: "df -h"})
+			}
 		}
 	}
 

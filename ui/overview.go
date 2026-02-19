@@ -57,7 +57,7 @@ func renderOverview(snap *model.Snapshot, rates *model.RateSnapshot, result *mod
 	// Inject layout indicator into the first line (top right)
 	lines := strings.Split(content, "\n")
 	if len(lines) > 0 {
-		label := dimStyle.Render(fmt.Sprintf("[%s] D:default", layout))
+		label := dimStyle.Render(fmt.Sprintf("[%s]", layout))
 		labelW := lipgloss.Width(label)
 		lineW := lipgloss.Width(lines[0])
 		gap := width - lineW - labelW
@@ -125,6 +125,32 @@ func renderHeader(snap *model.Snapshot, rates *model.RateSnapshot, result *model
 	sb.WriteString(meterColor(ioPct).Render(fmt.Sprintf("IO %5.1f%%", ioPct)))
 	sb.WriteString(dimStyle.Render(" | "))
 	sb.WriteString(dimStyle.Render(fmt.Sprintf("Load %5.2f", snap.Global.CPU.LoadAvg.Load1)))
+
+	// Disk free % (worst mount)
+	if rates != nil && len(rates.MountRates) > 0 {
+		var worstFreePct float64 = 100
+		var worstETA float64 = -1
+		for _, mr := range rates.MountRates {
+			if mr.FreePct < worstFreePct {
+				worstFreePct = mr.FreePct
+				worstETA = mr.ETASeconds
+			}
+		}
+		diskUsedPct := 100 - worstFreePct
+		sb.WriteString(dimStyle.Render(" | "))
+		diskStr := fmt.Sprintf("DISK %4.0f%%", diskUsedPct)
+		if worstETA > 0 && worstETA < 7200 {
+			diskStr += fmt.Sprintf(" ETA %.0fm", worstETA/60)
+		}
+		// Color: green >30% free, yellow >10% free, red <=10% free
+		if worstFreePct <= 10 {
+			sb.WriteString(critStyle.Render(diskStr))
+		} else if worstFreePct <= 30 {
+			sb.WriteString(warnStyle.Render(diskStr))
+		} else {
+			sb.WriteString(okStyle.Render(diskStr))
+		}
+	}
 
 	return sb.String()
 }
@@ -431,6 +457,72 @@ func extractSubsystems(snap *model.Snapshot, rates *model.RateSnapshot, result *
 	}
 	net.Details = append(net.Details, kv{"Top owner", topNet})
 	ss = append(ss, net)
+
+	// Disk Space
+	disk := subsysInfo{Name: "Disk Space"}
+	disk.Status = "GREEN"
+	disk.StatusStyle = okStyle
+	disk.PressurePct = 0
+	disk.PressureStr = "OK"
+	disk.CapacityPct = 100
+	disk.CapacityStr = "100%"
+	disk.Risk = "none"
+
+	if rates != nil && len(rates.MountRates) > 0 {
+		var worstFreePct float64 = 100
+		var worstMount string
+		var worstETA float64 = -1
+		var worstInodePct float64
+		for _, mr := range rates.MountRates {
+			if mr.FreePct < worstFreePct {
+				worstFreePct = mr.FreePct
+				worstMount = mr.MountPoint
+				worstETA = mr.ETASeconds
+			}
+			if mr.InodeUsedPct > worstInodePct {
+				worstInodePct = mr.InodeUsedPct
+			}
+		}
+		usedPct := 100 - worstFreePct
+		disk.CapacityPct = worstFreePct
+		disk.CapacityStr = fmt.Sprintf("%.0f%%", worstFreePct)
+
+		if worstFreePct < 5 {
+			disk.Status = "RED"
+			disk.StatusStyle = critStyle
+			disk.PressureStr = "CRITICAL"
+		} else if worstFreePct < 15 {
+			disk.Status = "YELLOW"
+			disk.StatusStyle = warnStyle
+			disk.PressureStr = "ELEVATED"
+		}
+
+		etaStr := "not growing"
+		if worstETA > 0 {
+			etaMin := worstETA / 60
+			if etaMin < 60 {
+				etaStr = fmt.Sprintf("ETA %.0fm", etaMin)
+			} else {
+				etaStr = fmt.Sprintf("ETA %.0fh", etaMin/60)
+			}
+		}
+
+		disk.Details = []kv{
+			{"Worst mount", fmt.Sprintf("%s (%.0f%% used)", worstMount, usedPct)},
+			{"Free", fmt.Sprintf("%.0f%%", worstFreePct)},
+			{"Fill rate", etaStr},
+			{"Inode usage", fmt.Sprintf("%.0f%%", worstInodePct)},
+		}
+
+		if result != nil && result.DiskGuardWorst != "" {
+			disk.Risk = result.DiskGuardWorst
+		}
+	} else {
+		disk.Details = []kv{
+			{"Status", "collecting..."},
+		}
+	}
+	ss = append(ss, disk)
 
 	return ss
 }

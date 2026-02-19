@@ -135,6 +135,34 @@ func renderThresholdsPage(snap *model.Snapshot, rates *model.RateSnapshot, resul
 	}
 	sb.WriteString(renderThresholdSection("Disk IO", ioEntries, iw))
 
+	// ── Disk Space Thresholds ──
+	worstFSUsed := float64(0)
+	worstFSETA := float64(-1)
+	worstFSInode := float64(0)
+	if rates != nil {
+		for _, mr := range rates.MountRates {
+			if mr.UsedPct > worstFSUsed {
+				worstFSUsed = mr.UsedPct
+			}
+			if mr.ETASeconds > 0 && (worstFSETA < 0 || mr.ETASeconds < worstFSETA) {
+				worstFSETA = mr.ETASeconds
+			}
+			if mr.InodeUsedPct > worstFSInode {
+				worstFSInode = mr.InodeUsedPct
+			}
+		}
+	}
+	etaMin := float64(-1)
+	if worstFSETA > 0 {
+		etaMin = worstFSETA / 60
+	}
+	fsEntries := []thresholdEntry{
+		makeEntry("FS Used%", worstFSUsed, "%", 0, 85, 95, "100%", "statfs / worst mount"),
+		makeEntry("FS ETA to full", etaMin, "min", 9999, 120, 30, "—", "EWMA growth rate (lower=worse)"),
+		makeEntry("Inode Used%", worstFSInode, "%", 0, 85, 95, "100%", "statfs / worst mount"),
+	}
+	sb.WriteString(renderThresholdSection("Disk Space", fsEntries, iw))
+
 	// ── Network Thresholds ──
 	retransR := float64(0)
 	totalDrops := float64(0)
