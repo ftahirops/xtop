@@ -7,13 +7,19 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/ftahirops/xtop/model"
 	"github.com/ftahirops/xtop/util"
 )
 
 // SocketCollector reads /proc/net/sockstat and /proc/net/tcp for connection states.
-type SocketCollector struct{}
+type SocketCollector struct {
+	portUsersCache    []model.PortUser
+	portUsersCacheAt  time.Time
+}
+
+const portUsersCacheTTL = 5 * time.Second
 
 func (s *SocketCollector) Name() string { return "socket" }
 
@@ -222,9 +228,13 @@ func (s *SocketCollector) collectTCPStates(snap *model.Snapshot) {
 		})
 	}
 
-	// Resolve top ephemeral port users by PID
+	// Resolve top ephemeral port users by PID (time-gated: expensive /proc/*/fd scan)
 	if len(ephInodes) > 0 {
-		eph.TopUsers = resolvePortUsers(ephInodes)
+		if time.Since(s.portUsersCacheAt) >= portUsersCacheTTL {
+			s.portUsersCache = resolvePortUsers(ephInodes)
+			s.portUsersCacheAt = time.Now()
+		}
+		eph.TopUsers = s.portUsersCache
 	}
 }
 

@@ -81,8 +81,17 @@ func verifyFrozenPID(pid int, fp frozenProc) bool {
 	return st != "" && st == fp.StartTime
 }
 
+// freezeDenylist prevents critical system processes from being frozen or killed.
+var freezeDenylist = map[string]bool{
+	"mysqld": true, "mariadbd": true, "postgres": true, "mongod": true,
+	"redis-server": true, "journald": true, "systemd": true,
+	"systemd-journald": true, "sshd": true, "kubelet": true,
+	"containerd": true, "dockerd": true, "crio": true, "xtop": true,
+}
+
 // Model is the bubbletea model.
 type Model struct {
+	ticker   engine.Ticker
 	engine   *engine.Engine
 	interval time.Duration
 	width    int
@@ -94,9 +103,10 @@ type Model struct {
 	result *model.AnalysisResult
 
 	// Navigation
-	page     Page
-	showHelp bool
-	scroll   int // vertical scroll offset
+	page        Page
+	showHelp    bool
+	showExplain bool
+	scroll      int // vertical scroll offset
 
 	// Auto-refresh control
 	paused bool
@@ -120,14 +130,17 @@ type Model struct {
 	probeManager *engine.ProbeManager
 
 	// DiskGuard mode
-	diskGuardMode  string
-	diskGuardMsg   string    // action feedback message
-	diskGuardMsgT  time.Time // when message was set
-	frozenPIDs     map[int]frozenProc // PIDs frozen by Contain mode
+	diskGuardMode       string
+	diskGuardMsg        string             // action feedback message
+	diskGuardMsgT       time.Time          // when message was set
+	frozenPIDs          map[int]frozenProc // PIDs frozen by Contain mode
+	lastActionTime      time.Time          // cooldown: last auto-action time
+	incidentActionCount int                // max actions per incident
+	stableStart         time.Time          // tracks when disk became stable OK
 }
 
 // NewModel creates a new TUI model.
-func NewModel(eng *engine.Engine, interval time.Duration, dataDir string) Model {
+func NewModel(ticker engine.Ticker, interval time.Duration, dataDir string) Model {
 	detector := engine.NewEventDetector()
 
 	// Load daemon events if available
@@ -145,8 +158,10 @@ func NewModel(eng *engine.Engine, interval time.Duration, dataDir string) Model 
 		layout = LayoutTwoCol
 	}
 
+	base := ticker.Base()
 	return Model{
-		engine:        eng,
+		ticker:        ticker,
+		engine:        base,
 		interval:      interval,
 		eventDetector: detector,
 		layoutMode:    layout,
@@ -157,16 +172,16 @@ func NewModel(eng *engine.Engine, interval time.Duration, dataDir string) Model 
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(tick(m.interval), collectOnce(m.engine))
+	return tea.Batch(tick(m.interval), collectOnce(m.ticker))
 }
 
 func tick(d time.Duration) tea.Cmd {
 	return tea.Tick(d, func(t time.Time) tea.Msg { return tickMsg(t) })
 }
 
-func collectOnce(eng *engine.Engine) tea.Cmd {
+func collectOnce(ticker engine.Ticker) tea.Cmd {
 	return func() tea.Msg {
-		snap, rates, result := eng.Tick()
+		snap, rates, result := ticker.Tick()
 		return collectMsg{snap: snap, rates: rates, result: result}
 	}
 }
@@ -184,7 +199,7 @@ func saveRCA(snap *model.Snapshot, rates *model.RateSnapshot, result *model.Anal
 			"analysis":  result,
 		}
 
-		f, err := os.Create(path)
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 		if err != nil {
 			return saveConfirmMsg{err: err}
 		}
@@ -216,7 +231,84 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.paused = !m.paused
 			if !m.paused {
 				// Resume: schedule next tick immediately
-				return m, tea.Batch(tick(m.interval), collectOnce(m.engine))
+				return m, tea.Batch(tick(m.interval), collectOnce(m.ticker))
+			}
+		case "n":
+			// Step one frame when paused in replay mode
+			if m.paused {
+				if p, ok := m.ticker.(*engine.Player); ok {
+					snap, rates, result := p.Tick()
+					if snap != nil {
+						m.snap = snap
+						m.rates = rates
+						m.result = result
+						m.eventDetector.Process(snap, rates, result)
+					}
+				}
+			}
+		case "[":
+			if p, ok := m.ticker.(*engine.Player); ok {
+				target := p.Index() - 10
+				snap, rates, result := p.Seek(target)
+				if snap != nil {
+					m.snap = snap
+					m.rates = rates
+					m.result = result
+					m.eventDetector.Process(snap, rates, result)
+				}
+			}
+		case "]":
+			if p, ok := m.ticker.(*engine.Player); ok {
+				target := p.Index() + 10
+				snap, rates, result := p.Seek(target)
+				if snap != nil {
+					m.snap = snap
+					m.rates = rates
+					m.result = result
+					m.eventDetector.Process(snap, rates, result)
+				}
+			}
+		case "{":
+			if p, ok := m.ticker.(*engine.Player); ok {
+				target := p.Index() - 60
+				snap, rates, result := p.Seek(target)
+				if snap != nil {
+					m.snap = snap
+					m.rates = rates
+					m.result = result
+					m.eventDetector.Process(snap, rates, result)
+				}
+			}
+		case "}":
+			if p, ok := m.ticker.(*engine.Player); ok {
+				target := p.Index() + 60
+				snap, rates, result := p.Seek(target)
+				if snap != nil {
+					m.snap = snap
+					m.rates = rates
+					m.result = result
+					m.eventDetector.Process(snap, rates, result)
+				}
+			}
+		case "J":
+			if p, ok := m.ticker.(*engine.Player); ok {
+				snap, rates, result := p.Seek(0)
+				if snap != nil {
+					m.snap = snap
+					m.rates = rates
+					m.result = result
+					m.eventDetector.Process(snap, rates, result)
+				}
+			}
+		case "K":
+			if p, ok := m.ticker.(*engine.Player); ok {
+				snap, rates, result := p.Seek(p.Len() - 1)
+				if snap != nil {
+					m.snap = snap
+					m.rates = rates
+					m.result = result
+					m.eventDetector.Process(snap, rates, result)
+				}
 			}
 		case "S":
 			// Save RCA to file (works on any page)
@@ -342,11 +434,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.saveMsg = fmt.Sprintf("Default layout set: %s", m.layoutMode)
 			}
 			m.saveMsgTime = time.Now()
+		case "e":
+			// Toggle explain verdict panel
+			if m.result != nil {
+				m.showExplain = !m.showExplain
+			}
 		case "m", "M":
 			// Cycle DiskGuard mode (only on DiskGuard page)
 			if m.page == PageDiskGuard {
 				switch m.diskGuardMode {
 				case "Monitor":
+					m.diskGuardMode = "DryRun"
+				case "DryRun":
 					m.diskGuardMode = "Contain"
 				case "Contain":
 					m.diskGuardMode = "Action"
@@ -366,23 +465,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					pid := procs[0].PID
 					comm := procs[0].Comm
 					wp := procs[0].WritePath
-					// Verify PID identity before killing
-					st := readProcStartTime(pid)
-					if st == "" {
-						m.diskGuardMsg = fmt.Sprintf("PID %d no longer exists", pid)
+					if freezeDenylist[comm] {
+						m.diskGuardMsg = fmt.Sprintf("Skipped: PID %d (%s) is in denylist", pid, comm)
 					} else {
-						err := syscall.Kill(pid, syscall.SIGKILL)
-						if err != nil {
-							m.diskGuardMsg = fmt.Sprintf("Failed to kill PID %d (%s): %v", pid, comm, err)
+						// Verify PID identity before killing
+						st := readProcStartTime(pid)
+						if st == "" {
+							m.diskGuardMsg = fmt.Sprintf("PID %d no longer exists", pid)
 						} else {
-							if wp != "" {
-								m.diskGuardMsg = fmt.Sprintf("KILLED PID %d (%s) — was writing to %s", pid, comm, wp)
+							err := syscall.Kill(pid, syscall.SIGKILL)
+							if err != nil {
+								m.diskGuardMsg = fmt.Sprintf("Failed to kill PID %d (%s): %v", pid, comm, err)
 							} else {
-								m.diskGuardMsg = fmt.Sprintf("KILLED PID %d (%s)", pid, comm)
+								if wp != "" {
+									m.diskGuardMsg = fmt.Sprintf("KILLED PID %d (%s) — was writing to %s", pid, comm, wp)
+								} else {
+									m.diskGuardMsg = fmt.Sprintf("KILLED PID %d (%s)", pid, comm)
+								}
 							}
 						}
+						delete(m.frozenPIDs, pid)
 					}
-					delete(m.frozenPIDs, pid)
 					m.diskGuardMsgT = time.Now()
 				} else {
 					m.diskGuardMsg = "No active writer to kill"
@@ -399,8 +502,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				})
 				if len(procs) > 0 && procs[0].WriteMBs > 0.1 {
 					pid := procs[0].PID
-					if _, already := m.frozenPIDs[pid]; already {
-						m.diskGuardMsg = fmt.Sprintf("PID %d (%s) already frozen", pid, procs[0].Comm)
+					comm := procs[0].Comm
+					if freezeDenylist[comm] {
+						m.diskGuardMsg = fmt.Sprintf("Skipped: PID %d (%s) is in denylist", pid, comm)
+					} else if _, already := m.frozenPIDs[pid]; already {
+						m.diskGuardMsg = fmt.Sprintf("PID %d (%s) already frozen", pid, comm)
 					} else {
 						st := readProcStartTime(pid)
 						err := syscall.Kill(pid, syscall.SIGSTOP)
@@ -408,12 +514,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							m.diskGuardMsg = fmt.Sprintf("Failed to freeze PID %d: %v", pid, err)
 						} else {
 							m.frozenPIDs[pid] = frozenProc{
-								Comm:      procs[0].Comm,
+								Comm:      comm,
 								WritePath: procs[0].WritePath,
 								FrozenAt:  time.Now(),
 								StartTime: st,
 							}
-							m.diskGuardMsg = fmt.Sprintf("FROZEN PID %d (%s) — writing paused", pid, procs[0].Comm)
+							m.diskGuardMsg = fmt.Sprintf("FROZEN PID %d (%s) — writing paused", pid, comm)
 						}
 					}
 					m.diskGuardMsgT = time.Now()
@@ -442,7 +548,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.paused {
 			return m, nil
 		}
-		return m, tea.Batch(tick(m.interval), collectOnce(m.engine))
+		return m, tea.Batch(tick(m.interval), collectOnce(m.ticker))
 	case collectMsg:
 		if !m.paused {
 			m.snap = msg.snap
@@ -510,6 +616,11 @@ func (m Model) View() string {
 		content = renderDiskGuardPage(m.snap, m.rates, m.result, m.probeManager, m.diskGuardMode, dgMsg, m.frozenPIDs, m.width, m.height)
 	}
 
+	// Explain verdict panel (appended after page content)
+	if m.showExplain && m.result != nil {
+		content += renderExplainPanel(m.result, m.width)
+	}
+
 	// Apply scroll
 	lines := strings.Split(content, "\n")
 	if m.scroll > 0 && m.scroll < len(lines) {
@@ -556,7 +667,7 @@ func (m Model) renderStatusBar() string {
 		left += "  " + dimStyle.Render(fmt.Sprintf("[%s]", m.layoutMode))
 	}
 
-	help := helpStyle.Render("D:disk  I:investigate  E:export  v:layout  a:pause  S:save  ?:help  q:quit")
+	help := helpStyle.Render("D:disk  I:investigate  E:export  e:explain  v:layout  a:pause  S:save  ?:help  q:quit")
 
 	gap := m.width - len(stripAnsi(left)) - len(stripAnsi(help))
 	if gap < 1 {
@@ -727,7 +838,7 @@ func exportIncidentMarkdown(snap *model.Snapshot, rates *model.RateSnapshot, res
 
 		sb.WriteString("---\n*Generated by xtop*\n")
 
-		if err := os.WriteFile(path, []byte(sb.String()), 0644); err != nil {
+		if err := os.WriteFile(path, []byte(sb.String()), 0600); err != nil {
 			return saveConfirmMsg{err: err}
 		}
 		return saveConfirmMsg{path: path}
@@ -758,9 +869,14 @@ func (m Model) renderHelp() string {
 	sb.WriteString("  D         DiskGuard page (filesystem space monitor)\n")
 	sb.WriteString("  Ctrl+D    Set current layout as default\n")
 	sb.WriteString("  a         Toggle auto-refresh (pause/resume)\n")
+	sb.WriteString("  n         Step one frame (replay mode while paused)\n")
+	sb.WriteString("  [ / ]     Replay seek -10 / +10 frames\n")
+	sb.WriteString("  { / }     Replay seek -60 / +60 frames\n")
+	sb.WriteString("  J / K     Replay jump to start / end\n")
 	sb.WriteString("  I         Start eBPF probe investigation (auto-detect)\n")
 	sb.WriteString("  S         Save RCA snapshot to JSON file\n")
 	sb.WriteString("  E         Export incident report as markdown\n")
+	sb.WriteString("  e         Toggle explain verdict panel (evidence detail)\n")
 	sb.WriteString("  Enter     Jump to bottleneck detail page\n")
 	sb.WriteString("  j/k       Scroll down/up\n")
 	sb.WriteString("  g/G       Top / jump down\n")
@@ -793,7 +909,7 @@ func (m Model) renderHelp() string {
 	return sb.String()
 }
 
-// diskGuardContain handles automatic freeze/resume in Contain mode.
+// diskGuardContain handles automatic freeze/resume in Contain/DryRun mode.
 func (m *Model) diskGuardContain() {
 	if m.result == nil || m.rates == nil {
 		return
@@ -801,8 +917,51 @@ func (m *Model) diskGuardContain() {
 
 	worst := m.result.DiskGuardWorst
 
+	// Track stable period for cooldown reset
+	if worst == "OK" {
+		if m.stableStart.IsZero() {
+			m.stableStart = time.Now()
+		}
+		// Reset incident action count after 30s continuous OK
+		if time.Since(m.stableStart) >= 30*time.Second {
+			m.incidentActionCount = 0
+		}
+	} else {
+		m.stableStart = time.Time{}
+	}
+
+	// DryRun mode: log what WOULD happen but don't send signals
+	if m.diskGuardMode == "DryRun" && worst == "CRIT" {
+		procs := make([]model.ProcessRate, len(m.rates.ProcessRates))
+		copy(procs, m.rates.ProcessRates)
+		sort.Slice(procs, func(i, j int) bool {
+			return procs[i].WriteMBs > procs[j].WriteMBs
+		})
+		for _, p := range procs {
+			if p.WriteMBs < 0.5 {
+				break
+			}
+			target := p.WritePath
+			if target == "" {
+				target = "unknown"
+			}
+			m.diskGuardMsg = fmt.Sprintf("Would freeze: PID %d (%s) writing %.1f MB/s to %s", p.PID, p.Comm, p.WriteMBs, target)
+			m.diskGuardMsgT = time.Now()
+			break // only show top writer
+		}
+	}
+
 	// Contain mode: auto-freeze top writers when CRIT
 	if m.diskGuardMode == "Contain" && worst == "CRIT" {
+		// Cooldown: 60s after last action
+		if !m.lastActionTime.IsZero() && time.Since(m.lastActionTime) < 60*time.Second {
+			return
+		}
+		// Max 1 auto-freeze per incident
+		if m.incidentActionCount >= 1 {
+			return
+		}
+
 		procs := make([]model.ProcessRate, len(m.rates.ProcessRates))
 		copy(procs, m.rates.ProcessRates)
 		sort.Slice(procs, func(i, j int) bool {
@@ -816,6 +975,12 @@ func (m *Model) diskGuardContain() {
 			if _, already := m.frozenPIDs[p.PID]; already {
 				continue
 			}
+			// Denylist check
+			if freezeDenylist[p.Comm] {
+				m.diskGuardMsg = fmt.Sprintf("Skipped: PID %d (%s) is in denylist", p.PID, p.Comm)
+				m.diskGuardMsgT = time.Now()
+				continue
+			}
 			st := readProcStartTime(p.PID)
 			err := syscall.Kill(p.PID, syscall.SIGSTOP)
 			if err == nil {
@@ -827,12 +992,15 @@ func (m *Model) diskGuardContain() {
 				}
 				m.diskGuardMsg = fmt.Sprintf("AUTO-FROZEN PID %d (%s) — disk CRIT, writing paused", p.PID, p.Comm)
 				m.diskGuardMsgT = time.Now()
+				m.lastActionTime = time.Now()
+				m.incidentActionCount++
 			}
+			break // only freeze one per tick
 		}
 	}
 
-	// Auto-resume when disk drops to OK (any mode) — verify PID identity
-	if worst == "OK" && len(m.frozenPIDs) > 0 {
+	// Auto-resume when disk drops to OK (any mode) — only after 30s continuous OK
+	if worst == "OK" && len(m.frozenPIDs) > 0 && !m.stableStart.IsZero() && time.Since(m.stableStart) >= 30*time.Second {
 		resumed := 0
 		for pid, fp := range m.frozenPIDs {
 			if verifyFrozenPID(pid, fp) {
@@ -843,7 +1011,7 @@ func (m *Model) diskGuardContain() {
 			delete(m.frozenPIDs, pid)
 		}
 		if resumed > 0 {
-			m.diskGuardMsg = fmt.Sprintf("AUTO-RESUMED %d process(es) — disk OK", resumed)
+			m.diskGuardMsg = fmt.Sprintf("AUTO-RESUMED %d process(es) — disk OK for 30s", resumed)
 			m.diskGuardMsgT = time.Now()
 		}
 	}

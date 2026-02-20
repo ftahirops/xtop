@@ -382,6 +382,9 @@ func renderDiskGuardPage(snap *model.Snapshot, rates *model.RateSnapshot, result
 	// Footer
 	sb.WriteString("\n")
 	switch diskGuardMode {
+	case "DryRun":
+		sb.WriteString(orangeStyle.Render("  DRYRUN MODE") +
+			dimStyle.Render("  Simulates actions without sending signals  m: cycle mode  b: back"))
 	case "Contain":
 		extra := ""
 		if len(frozen) > 0 {
@@ -397,7 +400,7 @@ func renderDiskGuardPage(snap *model.Snapshot, rates *model.RateSnapshot, result
 		sb.WriteString(critStyle.Render("  ACTION MODE") +
 			dimStyle.Render("  x: kill  f: freeze"+extra+"  m: cycle mode  b: back"))
 	default:
-		sb.WriteString(dimStyle.Render("  m: cycle mode (Monitor/Contain/Action)  j/k: scroll  b: back"))
+		sb.WriteString(dimStyle.Render("  m: cycle mode (Monitor/DryRun/Contain/Action)  j/k: scroll  b: back"))
 	}
 
 	return sb.String()

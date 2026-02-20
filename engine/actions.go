@@ -2,7 +2,7 @@ package engine
 
 import (
 	"fmt"
-	"path"
+	"path/filepath"
 	"strings"
 
 	"github.com/ftahirops/xtop/model"
@@ -56,7 +56,7 @@ func SuggestActions(result *model.AnalysisResult) []model.Action {
 		if result.PrimaryCulprit != "" && !strings.Contains(result.PrimaryCulprit, "..") {
 			actions = append(actions,
 				model.Action{Summary: fmt.Sprintf("Inspect IO limits for %s", cleanCgroupName(result.PrimaryCulprit)),
-					Command: "cat " + path.Join("/sys/fs/cgroup", result.PrimaryCulprit, "io.max")},
+					Command: "cat " + filepath.Join("/sys/fs/cgroup", result.PrimaryCulprit, "io.max")},
 			)
 		}
 		if result.PrimaryProcess != "" && result.PrimaryPID > 1 {
@@ -95,7 +95,7 @@ func SuggestActions(result *model.AnalysisResult) []model.Action {
 		if result.PrimaryCulprit != "" && !strings.Contains(result.PrimaryCulprit, "..") {
 			actions = append(actions,
 				model.Action{Summary: fmt.Sprintf("Check memory limit for %s", cleanCgroupName(result.PrimaryCulprit)),
-					Command: "cat " + path.Join("/sys/fs/cgroup", result.PrimaryCulprit, "memory.max")},
+					Command: "cat " + filepath.Join("/sys/fs/cgroup", result.PrimaryCulprit, "memory.max")},
 			)
 		}
 
@@ -127,7 +127,7 @@ func SuggestActions(result *model.AnalysisResult) []model.Action {
 		if result.PrimaryCulprit != "" && !strings.Contains(result.PrimaryCulprit, "..") {
 			actions = append(actions,
 				model.Action{Summary: fmt.Sprintf("Check CPU quota for %s", cleanCgroupName(result.PrimaryCulprit)),
-					Command: "cat " + path.Join("/sys/fs/cgroup", result.PrimaryCulprit, "cpu.max")},
+					Command: "cat " + filepath.Join("/sys/fs/cgroup", result.PrimaryCulprit, "cpu.max")},
 			)
 		}
 

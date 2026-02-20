@@ -55,6 +55,10 @@ func (d *EventDetector) Process(snap *model.Snapshot, rates *model.RateSnapshot,
 			d.active.Duration = int(now.Sub(d.active.StartTime).Seconds())
 			d.completed = append(d.completed, *d.active)
 			d.active = nil
+			// Cap completed events to prevent unbounded growth
+			if len(d.completed) > 1000 {
+				d.completed = d.completed[len(d.completed)-1000:]
+			}
 		} else {
 			// Update peak metrics
 			d.updatePeaks(snap, rates, result)
@@ -143,18 +147,18 @@ func (d *EventDetector) updatePeaks(snap *model.Snapshot, rates *model.RateSnaps
 		}
 	}
 
-	// Peak IO PSI
+	// Peak IO PSI — check threshold crossing BEFORE updating peak
 	ioPSI := snap.Global.PSI.IO.Full.Avg10
+	if ioPSI > 25 && d.active.PeakIOPSI <= 25 {
+		d.addTimelineEntry(now, fmt.Sprintf("IO PSI crossed 25%% (%.1f%%)", ioPSI))
+	}
 	if ioPSI > d.active.PeakIOPSI {
 		d.active.PeakIOPSI = ioPSI
 	}
 
-	// Track specific threshold crossings for timeline
-	if ioPSI > 25 && d.active.PeakIOPSI <= 25 {
-		d.addTimelineEntry(now, fmt.Sprintf("IO PSI crossed 25%% (%.1f%%)", ioPSI))
-	}
-	if rates != nil && rates.SwapInRate > 1 && d.active.PeakCPUBusy < 1 {
-		d.addTimelineEntry(now, "Swap-in activity started")
+	// Track swap-in activity onset
+	if rates != nil && rates.SwapInRate > 1 {
+		d.addTimelineEntry(now, fmt.Sprintf("Swap-in activity (%.1f MB/s)", rates.SwapInRate))
 	}
 }
 
@@ -201,6 +205,7 @@ func (d *EventDetector) Events() []model.Event {
 }
 
 // AllEvents returns active (if any) + completed events for display.
+// Returns a copy of the active event to avoid data races.
 func (d *EventDetector) AllEvents() (active *model.Event, completed []model.Event) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -208,7 +213,11 @@ func (d *EventDetector) AllEvents() (active *model.Event, completed []model.Even
 	for i, e := range d.completed {
 		completed[len(d.completed)-1-i] = e
 	}
-	return d.active, completed
+	if d.active != nil {
+		cpy := *d.active
+		return &cpy, completed
+	}
+	return nil, completed
 }
 
 // LoadEvents adds externally loaded events (e.g., from daemon log).
@@ -234,7 +243,7 @@ func (w *EventLogWriter) Write(e model.Event) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	f, err := os.OpenFile(w.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(w.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
 		return err
 	}

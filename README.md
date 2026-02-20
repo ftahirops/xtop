@@ -351,6 +351,10 @@ Options:
   -datadir PATH     Data directory for daemon mode (default: ~/.xtop/)
   -record FILE      Record snapshots to file during TUI session
   -replay FILE      Replay recorded file through TUI (no root needed)
+  -prom             Enable Prometheus metrics endpoint
+  -prom-addr ADDR   Prometheus listen address (default: :9100)
+  -alert-webhook URL  Webhook URL for alert notifications (daemon mode)
+  -alert-command CMD  Command to execute on alert notifications (daemon mode)
 ```
 
 ### Key Bindings
@@ -363,9 +367,11 @@ Options:
 | `g` / `G` | Jump to top / Jump down |
 | `v` / `V` | Cycle overview layout forward / backward |
 | `F1` - `F4` | Direct layout selection |
-| `D` | Save current layout as default |
+| `D` | Open DiskGuard page |
+| `Ctrl+D` | Save current layout as default |
 | `I` | Start 10-second eBPF probe investigation |
 | `a` | Toggle auto-refresh (pause/resume) |
+| `n` | Step one frame (replay mode while paused) |
 | `S` | Save RCA snapshot to JSON file |
 | `s` | Cycle sort column (Cgroups page) |
 | `?` | Toggle help overlay |
@@ -426,9 +432,75 @@ xtop -replay /var/log/xtop-20260218-0300.wlog    # No root needed
 # === Background Daemon ===
 sudo xtop -daemon &
 sudo xtop -daemon -datadir /var/lib/xtop -interval 2
+
+# === Prometheus Exporter ===
+sudo xtop -prom -prom-addr :9100
+curl -s http://localhost:9100 | head
+
+# === Alert Hooks (daemon mode) ===
+sudo xtop -daemon -alert-webhook https://example.com/xtop
+sudo xtop -daemon -alert-command 'logger -t xtop \"$XTOP_EVENT\"'
 ```
 
 ---
+
+## Configuration
+
+xtop loads defaults from `~/.config/xtop/config.json` (or `XDG_CONFIG_HOME`).
+Use `config.example.json` as a starting point.
+
+```json
+{
+  "default_layout": 0,
+  "interval_sec": 1,
+  "history_size": 300,
+  "default_section": "overview",
+  "prometheus": { "enabled": false, "addr": ":9100" },
+  "alerts": { "webhook": "", "command": "" }
+}
+```
+
+---
+
+## Prometheus Metrics
+
+When `-prom` is enabled, xtop exposes a minimal metrics set including:
+
+- Health and primary RCA score
+- PSI (CPU/MEM/IO)
+- CPU busy/user/system/iowait/steal
+- Memory used %, total, available
+- Disk max util, per-device read/write/util/await, and await histogram
+- Network retrans, drops/errors (global + per-interface rx/tx/util)
+- Top 50 cgroups by CPU (cpu/mem/io/throttle)
+
+---
+
+## Alert Payloads
+
+Alert hooks are emitted in daemon mode when `-alert-webhook` or `-alert-command` is set.
+Events include: `health_critical`, `health_ok`, and `event_closed`.
+
+Webhook payload example:
+
+```json
+{
+  "event": "health_critical",
+  "payload": {
+    "bottleneck": "IO Starvation",
+    "score": 78,
+    "culprit": "/system.slice/docker-abc.scope",
+    "process": "postgres",
+    "pid": 1234
+  },
+  "ts": "2026-02-19T12:00:00Z"
+}
+```
+
+Alert command environment variables:
+
+- `XTOP_EVENT` — event name
+- `XTOP_PAYLOAD` — JSON payload string
 
 ## Demo Scenarios
 

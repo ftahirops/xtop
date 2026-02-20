@@ -16,16 +16,16 @@ import (
 // ── ANSI color/style codes ──────────────────────────────────────────────────
 
 const (
-	R  = "\033[0m"  // reset
-	B  = "\033[1m"  // bold
-	D  = "\033[2m"  // dim
-	UL = "\033[4m"  // underline
+	R  = "\033[0m" // reset
+	B  = "\033[1m" // bold
+	D  = "\033[2m" // dim
+	UL = "\033[4m" // underline
 
-	FRed  = "\033[31m"
-	FGrn  = "\033[32m"
-	FYel  = "\033[33m"
-	FBlu  = "\033[34m"
-	FCyn  = "\033[36m"
+	FRed = "\033[31m"
+	FGrn = "\033[32m"
+	FYel = "\033[33m"
+	FBlu = "\033[34m"
+	FCyn = "\033[36m"
 
 	FBRed = "\033[91m"
 	FBGrn = "\033[92m"
@@ -33,35 +33,35 @@ const (
 	FBCyn = "\033[96m"
 	FBWht = "\033[97m"
 
-	BRed  = "\033[41m"
-	BGrn  = "\033[42m"
-	BBlu  = "\033[44m"
+	BRed = "\033[41m"
+	BGrn = "\033[42m"
+	BBlu = "\033[44m"
 )
 
 // ── Thresholds ──────────────────────────────────────────────────────────────
 
 const (
-	tPSIWarn        = 1.0
-	tPSICrit        = 10.0
-	tCPUWarn        = 70.0
-	tCPUCrit        = 90.0
-	tMemWarn        = 70.0
-	tMemCrit        = 85.0
-	tSwapWarn       = 20.0
-	tDiskUtilWarn   = 60.0
-	tDiskUtilCrit   = 85.0
-	tDiskAwaitWarn  = 10.0
-	tDiskAwaitCrit  = 50.0
-	tConntrackWarn  = 75.0
-	tTimeWaitWarn   = 1000
-	tCloseWaitWarn  = 10
-	tRetransWarn    = 5.0
-	tRetransCrit    = 50.0
-	tDropsWarn      = 1.0
-	tMajFaultWarn   = 5.0
-	tReclaimWarn    = 0.5
-	tCapacityWarn   = 30.0
-	tCapacityCrit   = 15.0
+	tPSIWarn       = 1.0
+	tPSICrit       = 10.0
+	tCPUWarn       = 70.0
+	tCPUCrit       = 90.0
+	tMemWarn       = 70.0
+	tMemCrit       = 85.0
+	tSwapWarn      = 20.0
+	tDiskUtilWarn  = 60.0
+	tDiskUtilCrit  = 85.0
+	tDiskAwaitWarn = 10.0
+	tDiskAwaitCrit = 50.0
+	tConntrackWarn = 75.0
+	tTimeWaitWarn  = 1000
+	tCloseWaitWarn = 10
+	tRetransWarn   = 5.0
+	tRetransCrit   = 50.0
+	tDropsWarn     = 1.0
+	tMajFaultWarn  = 5.0
+	tReclaimWarn   = 0.5
+	tCapacityWarn  = 30.0
+	tCapacityCrit  = 15.0
 )
 
 // ── Styling helpers ─────────────────────────────────────────────────────────
@@ -283,12 +283,12 @@ func sortProcIO(p []model.ProcessRate) []model.ProcessRate {
 
 // ── Main Watch Loop ─────────────────────────────────────────────────────────
 
-func runWatch(eng *engine.Engine, cfg Config) error {
+func runWatch(ticker engine.Ticker, cfg Config) error {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 
-	ticker := time.NewTicker(cfg.Interval)
-	defer ticker.Stop()
+	intervalTicker := time.NewTicker(cfg.Interval)
+	defer intervalTicker.Stop()
 
 	iteration := 0
 
@@ -297,9 +297,9 @@ func runWatch(eng *engine.Engine, cfg Config) error {
 		case <-sig:
 			fmt.Printf("\n%sStopped.%s\n", D, R)
 			return nil
-		case <-ticker.C:
+		case <-intervalTicker.C:
 			iteration++
-			snap, rates, result := eng.Tick()
+			snap, rates, result := ticker.Tick()
 			if snap == nil {
 				continue
 			}

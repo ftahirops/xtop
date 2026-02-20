@@ -10,11 +10,11 @@ import (
 
 // Engine orchestrates collection, analysis, and scoring.
 type Engine struct {
-	registry       *collector.Registry
-	cgCollect      *cgcollector.Collector
-	History        *History
-	Smart          *collector.SMARTCollector
-	growthTracker  *MountGrowthTracker
+	registry      *collector.Registry
+	cgCollect     *cgcollector.Collector
+	History       *History
+	Smart         *collector.SMARTCollector
+	growthTracker *MountGrowthTracker
 }
 
 // NewEngine creates a new engine with all collectors registered.
@@ -40,7 +40,13 @@ func (e *Engine) Tick() (*model.Snapshot, *model.RateSnapshot, *model.AnalysisRe
 	}
 
 	// Collect all metrics
-	e.registry.CollectAll(snap)
+	if errs := e.registry.CollectAll(snap); len(errs) > 0 {
+		for _, err := range errs {
+			if err != nil {
+				snap.Errors = append(snap.Errors, err.Error())
+			}
+		}
+	}
 
 	// Get previous snapshot for rate calculations
 	prev := e.History.Latest()

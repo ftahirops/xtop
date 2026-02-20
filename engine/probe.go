@@ -113,7 +113,7 @@ type ProbeFindings struct {
 
 // ProbeManager manages the lifecycle of a probe session.
 type ProbeManager struct {
-	mu       sync.Mutex
+	mu       sync.RWMutex
 	state    ProbeState
 	start    time.Time
 	duration time.Duration
@@ -226,9 +226,13 @@ func convertResults(r *bpf.ProbeResults, start time.Time, duration time.Duration
 		if retransPerSec < 1 && tr.Count > 0 {
 			retransPerSec = 1
 		}
+		comm := tr.Comm
+		if tr.PID == 0 {
+			comm = "kernel (unattributed)"
+		}
 		f.TCPRetrans = append(f.TCPRetrans, TCPRetransEntry{
 			PID:     int(tr.PID),
-			Comm:    tr.Comm,
+			Comm:    comm,
 			Retrans: retransPerSec,
 			Iface:   tr.DstStr,
 		})
@@ -246,6 +250,9 @@ func convertResults(r *bpf.ProbeResults, start time.Time, duration time.Duration
 
 	// Convert TCP RTT results
 	for _, rt := range r.TCPRTT {
+		if rt.Count == 0 {
+			continue
+		}
 		avgUs := float64(rt.SumUs) / float64(rt.Count)
 		f.TCPRTT = append(f.TCPRTT, TCPRTTEntry{
 			DstAddr:  rt.DstStr,
@@ -259,6 +266,9 @@ func convertResults(r *bpf.ProbeResults, start time.Time, duration time.Duration
 
 	// Convert TCP connect latency results
 	for _, cl := range r.TCPConnLat {
+		if cl.Count == 0 {
+			continue
+		}
 		avgNs := float64(cl.TotalNs) / float64(cl.Count)
 		f.TCPConnLat = append(f.TCPConnLat, TCPConnLatEntry{
 			PID:     int(cl.PID),
@@ -399,22 +409,22 @@ func generateSummary(f *ProbeFindings) string {
 
 // State returns the current probe state.
 func (pm *ProbeManager) State() ProbeState {
-	pm.mu.Lock()
-	defer pm.mu.Unlock()
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
 	return pm.state
 }
 
 // Findings returns the probe findings (nil if not done).
 func (pm *ProbeManager) Findings() *ProbeFindings {
-	pm.mu.Lock()
-	defer pm.mu.Unlock()
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
 	return pm.findings
 }
 
 // SecondsLeft returns seconds remaining if running, 0 otherwise.
 func (pm *ProbeManager) SecondsLeft() int {
-	pm.mu.Lock()
-	defer pm.mu.Unlock()
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
 	if pm.state != ProbeRunning {
 		return 0
 	}
@@ -427,8 +437,8 @@ func (pm *ProbeManager) SecondsLeft() int {
 
 // Pack returns the current pack name.
 func (pm *ProbeManager) Pack() string {
-	pm.mu.Lock()
-	defer pm.mu.Unlock()
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
 	return pm.pack
 }
 
@@ -463,8 +473,8 @@ func (pm *ProbeManager) ProbeSecsLeft() int {
 
 // ProbeSummary implements probeQuerier.
 func (pm *ProbeManager) ProbeSummary() string {
-	pm.mu.Lock()
-	defer pm.mu.Unlock()
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
 	if pm.findings != nil {
 		return pm.findings.Summary
 	}

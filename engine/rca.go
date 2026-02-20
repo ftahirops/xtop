@@ -69,6 +69,9 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History) 
 		result.Confidence = 95
 	}
 
+	// Propagate system identity
+	result.SysInfo = curr.SysInfo
+
 	// DiskGuard state
 	if rates != nil && len(rates.MountRates) > 0 {
 		result.DiskGuardMounts = rates.MountRates
@@ -189,6 +192,7 @@ func analyzeIO(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEntry {
 		Group: "PSI", Label: "IO PSI elevated",
 		Passed: psiPassed,
 		Value:  fmt.Sprintf("some=%.1f%% full=%.1f%%", ioSome*100, ioFull*100),
+		Confidence: "M", Source: "procfs", Strength: clamp(ioSome, 0.5),
 	})
 	if psiPassed {
 		groupsPassed++
@@ -200,6 +204,7 @@ func analyzeIO(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEntry {
 		Group: "D-state", Label: "D-state tasks",
 		Passed: dPassed,
 		Value:  fmt.Sprintf("%d tasks", dCount),
+		Confidence: "M", Source: "procfs", Strength: clamp(float64(dCount), 10),
 	})
 	if dPassed {
 		groupsPassed++
@@ -215,6 +220,7 @@ func analyzeIO(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEntry {
 		Group: "Disk", Label: "Disk latency/util",
 		Passed: diskPassed,
 		Value:  fmt.Sprintf("%s await=%.0fms util=%.0f%%", devStr, worstAwait, worstUtil),
+		Confidence: "M", Source: "sysfs", Strength: clamp(worstAwait, 50),
 	})
 	if diskPassed {
 		groupsPassed++
@@ -226,6 +232,7 @@ func analyzeIO(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEntry {
 		Group: "Dirty", Label: "Dirty pages elevated",
 		Passed: dirtyPassed,
 		Value:  fmt.Sprintf("%.1f%% of RAM", dirtyPct),
+		Confidence: "L", Source: "procfs", Strength: clamp(dirtyPct, 20),
 	})
 	if dirtyPassed {
 		groupsPassed++
@@ -251,6 +258,7 @@ func analyzeIO(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEntry {
 		Group: "FSFull", Label: "Filesystem space low",
 		Passed: fsFull,
 		Value:  fsVal,
+		Confidence: "M", Source: "sysfs", Strength: clamp(100-worstFreePct, 90),
 	})
 	if fsFull {
 		groupsPassed++
@@ -337,6 +345,9 @@ func analyzeMemory(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEnt
 	memFull := curr.Global.PSI.Memory.Full.Avg10 / 100
 
 	mem := curr.Global.Memory
+	if mem.Total == 0 {
+		return r
+	}
 	availPct := float64(mem.Available) / float64(mem.Total) * 100
 
 	var swapIOMBs, directPct, majFaultRate, directReclaimRate float64
@@ -359,6 +370,7 @@ func analyzeMemory(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEnt
 		Group: "PSI", Label: "MEM PSI elevated",
 		Passed: psiPassed,
 		Value:  fmt.Sprintf("some=%.1f%% full=%.1f%%", memSome*100, memFull*100),
+		Confidence: "M", Source: "procfs", Strength: clamp(memSome, 0.5),
 	})
 	if psiPassed {
 		groupsPassed++
@@ -370,6 +382,7 @@ func analyzeMemory(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEnt
 		Group: "Available", Label: "MemAvailable low",
 		Passed: availLow,
 		Value:  fmt.Sprintf("%.1f%% (%s free)", availPct, formatB(mem.Available)),
+		Confidence: "M", Source: "procfs", Strength: clamp(100-availPct, 100),
 	})
 	if availLow {
 		groupsPassed++
@@ -381,6 +394,7 @@ func analyzeMemory(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEnt
 		Group: "Swap", Label: "Swap IO active",
 		Passed: swapActive,
 		Value:  fmt.Sprintf("%.1f MB/s", swapIOMBs),
+		Confidence: "M", Source: "procfs", Strength: clamp(swapIOMBs, 50),
 	})
 	if swapActive {
 		groupsPassed++
@@ -392,6 +406,7 @@ func analyzeMemory(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEnt
 		Group: "Reclaim", Label: "Direct reclaim active",
 		Passed: reclaimActive,
 		Value:  fmt.Sprintf("%.0f pages/s (ratio=%.0f%%)", directReclaimRate, directPct*100),
+		Confidence: "M", Source: "procfs", Strength: clamp(directReclaimRate, 1000),
 	})
 	if reclaimActive {
 		groupsPassed++
@@ -403,6 +418,7 @@ func analyzeMemory(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEnt
 		Group: "MajFault", Label: "Major faults elevated",
 		Passed: majFaultHigh,
 		Value:  fmt.Sprintf("%.0f/s", majFaultRate),
+		Confidence: "M", Source: "procfs", Strength: clamp(majFaultRate, 500),
 	})
 	if majFaultHigh {
 		groupsPassed++
@@ -414,6 +430,7 @@ func analyzeMemory(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEnt
 		Group: "OOM", Label: "OOM kills detected",
 		Passed: oomDetected,
 		Value:  fmt.Sprintf("%d cumulative", curr.Global.VMStat.OOMKill),
+		Confidence: "H", Source: "procfs", Strength: 1.0,
 	})
 	if oomDetected {
 		groupsPassed++
@@ -559,6 +576,7 @@ func analyzeCPU(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEntry 
 		Group: "PSI", Label: "CPU PSI elevated",
 		Passed: psiPassed,
 		Value:  fmt.Sprintf("some=%.1f%% full=%.1f%%", cpuSome*100, cpuFull*100),
+		Confidence: "M", Source: "procfs", Strength: clamp(cpuSome, 0.5),
 	})
 	if psiPassed {
 		groupsPassed++
@@ -570,6 +588,7 @@ func analyzeCPU(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEntry 
 		Group: "RunQueue", Label: "Run queue saturated",
 		Passed: rqPassed,
 		Value:  fmt.Sprintf("%.1f ratio (%d runnable / %d cores)", rqRatio, int(running), nCPUs),
+		Confidence: "M", Source: "procfs", Strength: clamp(rqRatio, 3.0),
 	})
 	if rqPassed {
 		groupsPassed++
@@ -582,6 +601,7 @@ func analyzeCPU(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEntry 
 		Group: "CtxSwitch", Label: "Context switches high",
 		Passed: csPassed,
 		Value:  fmt.Sprintf("%.0f/s (%.0f/core)", ctxRate, csPerCore),
+		Confidence: "L", Source: "procfs", Strength: clamp(csPerCore, 100000),
 	})
 	if csPassed {
 		groupsPassed++
@@ -597,6 +617,7 @@ func analyzeCPU(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEntry 
 		Group: "Throttle", Label: "Cgroup throttling",
 		Passed: thrPassed,
 		Value:  thrVal,
+		Confidence: "M", Source: "sysfs", Strength: clamp(maxThrottlePct, 50),
 	})
 	if thrPassed {
 		groupsPassed++
@@ -608,6 +629,7 @@ func analyzeCPU(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEntry 
 		Group: "Steal", Label: "CPU steal (hypervisor)",
 		Passed: stealPassed,
 		Value:  fmt.Sprintf("%.1f%%", stealPct),
+		Confidence: "H", Source: "procfs", Strength: clamp(stealPct, 25),
 	})
 	if stealPassed {
 		groupsPassed++
@@ -734,6 +756,7 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEn
 		Group: "Drops", Label: "Packet drops",
 		Passed: dropsPassed,
 		Value:  fmt.Sprintf("%.0f/s", totalDrops),
+		Confidence: "M", Source: "procfs", Strength: clamp(totalDrops, 100),
 	})
 	if dropsPassed {
 		groupsPassed++
@@ -745,6 +768,7 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEn
 		Group: "Retrans", Label: "TCP retransmits",
 		Passed: retransPassed,
 		Value:  fmt.Sprintf("%.0f/s", retransRate),
+		Confidence: "M", Source: "procfs", Strength: clamp(retransRate, 100),
 	})
 	if retransPassed {
 		groupsPassed++
@@ -756,6 +780,7 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEn
 		Group: "Conntrack", Label: "Conntrack table pressure",
 		Passed: ctPassed,
 		Value:  fmt.Sprintf("%.0f%% (%d/%d)", conntrackPct*100, ct.Count, ct.Max),
+		Confidence: "M", Source: "procfs", Strength: clamp(conntrackPct, 1.0),
 	})
 	if ctPassed {
 		groupsPassed++
@@ -767,6 +792,7 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEn
 		Group: "SoftIRQ", Label: "SoftIRQ CPU overhead",
 		Passed: siPassed,
 		Value:  fmt.Sprintf("%.1f%%", rates.CPUSoftIRQPct),
+		Confidence: "L", Source: "procfs", Strength: clamp(rates.CPUSoftIRQPct, 25),
 	})
 	if siPassed {
 		groupsPassed++
@@ -779,6 +805,7 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEn
 		Group: "TCPState", Label: "TCP state anomaly",
 		Passed: tcpStatePassed,
 		Value:  tcpStateVal,
+		Confidence: "L", Source: "procfs", Strength: clamp(float64(st.TimeWait), 10000),
 	})
 	if tcpStatePassed {
 		groupsPassed++
@@ -790,6 +817,7 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEn
 		Group: "Errors", Label: "Network errors",
 		Passed: errorsPassed,
 		Value:  fmt.Sprintf("%.0f/s", totalErrors),
+		Confidence: "M", Source: "procfs", Strength: clamp(totalErrors, 100),
 	})
 	if errorsPassed {
 		groupsPassed++
@@ -807,6 +835,7 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEn
 		Group: "Ephemeral", Label: "Ephemeral port pressure",
 		Passed: ephPassed,
 		Value:  fmt.Sprintf("%.0f%% (%d/%d)", ephPct, eph.InUse, ephRange),
+		Confidence: "M", Source: "procfs", Strength: clamp(ephPct, 100),
 	})
 	if ephPassed {
 		groupsPassed++
@@ -1009,7 +1038,10 @@ func buildCausalChain(snap *model.Snapshot, rates *model.RateSnapshot, result *m
 		if rates != nil && (rates.SwapInRate > 0 || rates.SwapOutRate > 0) {
 			parts = append(parts, fmt.Sprintf("swap in=%.1f out=%.1f MB/s", rates.SwapInRate, rates.SwapOutRate))
 		}
-		availPct := float64(snap.Global.Memory.Available) / float64(snap.Global.Memory.Total) * 100
+		var availPct float64
+		if snap.Global.Memory.Total > 0 {
+			availPct = float64(snap.Global.Memory.Available) / float64(snap.Global.Memory.Total) * 100
+		}
 		parts = append(parts, fmt.Sprintf("avail=%.0f%%", availPct))
 		parts = append(parts, "allocation stall risk")
 	case BottleneckCPU:
@@ -1077,9 +1109,3 @@ func cap100(score *int) {
 	}
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}

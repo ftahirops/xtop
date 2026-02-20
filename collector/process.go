@@ -13,7 +13,8 @@ import (
 
 // ProcessCollector reads per-PID stats from /proc.
 type ProcessCollector struct {
-	MaxProcs int // maximum number of processes to collect (top by CPU+IO)
+	MaxProcs    int // maximum number of processes to collect (top by CPU+IO)
+	prevTopPIDs map[int]bool
 }
 
 func (p *ProcessCollector) Name() string { return "process" }
@@ -24,6 +25,7 @@ func (p *ProcessCollector) Collect(snap *model.Snapshot) error {
 		return fmt.Errorf("read /proc: %w", err)
 	}
 
+	// Pass 1: lightweight read (stat + io only) for ALL processes.
 	var procs []model.ProcessMetrics
 	for _, e := range entries {
 		if !e.IsDir() {
@@ -33,7 +35,7 @@ func (p *ProcessCollector) Collect(snap *model.Snapshot) error {
 		if pid <= 0 {
 			continue
 		}
-		pm, err := readProcess(pid)
+		pm, err := readProcessLight(pid)
 		if err != nil {
 			continue // process may have exited
 		}
@@ -45,7 +47,11 @@ func (p *ProcessCollector) Collect(snap *model.Snapshot) error {
 		maxProcs = 50
 	}
 
+	// If few enough processes, read details for all and return early.
 	if len(procs) <= maxProcs {
+		for i := range procs {
+			readProcessDetail(fmt.Sprintf("/proc/%d", procs[i].PID), &procs[i])
+		}
 		snap.Processes = procs
 		return nil
 	}
@@ -76,6 +82,16 @@ func (p *ProcessCollector) Collect(snap *model.Snapshot) error {
 		}
 	}
 
+	// Include sticky offenders from previous tick
+	if p.prevTopPIDs != nil {
+		for i := 0; i < len(procs) && len(merged) < maxProcs; i++ {
+			if !seen[procs[i].PID] && p.prevTopPIDs[procs[i].PID] {
+				merged = append(merged, procs[i])
+				seen[procs[i].PID] = true
+			}
+		}
+	}
+
 	// Fill remaining slots with top CPU if space left
 	sort.Slice(procs, func(i, j int) bool {
 		return (procs[i].UTime + procs[i].STime) > (procs[j].UTime + procs[j].STime)
@@ -87,33 +103,45 @@ func (p *ProcessCollector) Collect(snap *model.Snapshot) error {
 		}
 	}
 
+	// Pass 2: read expensive details (status, cgroup, fd, limits) for selected processes only.
+	for i := range merged {
+		readProcessDetail(fmt.Sprintf("/proc/%d", merged[i].PID), &merged[i])
+	}
+
+	// Save current top 10 PIDs for next tick (sticky offenders)
+	p.prevTopPIDs = make(map[int]bool)
+	topN := 10
+	if topN > len(merged) {
+		topN = len(merged)
+	}
+	for i := 0; i < topN; i++ {
+		p.prevTopPIDs[merged[i].PID] = true
+	}
+
 	snap.Processes = merged
 	return nil
 }
 
-func readProcess(pid int) (model.ProcessMetrics, error) {
+// readProcessLight reads only stat + io bytes — enough for ranking by CPU time and IO writes.
+func readProcessLight(pid int) (model.ProcessMetrics, error) {
 	var pm model.ProcessMetrics
 	pm.PID = pid
 	pidDir := fmt.Sprintf("/proc/%d", pid)
 
-	// Read /proc/[pid]/stat
 	if err := readProcStat(pidDir, &pm); err != nil {
 		return pm, err
 	}
-
-	// Read /proc/[pid]/status (for memory, ctxt switches)
-	readProcStatus(pidDir, &pm)
-
-	// Read /proc/[pid]/io (may fail without permissions)
-	readProcIO(pidDir, &pm)
-
-	// Read cgroup
-	readProcCgroup(pidDir, &pm)
-
-	// Read FD count and limits
-	readProcFD(pidDir, &pm)
+	readProcIOLight(pidDir, &pm)
 
 	return pm, nil
+}
+
+// readProcessDetail reads the expensive files (status, cgroup, fd, limits)
+// that are only needed for display/analysis after filtering.
+func readProcessDetail(pidDir string, pm *model.ProcessMetrics) {
+	readProcStatus(pidDir, pm)
+	readProcCgroup(pidDir, pm)
+	readProcFD(pidDir, pm)
 }
 
 func readProcStat(pidDir string, pm *model.ProcessMetrics) error {
@@ -178,15 +206,34 @@ func parseStatusKB(s string) uint64 {
 	return util.ParseUint64(fields[0]) * 1024
 }
 
-func readProcIO(pidDir string, pm *model.ProcessMetrics) {
-	kv, err := util.ParseKeyValueFile(filepath.Join(pidDir, "io"))
+// readProcIOLight reads /proc/PID/io using direct prefix-matching instead of
+// ParseKeyValueFile (avoids map + scanner allocation for every process).
+func readProcIOLight(pidDir string, pm *model.ProcessMetrics) {
+	data, err := os.ReadFile(filepath.Join(pidDir, "io"))
 	if err != nil {
 		return
 	}
-	pm.ReadBytes = util.ParseUint64(kv["read_bytes"])
-	pm.WriteBytes = util.ParseUint64(kv["write_bytes"])
-	pm.SyscR = util.ParseUint64(kv["syscr"])
-	pm.SyscW = util.ParseUint64(kv["syscw"])
+	s := string(data)
+	for len(s) > 0 {
+		nl := strings.IndexByte(s, '\n')
+		var line string
+		if nl >= 0 {
+			line = s[:nl]
+			s = s[nl+1:]
+		} else {
+			line = s
+			s = ""
+		}
+		if strings.HasPrefix(line, "read_bytes: ") {
+			pm.ReadBytes = util.ParseUint64(line[12:])
+		} else if strings.HasPrefix(line, "write_bytes: ") {
+			pm.WriteBytes = util.ParseUint64(line[13:])
+		} else if strings.HasPrefix(line, "syscr: ") {
+			pm.SyscR = util.ParseUint64(line[7:])
+		} else if strings.HasPrefix(line, "syscw: ") {
+			pm.SyscW = util.ParseUint64(line[7:])
+		}
+	}
 }
 
 func readProcCgroup(pidDir string, pm *model.ProcessMetrics) {

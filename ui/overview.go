@@ -78,6 +78,26 @@ func renderHeader(snap *model.Snapshot, rates *model.RateSnapshot, result *model
 		return dimStyle.Render(" collecting...")
 	}
 
+	// System identity line
+	if snap.SysInfo != nil {
+		si := snap.SysInfo
+		parts := []string{}
+		if si.Hostname != "" {
+			parts = append(parts, si.Hostname)
+		}
+		if len(si.IPs) > 0 {
+			parts = append(parts, strings.Join(si.IPs, ", "))
+		}
+		if si.Virtualization != "" {
+			parts = append(parts, si.Virtualization)
+		}
+		if len(parts) > 0 {
+			sb.WriteString(" ")
+			sb.WriteString(dimStyle.Render(strings.Join(parts, " | ")))
+			sb.WriteString("\n")
+		}
+	}
+
 	sb.WriteString(" ")
 	switch result.Health {
 	case model.HealthOK:
@@ -149,6 +169,19 @@ func renderHeader(snap *model.Snapshot, rates *model.RateSnapshot, result *model
 			sb.WriteString(warnStyle.Render(diskStr))
 		} else {
 			sb.WriteString(okStyle.Render(diskStr))
+		}
+	}
+
+	if len(snap.Errors) > 0 {
+		sb.WriteString("\n ")
+		shown := snap.Errors
+		if len(shown) > 2 {
+			shown = shown[:2]
+		}
+		sb.WriteString(warnStyle.Render("Collector errors: "))
+		sb.WriteString(dimStyle.Render(strings.Join(shown, " | ")))
+		if len(snap.Errors) > 2 {
+			sb.WriteString(dimStyle.Render(fmt.Sprintf(" (+%d more)", len(snap.Errors)-2)))
 		}
 	}
 
@@ -1285,4 +1318,80 @@ func separator(width int) string {
 		width = 40
 	}
 	return dimStyle.Render(strings.Repeat("─", width))
+}
+
+// renderExplainPanel renders a detailed evidence breakdown for each RCA entry.
+func renderExplainPanel(result *model.AnalysisResult, width int) string {
+	var sb strings.Builder
+
+	innerW := width - 7
+	if innerW < 60 {
+		innerW = 60
+	}
+	if innerW > 100 {
+		innerW = 100
+	}
+
+	sb.WriteString("\n")
+	sb.WriteString(titleStyle.Render(" EXPLAIN VERDICT (press e to close)"))
+	sb.WriteString("\n")
+
+	if result == nil || len(result.RCA) == 0 {
+		sb.WriteString(boxTop(innerW) + "\n")
+		sb.WriteString(boxRow(dimStyle.Render("No analysis data available"), innerW) + "\n")
+		sb.WriteString(boxBot(innerW) + "\n")
+		return sb.String()
+	}
+
+	for _, rca := range result.RCA {
+		if rca.Score == 0 && rca.EvidenceGroups == 0 {
+			continue
+		}
+
+		sb.WriteString(boxTop(innerW) + "\n")
+
+		// Bottleneck header with score
+		style := dimStyle
+		if rca.Score >= 60 {
+			style = critStyle
+		} else if rca.Score >= 25 {
+			style = warnStyle
+		} else if rca.Score > 0 {
+			style = orangeStyle
+		}
+		header := fmt.Sprintf(" %s  Score: %s  Groups: %d/%d",
+			style.Render(rca.Bottleneck),
+			style.Render(fmt.Sprintf("%d%%", rca.Score)),
+			rca.EvidenceGroups, len(rca.Checks))
+		sb.WriteString(boxRow(header, innerW) + "\n")
+
+		if rca.TopProcess != "" {
+			culprit := fmt.Sprintf(" Culprit: %s (PID %d)", valueStyle.Render(rca.TopProcess), rca.TopPID)
+			sb.WriteString(boxRow(culprit, innerW) + "\n")
+		}
+
+		sb.WriteString(boxMid(innerW) + "\n")
+
+		// Evidence checks with pass/fail, confidence tags
+		for _, check := range rca.Checks {
+			icon := dimStyle.Render("[ ]")
+			if check.Passed {
+				icon = okStyle.Render("[x]")
+			}
+			confTag := ""
+			if check.Confidence != "" {
+				confTag = dimStyle.Render(fmt.Sprintf(" [%s]", check.Confidence))
+			}
+			line := fmt.Sprintf(" %s %s %s%s",
+				icon,
+				styledPad(check.Label, 24),
+				dimStyle.Render(check.Value),
+				confTag)
+			sb.WriteString(boxRow(line, innerW) + "\n")
+		}
+
+		sb.WriteString(boxBot(innerW) + "\n")
+	}
+
+	return sb.String()
 }

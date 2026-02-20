@@ -33,6 +33,7 @@ func (r *Registry) TriggerByName(name string) {
 func NewRegistry() *Registry {
 	return &Registry{
 		collectors: []Collector{
+			&SysInfoCollector{},
 			&PSICollector{},
 			&CPUCollector{},
 			&MemoryCollector{},

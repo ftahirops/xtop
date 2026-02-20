@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"sync"
+
 	"github.com/ftahirops/xtop/model"
 )
 
@@ -12,6 +14,7 @@ type History struct {
 	size    int
 	cap     int
 	anomaly *AnomalyState
+	mu      sync.RWMutex
 }
 
 // NewHistory creates a ring buffer with the given capacity.
@@ -26,6 +29,8 @@ func NewHistory(capacity int) *History {
 
 // Push adds a snapshot to the ring buffer.
 func (h *History) Push(snap model.Snapshot) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	h.buf[h.head] = snap
 	h.head = (h.head + 1) % h.cap
 	if h.size < h.cap {
@@ -35,6 +40,8 @@ func (h *History) Push(snap model.Snapshot) {
 
 // PushRate stores a rate snapshot at the same position as the latest Push.
 func (h *History) PushRate(rate model.RateSnapshot) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	// Rate corresponds to the most recently pushed snapshot
 	idx := (h.head - 1 + h.cap) % h.cap
 	h.rateBuf[idx] = rate
@@ -42,11 +49,15 @@ func (h *History) PushRate(rate model.RateSnapshot) {
 
 // Len returns the number of snapshots stored.
 func (h *History) Len() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
 	return h.size
 }
 
 // Latest returns the most recent snapshot.
 func (h *History) Latest() *model.Snapshot {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
 	if h.size == 0 {
 		return nil
 	}
@@ -56,6 +67,8 @@ func (h *History) Latest() *model.Snapshot {
 
 // Previous returns the snapshot before the most recent one.
 func (h *History) Previous() *model.Snapshot {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
 	if h.size < 2 {
 		return nil
 	}
@@ -65,6 +78,8 @@ func (h *History) Previous() *model.Snapshot {
 
 // Get returns the snapshot at position i (0 = oldest in buffer).
 func (h *History) Get(i int) *model.Snapshot {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
 	if i < 0 || i >= h.size {
 		return nil
 	}
@@ -74,6 +89,8 @@ func (h *History) Get(i int) *model.Snapshot {
 
 // GetRate returns the rate snapshot at position i (0 = oldest in buffer).
 func (h *History) GetRate(i int) *model.RateSnapshot {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
 	if i < 0 || i >= h.size {
 		return nil
 	}

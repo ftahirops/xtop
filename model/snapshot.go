@@ -8,6 +8,8 @@ type Snapshot struct {
 	Global    GlobalMetrics
 	Cgroups   []CgroupMetrics
 	Processes []ProcessMetrics
+	SysInfo   *SysInfo
+	Errors    []string
 }
 
 // HealthLevel represents overall system health.
@@ -262,6 +264,9 @@ type AnalysisResult struct {
 	DiskGuardMounts []MountRate
 	DiskGuardWorst  string // worst state across all mounts: "OK", "WARN", "CRIT"
 	DiskGuardMode   string // "Monitor", "Contain", "Action"
+
+	// System identity
+	SysInfo *SysInfo
 }
 
 // MetricChange represents a notable metric delta for the "what changed?" engine.
@@ -293,10 +298,20 @@ type ExhaustionPrediction struct {
 
 // EvidenceCheck is a single signal check with pass/fail.
 type EvidenceCheck struct {
-	Group   string // evidence group name (e.g. "PSI", "D-state", "Disk latency")
-	Label   string // human-readable check (e.g. "IO PSI full avg10=0.12")
-	Passed  bool   // did this signal fire?
-	Value   string // current value for display
+	Group      string  // evidence group name (e.g. "PSI", "D-state", "Disk latency")
+	Label      string  // human-readable check (e.g. "IO PSI full avg10=0.12")
+	Passed     bool    // did this signal fire?
+	Value      string  // current value for display
+	Confidence string  // "H" = BPF tracepoint, "M" = /proc counter, "L" = heuristic/derived
+	Source     string  // "procfs", "sysfs", "bpf", "derived"
+	Strength   float64 // 0.0-1.0 signal strength
+}
+
+// SysInfo holds host identity information (collected once).
+type SysInfo struct {
+	Hostname       string
+	IPs            []string
+	Virtualization string // "Bare Metal", "VM (KVM)", "VM (VMware)", "Container (Docker)", etc.
 }
 
 // RCAEntry holds one bottleneck analysis result.

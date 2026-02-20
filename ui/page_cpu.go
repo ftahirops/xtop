@@ -59,6 +59,13 @@ func renderCPUPage(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 	sumLines = append(sumLines, fmt.Sprintf("Ctx switches: %.0f/s (%.0f/core)", ctxRate, ctxPerCore))
 	sumLines = append(sumLines, fmt.Sprintf("PSI some/full: %s / %s", fmtPSI(psi.Some.Avg10), fmtPSI(psi.Full.Avg10)))
 	sumLines = append(sumLines, fmt.Sprintf("Load: %.2f %.2f %.2f  Runnable: %d", load.Load1, load.Load5, load.Load15, load.Running))
+	// VM steal hint
+	if result != nil && result.SysInfo != nil && result.SysInfo.Virtualization != "Bare Metal" && stealPct > 1 {
+		sumLines = append(sumLines, "")
+		sumLines = append(sumLines, warnStyle.Render("VM Steal detected: ")+
+			dimStyle.Render("High steal suggests host/hypervisor contention — contact infrastructure team"))
+	}
+
 	sb.WriteString(boxSection("SUMMARY", sumLines, iw))
 
 	// === Top cgroups by CPU% ===

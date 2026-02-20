@@ -18,6 +18,8 @@ type DaemonConfig struct {
 	DataDir  string
 	Interval time.Duration
 	History  int
+	Metrics  *MetricsStore
+	Alerts   AlertConfig
 }
 
 // compactSummary is a minimal per-tick record for the rolling log.
@@ -35,19 +37,24 @@ type compactSummary struct {
 
 // RunDaemon runs xtop as a background collector, writing events to DataDir.
 func RunDaemon(cfg DaemonConfig) error {
-	if err := os.MkdirAll(cfg.DataDir, 0755); err != nil {
+	if err := os.MkdirAll(cfg.DataDir, 0700); err != nil {
 		return fmt.Errorf("create data dir: %w", err)
 	}
 
 	// Write PID file
 	pidPath := filepath.Join(cfg.DataDir, "daemon.pid")
-	if err := os.WriteFile(pidPath, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0644); err != nil {
+	if err := os.WriteFile(pidPath, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0600); err != nil {
 		return fmt.Errorf("write pid file: %w", err)
 	}
 	defer os.Remove(pidPath)
 
 	eng := NewEngine(cfg.History)
+	engTicker := Ticker(eng)
+	if cfg.Metrics != nil {
+		engTicker = NewInstrumentedTicker(engTicker, cfg.Metrics)
+	}
 	detector := NewEventDetector()
+	notifier := NewNotifier(cfg.Alerts)
 	eventWriter := NewEventLogWriter(filepath.Join(cfg.DataDir, "events.jsonl"))
 	summaryPath := filepath.Join(cfg.DataDir, "current.jsonl")
 
@@ -55,23 +62,25 @@ func RunDaemon(cfg DaemonConfig) error {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	ticker := time.NewTicker(cfg.Interval)
-	defer ticker.Stop()
+	intervalTicker := time.NewTicker(cfg.Interval)
+	defer intervalTicker.Stop()
 
 	log.Printf("xtop daemon started (pid=%d, interval=%s, datadir=%s)", os.Getpid(), cfg.Interval, cfg.DataDir)
 
 	prevCompleted := 0
 	prevHealth := model.HealthOK
 	incidentDir := filepath.Join(cfg.DataDir, "incidents")
-	_ = os.MkdirAll(incidentDir, 0755)
+	if err := os.MkdirAll(incidentDir, 0700); err != nil {
+		log.Printf("create incident dir: %v", err)
+	}
 
 	for {
 		select {
 		case <-sigCh:
 			log.Printf("xtop daemon shutting down")
 			return nil
-		case <-ticker.C:
-			snap, rates, result := eng.Tick()
+		case <-intervalTicker.C:
+			snap, rates, result := engTicker.Tick()
 			if snap == nil || result == nil {
 				continue
 			}
@@ -86,21 +95,42 @@ func RunDaemon(cfg DaemonConfig) error {
 				saveIncidentSnapshot(snapPath, snap, rates, result)
 				log.Printf("AUTO-SNAPSHOT: %s (bottleneck=%s, score=%d)",
 					snapPath, result.PrimaryBottleneck, result.PrimaryScore)
+				if notifier.Enabled() {
+					notifier.Notify("health_critical", map[string]interface{}{
+						"bottleneck": result.PrimaryBottleneck,
+						"score":      result.PrimaryScore,
+						"culprit":    result.PrimaryCulprit,
+						"process":    result.PrimaryProcess,
+						"pid":        result.PrimaryPID,
+					})
+				}
+			}
+			if result.Health == model.HealthOK && prevHealth != model.HealthOK {
+				if notifier.Enabled() {
+					notifier.Notify("health_ok", map[string]interface{}{
+						"stable_since": result.StableSince,
+					})
+				}
 			}
 			prevHealth = result.Health
 
 			// Check for newly completed events
+			// completed is reverse-chronological (newest first).
 			_, completed := detector.AllEvents()
 			if len(completed) > prevCompleted {
-				for i := prevCompleted; i < len(completed); i++ {
-					// completed is reverse-chronological, so newest is first
-					// but prevCompleted tracks the total count
-					evt := completed[len(completed)-1-i]
+				// New events are at indices 0..newCount-1 (newest first).
+				// Process oldest-first for chronological logging.
+				newCount := len(completed) - prevCompleted
+				for i := newCount - 1; i >= 0; i-- {
+					evt := completed[i]
 					if err := eventWriter.Write(evt); err != nil {
 						log.Printf("error writing event: %v", err)
 					} else {
 						log.Printf("EVENT CLOSED: %s %s score=%d duration=%ds culprit=%s",
 							evt.ID, evt.Bottleneck, evt.PeakScore, evt.Duration, evt.CulpritProcess)
+						if notifier.Enabled() {
+							notifier.Notify("event_closed", evt)
+						}
 					}
 				}
 				prevCompleted = len(completed)
@@ -135,20 +165,20 @@ func RunDaemon(cfg DaemonConfig) error {
 // saveIncidentSnapshot writes a full snapshot to a JSON file on health transitions.
 func saveIncidentSnapshot(path string, snap *model.Snapshot, rates *model.RateSnapshot, result *model.AnalysisResult) {
 	type incidentSnapshot struct {
-		Timestamp  time.Time              `json:"timestamp"`
-		Health     string                 `json:"health"`
-		Score      int                    `json:"score"`
-		Bottleneck string                 `json:"bottleneck"`
-		Culprit    string                 `json:"culprit,omitempty"`
-		Process    string                 `json:"process,omitempty"`
-		PID        int                    `json:"pid,omitempty"`
-		Evidence   []string               `json:"evidence,omitempty"`
-		Chain      string                 `json:"causal_chain,omitempty"`
-		Actions    []model.Action         `json:"actions,omitempty"`
-		Changes    []model.MetricChange   `json:"top_changes,omitempty"`
-		CPUBusy    float64                `json:"cpu_busy_pct"`
-		MemUsedPct float64                `json:"mem_used_pct"`
-		IOPSI      float64                `json:"io_psi_full"`
+		Timestamp  time.Time            `json:"timestamp"`
+		Health     string               `json:"health"`
+		Score      int                  `json:"score"`
+		Bottleneck string               `json:"bottleneck"`
+		Culprit    string               `json:"culprit,omitempty"`
+		Process    string               `json:"process,omitempty"`
+		PID        int                  `json:"pid,omitempty"`
+		Evidence   []string             `json:"evidence,omitempty"`
+		Chain      string               `json:"causal_chain,omitempty"`
+		Actions    []model.Action       `json:"actions,omitempty"`
+		Changes    []model.MetricChange `json:"top_changes,omitempty"`
+		CPUBusy    float64              `json:"cpu_busy_pct"`
+		MemUsedPct float64              `json:"mem_used_pct"`
+		IOPSI      float64              `json:"io_psi_full"`
 	}
 
 	memPct := float64(0)
@@ -182,7 +212,7 @@ func saveIncidentSnapshot(path string, snap *model.Snapshot, rates *model.RateSn
 		log.Printf("marshal incident snapshot: %v", err)
 		return
 	}
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	if err := os.WriteFile(path, data, 0600); err != nil {
 		log.Printf("write incident snapshot: %v", err)
 	}
 }

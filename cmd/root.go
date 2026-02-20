@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -11,27 +12,32 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	xtopcfg "github.com/ftahirops/xtop/config"
 	"github.com/ftahirops/xtop/engine"
 	"github.com/ftahirops/xtop/model"
 	"github.com/ftahirops/xtop/ui"
 )
 
 // Version is set at build time via ldflags.
-var Version = "0.6.1"
+var Version = "0.7.3"
 
 // Config holds CLI configuration.
 type Config struct {
-	Interval    time.Duration
-	HistorySize int
-	JSONMode    bool
-	MDMode      bool
-	WatchMode   bool
-	WatchCount  int
-	Section     string
-	RecordPath  string
-	ReplayPath  string
-	DaemonMode  bool
-	DataDir     string
+	Interval     time.Duration
+	HistorySize  int
+	JSONMode     bool
+	MDMode       bool
+	WatchMode    bool
+	WatchCount   int
+	Section      string
+	RecordPath   string
+	ReplayPath   string
+	DaemonMode   bool
+	DataDir      string
+	PromEnabled  bool
+	PromAddr     string
+	AlertWebhook string
+	AlertCommand string
 }
 
 // validSections lists sections available for -watch and -section.
@@ -60,6 +66,10 @@ Options:
   -datadir PATH     Data directory for daemon mode (default: ~/.xtop/)
   -record FILE      Run TUI while recording snapshots to FILE
   -replay FILE      Replay a recorded file through the TUI
+  -prom             Enable Prometheus metrics endpoint
+  -prom-addr ADDR   Prometheus listen address (default: :9100)
+  -alert-webhook URL  Webhook URL for alert notifications
+  -alert-command CMD  Command to execute on alert notifications
 
 Positional:
   INTERVAL          First positional arg sets interval: xtop 5 = xtop -interval 5
@@ -89,18 +99,41 @@ func Run() error {
 	var intervalSec int
 	var showVersion bool
 
-	flag.IntVar(&intervalSec, "interval", 1, "Collection interval in seconds")
-	flag.IntVar(&cfg.HistorySize, "history", 300, "Number of snapshots to keep in history (5 min at 1s)")
+	userCfg := xtopcfg.Load()
+	if userCfg.IntervalSec > 0 {
+		intervalSec = userCfg.IntervalSec
+	} else {
+		intervalSec = 1
+	}
+	historyDefault := userCfg.HistorySize
+	if historyDefault <= 0 {
+		historyDefault = 300
+	}
+	sectionDefault := userCfg.Section
+	if sectionDefault == "" {
+		sectionDefault = "overview"
+	}
+	promAddrDefault := userCfg.Prometheus.Addr
+	if promAddrDefault == "" {
+		promAddrDefault = "127.0.0.1:9100"
+	}
+
+	flag.IntVar(&intervalSec, "interval", intervalSec, "Collection interval in seconds")
+	flag.IntVar(&cfg.HistorySize, "history", historyDefault, "Number of snapshots to keep in history (5 min at 1s)")
 	flag.BoolVar(&cfg.JSONMode, "json", false, "Output a single JSON snapshot and exit")
 	flag.BoolVar(&cfg.MDMode, "md", false, "Output a single Markdown incident report and exit")
 	flag.BoolVar(&cfg.WatchMode, "watch", false, "CLI output mode (no TUI, prints to terminal)")
 	flag.IntVar(&cfg.WatchCount, "count", 0, "Number of iterations for -watch (0=infinite)")
-	flag.StringVar(&cfg.Section, "section", "overview", "Section for -watch mode (overview,cpu,mem,io,net,cgroup,rca)")
+	flag.StringVar(&cfg.Section, "section", sectionDefault, "Section for -watch mode (overview,cpu,mem,io,net,cgroup,rca)")
 	flag.BoolVar(&cfg.DaemonMode, "daemon", false, "Run as background collector (no TUI)")
 	flag.StringVar(&cfg.DataDir, "datadir", "", "Data directory for daemon mode (default: ~/.xtop/)")
 	flag.StringVar(&cfg.RecordPath, "record", "", "Record snapshots to file for later replay")
 	flag.StringVar(&cfg.ReplayPath, "replay", "", "Replay snapshots from a recorded file")
 	flag.BoolVar(&showVersion, "version", false, "Print version and exit")
+	flag.BoolVar(&cfg.PromEnabled, "prom", userCfg.Prometheus.Enabled, "Enable Prometheus metrics endpoint")
+	flag.StringVar(&cfg.PromAddr, "prom-addr", promAddrDefault, "Prometheus listen address")
+	flag.StringVar(&cfg.AlertWebhook, "alert-webhook", userCfg.Alerts.Webhook, "Webhook URL for alert notifications")
+	flag.StringVar(&cfg.AlertCommand, "alert-command", userCfg.Alerts.Command, "Command to execute on alert notifications")
 
 	flag.Usage = printUsage
 	flag.Parse()
@@ -146,14 +179,40 @@ func Run() error {
 	if cfg.DataDir == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			home = "/tmp"
+			return fmt.Errorf("cannot determine home directory for data dir: %w (use -datadir to specify)", err)
 		}
 		cfg.DataDir = filepath.Join(home, ".xtop")
 	}
 
+	var promStore *engine.MetricsStore
+	if cfg.PromEnabled {
+		promStore = engine.NewMetricsStore()
+		srv := &http.Server{
+			Addr:              cfg.PromAddr,
+			Handler:           promStore.Handler(),
+			ReadHeaderTimeout: 10 * time.Second,
+			ReadTimeout:       30 * time.Second,
+			WriteTimeout:      30 * time.Second,
+			IdleTimeout:       60 * time.Second,
+		}
+		go func() {
+			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				fmt.Fprintf(os.Stderr, "Prometheus endpoint failed: %v\n", err)
+			}
+		}()
+		fmt.Fprintf(os.Stderr, "Prometheus metrics listening on %s\n", cfg.PromAddr)
+	}
+
+	wrapTicker := func(t engine.Ticker) engine.Ticker {
+		if promStore != nil {
+			return engine.NewInstrumentedTicker(t, promStore)
+		}
+		return t
+	}
+
 	// --replay mode
 	if cfg.ReplayPath != "" {
-		return runReplay(cfg)
+		return runReplay(cfg, wrapTicker)
 	}
 
 	// --daemon mode
@@ -162,6 +221,11 @@ func Run() error {
 			DataDir:  cfg.DataDir,
 			Interval: cfg.Interval,
 			History:  cfg.HistorySize,
+			Metrics:  promStore,
+			Alerts: engine.AlertConfig{
+				Webhook: cfg.AlertWebhook,
+				Command: cfg.AlertCommand,
+			},
 		})
 	}
 
@@ -172,37 +236,37 @@ func Run() error {
 
 	// -json mode: single snapshot to stdout
 	if cfg.JSONMode {
-		return runJSON(eng)
+		return runJSON(wrapTicker(eng), cfg.Interval)
 	}
 
 	// -md mode: single markdown incident report to stdout
 	if cfg.MDMode {
-		return runMarkdown(eng)
+		return runMarkdown(wrapTicker(eng), cfg.Interval)
 	}
 
 	// -watch mode: CLI output to terminal
 	if cfg.WatchMode {
-		return runWatch(eng, cfg)
+		return runWatch(wrapTicker(eng), cfg)
 	}
 
 	// -record mode: TUI + recording
 	if cfg.RecordPath != "" {
-		return runRecord(eng, cfg)
+		return runRecord(eng, cfg, wrapTicker)
 	}
 
 	// Normal TUI mode
-	model := ui.NewModel(eng, cfg.Interval, cfg.DataDir)
+	model := ui.NewModel(wrapTicker(eng), cfg.Interval, cfg.DataDir)
 	p := tea.NewProgram(model, tea.WithAltScreen())
 	_, err := p.Run()
 	return err
 }
 
 // runJSON outputs a single snapshot + analysis as JSON and exits.
-func runJSON(eng *engine.Engine) error {
+func runJSON(ticker engine.Ticker, interval time.Duration) error {
 	// Collect two snapshots for rate calculation
-	eng.Tick()
-	time.Sleep(time.Second)
-	snap, rates, result := eng.Tick()
+	ticker.Tick()
+	time.Sleep(interval)
+	snap, rates, result := ticker.Tick()
 
 	data := map[string]interface{}{
 		"timestamp": time.Now().Format(time.RFC3339),
@@ -217,11 +281,11 @@ func runJSON(eng *engine.Engine) error {
 }
 
 // runMarkdown outputs a markdown incident report to stdout.
-func runMarkdown(eng *engine.Engine) error {
+func runMarkdown(ticker engine.Ticker, interval time.Duration) error {
 	// Collect two snapshots for rate calculation
-	eng.Tick()
-	time.Sleep(time.Second)
-	snap, rates, result := eng.Tick()
+	ticker.Tick()
+	time.Sleep(interval)
+	snap, rates, result := ticker.Tick()
 
 	fmt.Println(renderMarkdownReport(snap, rates, result))
 	return nil
@@ -313,6 +377,14 @@ func renderMarkdownReport(snap *model.Snapshot, rates *model.RateSnapshot, resul
 			rates.CPUBusyPct, rates.CPUUserPct, rates.CPUSystemPct, rates.CPUIOWaitPct))
 	}
 
+	// Collector Errors
+	if len(snap.Errors) > 0 {
+		sb.WriteString("\n## Collector Errors\n\n")
+		for _, e := range snap.Errors {
+			sb.WriteString(fmt.Sprintf("- %s\n", e))
+		}
+	}
+
 	// Warnings
 	if result != nil && len(result.Warnings) > 0 {
 		sb.WriteString("\n## Warnings\n\n")
@@ -371,8 +443,8 @@ func fmtBytesSimple(b uint64) string {
 }
 
 // runRecord runs the TUI while also recording snapshots to a file.
-func runRecord(eng *engine.Engine, cfg Config) error {
-	f, err := os.Create(cfg.RecordPath)
+func runRecord(eng *engine.Engine, cfg Config, wrap func(engine.Ticker) engine.Ticker) error {
+	f, err := os.OpenFile(cfg.RecordPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		return fmt.Errorf("cannot create record file: %w", err)
 	}
@@ -380,8 +452,9 @@ func runRecord(eng *engine.Engine, cfg Config) error {
 
 	// Wrap the engine to intercept ticks and record
 	rec := engine.NewRecorder(eng, f)
+	ticker := wrap(rec)
 
-	model := ui.NewModel(rec.Engine, cfg.Interval, cfg.DataDir)
+	model := ui.NewModel(ticker, cfg.Interval, cfg.DataDir)
 	p := tea.NewProgram(model, tea.WithAltScreen())
 	_, err = p.Run()
 	rec.Close()
@@ -389,7 +462,7 @@ func runRecord(eng *engine.Engine, cfg Config) error {
 }
 
 // runReplay replays a recorded file through the TUI.
-func runReplay(cfg Config) error {
+func runReplay(cfg Config, wrap func(engine.Ticker) engine.Ticker) error {
 	f, err := os.Open(cfg.ReplayPath)
 	if err != nil {
 		return fmt.Errorf("cannot open replay file: %w", err)
@@ -401,7 +474,7 @@ func runReplay(cfg Config) error {
 		return fmt.Errorf("cannot parse replay file: %w", err)
 	}
 
-	model := ui.NewModel(player.Engine, cfg.Interval, cfg.DataDir)
+	model := ui.NewModel(wrap(player), cfg.Interval, cfg.DataDir)
 	p := tea.NewProgram(model, tea.WithAltScreen())
 	_, err = p.Run()
 	return err

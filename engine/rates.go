@@ -38,6 +38,9 @@ func computeCPURates(prev, curr *model.Snapshot, r *model.RateSnapshot) {
 		return
 	}
 	pct := func(pv, cv uint64) float64 {
+		if cv < pv {
+			return 0 // counter rollover guard
+		}
 		return float64(cv-pv) / float64(dtotal) * 100
 	}
 	r.CPUUserPct = pct(pt.User+pt.Nice, ct.User+ct.Nice)
@@ -315,9 +318,21 @@ func computeProcessRates(prev, curr *model.Snapshot, dt time.Duration, r *model.
 	resolveWritePaths(r.ProcessRates)
 }
 
+// writePathCache caches resolved write paths to avoid scanning /proc/PID/fd every tick.
+var writePathCache = struct {
+	entries map[int]string // PID → path
+	at      time.Time
+}{entries: make(map[int]string)}
+
+const writePathCacheTTL = 5 * time.Second
+
 // resolveWritePaths populates WritePath for the top writer processes by
 // reading /proc/<pid>/fd/ symlinks to find open regular files.
+// Results are cached for 5 seconds to avoid expensive fd scans every tick.
 func resolveWritePaths(rates []model.ProcessRate) {
+	now := time.Now()
+	stale := now.Sub(writePathCache.at) >= writePathCacheTTL
+
 	// Sort indices by WriteMBs descending to find top writers
 	type idx struct {
 		i    int
@@ -336,11 +351,25 @@ func resolveWritePaths(rates []model.ProcessRate) {
 		writers = writers[:20]
 	}
 
-	for _, w := range writers {
-		pid := rates[w.i].PID
-		path := resolveProcessWritePath(pid)
-		if path != "" {
-			rates[w.i].WritePath = path
+	if stale {
+		// Refresh cache
+		newCache := make(map[int]string, len(writers))
+		for _, w := range writers {
+			pid := rates[w.i].PID
+			path := resolveProcessWritePath(pid)
+			newCache[pid] = path
+			if path != "" {
+				rates[w.i].WritePath = path
+			}
+		}
+		writePathCache.entries = newCache
+		writePathCache.at = now
+	} else {
+		// Use cached values
+		for _, w := range writers {
+			if path, ok := writePathCache.entries[rates[w.i].PID]; ok && path != "" {
+				rates[w.i].WritePath = path
+			}
 		}
 	}
 }

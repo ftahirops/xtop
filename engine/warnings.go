@@ -8,6 +8,9 @@ import (
 
 // ComputeWarnings detects early warning signals.
 func ComputeWarnings(snap *model.Snapshot, rates *model.RateSnapshot) []model.Warning {
+	if rates == nil {
+		return nil
+	}
 	var warns []model.Warning
 
 	// PSI rising
@@ -216,10 +219,14 @@ func ComputeWarnings(snap *model.Snapshot, rates *model.RateSnapshot) []model.Wa
 
 	// CPU steal
 	if rates.CPUStealPct > 1 {
+		stealDetail := "Hypervisor stealing CPU"
+		if snap.SysInfo != nil && snap.SysInfo.Virtualization != "Bare Metal" {
+			stealDetail = "High steal suggests host/hypervisor contention"
+		}
 		warns = append(warns, model.Warning{
 			Severity: severity(rates.CPUStealPct, 5, 15),
 			Signal:   "CPU steal",
-			Detail:   "Hypervisor stealing CPU",
+			Detail:   stealDetail,
 			Value:    fmt.Sprintf("%.1f%%", rates.CPUStealPct),
 		})
 	}

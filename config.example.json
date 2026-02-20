@@ -1,0 +1,14 @@
+{
+  "default_layout": 0,
+  "interval_sec": 1,
+  "history_size": 300,
+  "default_section": "overview",
+  "prometheus": {
+    "enabled": false,
+    "addr": "127.0.0.1:9100"
+  },
+  "alerts": {
+    "webhook": "",
+    "command": ""
+  }
+}

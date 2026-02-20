@@ -1,0 +1,11 @@
+#!/bin/sh
+set -e
+
+echo "xtop installed successfully."
+echo "Run: sudo xtop"
+echo "Man page: man xtop"
+
+# Install man page
+if [ -f /usr/share/man/man1/xtop.1.gz ]; then
+    mandb -q 2>/dev/null || true
+fi

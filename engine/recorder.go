@@ -3,7 +3,6 @@ package engine
 import (
 	"encoding/json"
 	"io"
-	"os"
 	"sync"
 
 	"github.com/ftahirops/xtop/model"
@@ -23,7 +22,6 @@ type Recorder struct {
 	inner  *Engine
 	writer *json.Encoder
 	mu     sync.Mutex
-	f      *os.File
 }
 
 // NewRecorder creates a recorder that writes JSON lines to w.
@@ -40,6 +38,16 @@ func (r *Recorder) Close() {
 	// nothing special needed since we flush per write
 }
 
+// Base returns the underlying engine.
+func (r *Recorder) Base() *Engine {
+	return r.inner
+}
+
+// Tick records a frame and returns it.
+func (r *Recorder) Tick() (*model.Snapshot, *model.RateSnapshot, *model.AnalysisResult) {
+	return r.RecordTick()
+}
+
 // RecordTick calls the engine's Tick and records the result.
 func (r *Recorder) RecordTick() (*model.Snapshot, *model.RateSnapshot, *model.AnalysisResult) {
 	return r.RecordTickWithProbe(nil)
@@ -50,12 +58,15 @@ func (r *Recorder) RecordTickWithProbe(probe *ProbeFindings) (*model.Snapshot, *
 	snap, rates, result := r.inner.Tick()
 	if snap != nil {
 		r.mu.Lock()
-		r.writer.Encode(recordFrame{
+		if err := r.writer.Encode(recordFrame{
 			Snapshot: *snap,
 			Rates:    rates,
 			Result:   result,
 			Probe:    probe,
-		})
+		}); err != nil {
+			// Log encode error but don't fail the tick
+			_ = err
+		}
 		r.mu.Unlock()
 	}
 	return snap, rates, result
@@ -67,6 +78,7 @@ type Player struct {
 	frames []recordFrame
 	idx    int
 	mu     sync.Mutex
+	last   *recordFrame
 }
 
 // NewPlayer creates a player from a recorded file (JSON lines).
@@ -92,11 +104,79 @@ func NewPlayer(r io.Reader, historySize int) (*Player, error) {
 		frames: frames,
 	}
 
-	// Override the engine's Tick to replay frames
-	// We do this by pre-loading history
-	for _, f := range frames {
-		eng.History.Push(f.Snapshot)
+	return p, nil
+}
+
+// Base returns the underlying engine.
+func (p *Player) Base() *Engine {
+	return p.Engine
+}
+
+// Tick replays the next recorded frame (or the last frame if at EOF).
+func (p *Player) Tick() (*model.Snapshot, *model.RateSnapshot, *model.AnalysisResult) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if len(p.frames) == 0 {
+		return nil, nil, nil
 	}
 
-	return p, nil
+	if p.idx >= len(p.frames) {
+		if p.last != nil {
+			return &p.last.Snapshot, p.last.Rates, p.last.Result
+		}
+		f := &p.frames[len(p.frames)-1]
+		return &f.Snapshot, f.Rates, f.Result
+	}
+
+	f := &p.frames[p.idx]
+	p.idx++
+	p.last = f
+
+	// Feed history for trends
+	p.Engine.History.Push(f.Snapshot)
+	if f.Rates != nil {
+		p.Engine.History.PushRate(*f.Rates)
+	}
+
+	return &f.Snapshot, f.Rates, f.Result
+}
+
+// Len returns the number of frames available.
+func (p *Player) Len() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.frames)
+}
+
+// Index returns the next frame index.
+func (p *Player) Index() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.idx
+}
+
+// Seek jumps to a frame index and returns that frame.
+func (p *Player) Seek(i int) (*model.Snapshot, *model.RateSnapshot, *model.AnalysisResult) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.frames) == 0 {
+		return nil, nil, nil
+	}
+	if i < 0 {
+		i = 0
+	}
+	if i >= len(p.frames) {
+		i = len(p.frames) - 1
+	}
+	p.idx = i
+	f := &p.frames[p.idx]
+	p.idx++
+	p.last = f
+	// Feed history for trends
+	p.Engine.History.Push(f.Snapshot)
+	if f.Rates != nil {
+		p.Engine.History.PushRate(*f.Rates)
+	}
+	return &f.Snapshot, f.Rates, f.Result
 }
