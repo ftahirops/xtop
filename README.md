@@ -22,6 +22,14 @@
 </p>
 
 <p align="center">
+  <img src="assets/xtop-demo.gif" alt="xtop in action — RCA engine identifies bottleneck, culprit process, and suggests fix" width="100%"/>
+</p>
+
+<p align="center">
+  <em>xtop detects the bottleneck, identifies the culprit process, and tells you exactly what to do.</em>
+</p>
+
+<p align="center">
   <a href="#-quick-start">Quick Start</a> •
   <a href="#-the-problem">The Problem</a> •
   <a href="#-how-xtop-solves-it">The Solution</a> •
