@@ -29,7 +29,7 @@
   <a href="#-screenshots">Pages</a> •
   <a href="#-ebpf-deep-investigation">eBPF Probes</a> •
   <a href="#-doctor-mode">Doctor</a> •
-  <a href="#-server-identity-discovery">Identity</a> •
+  <a href="#-active-service-detection">Services</a> •
   <a href="#-installation">Installation</a> •
   <a href="#-documentation">Docs</a>
 </p>
@@ -278,7 +278,7 @@ sudo xtop -doctor -alert             # Send alerts on state changes
 | **Security** | Fileless process detection with forensic detail (exe, cmd, cwd, RSS, FDs, network connections) |
 | **Docker** | Disk usage, container health |
 | **SSL** | Let's Encrypt certificate expiration |
-| **Identity** | Service health checks based on discovered server roles |
+| **Services** | Auto-detected active services with deep health checks (MySQL, PostgreSQL, Redis, Docker, K8s, WireGuard) |
 
 **Alert dispatch:** Supports webhooks, Slack, Telegram, email, and custom commands. Only fires on state changes (OK→WARN, WARN→CRIT, etc.) to prevent alert fatigue.
 
@@ -286,29 +286,24 @@ sudo xtop -doctor -alert             # Send alerts on state changes
 
 ---
 
-### Server Identity Discovery
+### Active Service Detection
 
-xtop can discover what your server actually does and tailor health checks accordingly:
+Doctor mode auto-detects running services and runs health checks — no pre-configuration needed:
 
-```bash
-sudo xtop -discover         # Interactive discovery
-sudo xtop -discover -json   # JSON output
-```
-
-**Detected roles:**
-
-| Role | Detection Method |
+| Service | Health Check |
 |---|---|
-| **Web Server** | Nginx/Apache/Caddy processes, config files, listening ports (80/443) |
-| **Database** | PostgreSQL/MySQL/MongoDB/Redis processes and ports |
-| **Docker Host** | Docker daemon, containers, images |
-| **Kubernetes** | kubelet, kube-apiserver, etcd |
-| **NAT/Router** | ip_forward enabled, iptables MASQUERADE rules |
-| **VPN Gateway** | WireGuard interfaces, OpenVPN processes |
-| **Load Balancer** | HAProxy, keepalived with VIP discovery |
-| **DNS Server** | named/dnsmasq/systemd-resolved |
+| **sshd** | Process running |
+| **nginx / apache / caddy** | Process running |
+| **MySQL** | `mysqladmin ping` responsiveness |
+| **PostgreSQL** | `pg_isready` connection check |
+| **Redis** | `redis-cli ping` PONG response |
+| **Docker** | Container count, unhealthy/restarting detection |
+| **Kubernetes** | kubelet running, `kubectl get nodes` status |
+| **WireGuard** | Interface active (`wg0`, etc.) |
+| **HAProxy / keepalived** | Process running |
+| **DNS (named/dnsmasq/unbound)** | Process running |
 
-Once discovered, identity is saved to `~/.config/xtop/config.json` and doctor mode runs role-specific health checks automatically.
+Services that aren't installed are silently skipped — only active services appear in the report.
 
 ---
 
@@ -343,7 +338,7 @@ xtop -cron-install
 
 ---
 
-## 10 Output Modes
+## 9 Output Modes
 
 | Mode | Command | Use Case |
 |---|---|---|
@@ -355,7 +350,6 @@ xtop -cron-install
 | **Markdown Report** | `sudo xtop -md > incident.md` | Jira/Slack/GitHub ticket attachment |
 | **Daemon Mode** | `sudo xtop -daemon &` | Background collection + event logging |
 | **Record/Replay** | `sudo xtop -record file` | Flight recorder for postmortem |
-| **Identity Discovery** | `sudo xtop -discover` | Detect server roles and services |
 | **Shell Widget** | `eval "$(xtop -shell-init bash)"` | System health in your bash/zsh prompt |
 
 ---
@@ -456,7 +450,6 @@ Modes:
   -md               Single Markdown incident report to stdout, then exit
   -daemon           Background collector (writes events to datadir)
   -doctor           Comprehensive health check report
-  -discover         Run server identity discovery
   -version          Print version and exit
 
 Doctor Options:
@@ -553,10 +546,6 @@ sudo xtop -doctor -json                # JSON output for scripting
 sudo xtop -doctor -md                  # Markdown for tickets
 sudo xtop -doctor -cron                # Cron-friendly (silent if OK)
 sudo xtop -doctor -alert               # Alert on state change
-
-# === Server Identity Discovery ===
-sudo xtop -discover                    # Detect server roles
-sudo xtop -discover -json              # JSON output
 
 # === Shell Health Widget ===
 eval "$(xtop -shell-init bash)"        # Add to ~/.bashrc
@@ -707,11 +696,11 @@ sudo xtop
 │                       Analysis Engine                            │
 │   RCA Scoring • Evidence Gating • Anomaly Tracking               │
 │   Causal Chains • Capacity Prediction • Owner Attribution        │
-├──────────────────────┬──────────────────────────────────────────┤
-│   Doctor Engine       │         Identity Discovery              │
-│   Health checks • SSL │   Role detection • Service probing       │
-│   Alerts • Cron       │   Docker • K8s • VPN • DB • Web          │
-├──────────────────────┴──────────────────────────────────────────┤
+├─────────────────────────────────────────────────────────────────┤
+│                       Doctor Engine                              │
+│   Health checks • Service detection • SSL • Alerts • Cron        │
+│   MySQL/Postgres/Redis probes • Docker • K8s • WireGuard         │
+├─────────────────────────────────────────────────────────────────┤
 │                      Rate Calculator                             │
 │   Delta computation • Per-device/interface/cgroup/process rates   │
 ├───────────────────────┬─────────────────────────────────────────┤

@@ -96,27 +96,8 @@ func runDoctor(cfg Config) error {
 	report.Checks = append(report.Checks, checkNTPSync()...)
 	report.Checks = append(report.Checks, checkSSLCerts()...)
 
-	// Identity-aware checks
-	userCfg := xtopcfg.Load()
-	if userCfg.ServerIdentity != nil {
-		id := userCfg.ServerIdentity
-		report.Checks = append(report.Checks, checkIdentityServices(id)...)
-		report.Checks = append(report.Checks, checkWebServer(id)...)
-		report.Checks = append(report.Checks, checkDatabase(id)...)
-		report.Checks = append(report.Checks, checkDockerHealth(id)...)
-		report.Checks = append(report.Checks, checkK8sHealth(id)...)
-		report.Checks = append(report.Checks, checkNATHealth(id, snap)...)
-		report.Checks = append(report.Checks, checkVPNHealth(id)...)
-		report.Checks = append(report.Checks, checkDNSHealth(id)...)
-	} else {
-		report.Checks = append(report.Checks, CheckResult{
-			Category: "Identity",
-			Name:     "Server identity",
-			Status:   CheckSkip,
-			Detail:   "No identity discovered yet",
-			Advice:   "Run: sudo xtop -discover",
-		})
-	}
+	// Active service detection (auto-detects running services)
+	report.Checks = append(report.Checks, checkActiveServices()...)
 
 	// Compute worst status
 	for _, c := range report.Checks {
@@ -213,18 +194,8 @@ func runDoctorWatch(cfg Config) error {
 			report.Checks = append(report.Checks, checkNTPSync()...)
 			report.Checks = append(report.Checks, checkSSLCerts()...)
 
-			userCfg := xtopcfg.Load()
-			if userCfg.ServerIdentity != nil {
-				id := userCfg.ServerIdentity
-				report.Checks = append(report.Checks, checkIdentityServices(id)...)
-				report.Checks = append(report.Checks, checkWebServer(id)...)
-				report.Checks = append(report.Checks, checkDatabase(id)...)
-				report.Checks = append(report.Checks, checkDockerHealth(id)...)
-				report.Checks = append(report.Checks, checkK8sHealth(id)...)
-				report.Checks = append(report.Checks, checkNATHealth(id, snap)...)
-				report.Checks = append(report.Checks, checkVPNHealth(id)...)
-				report.Checks = append(report.Checks, checkDNSHealth(id)...)
-			}
+			// Active service detection
+			report.Checks = append(report.Checks, checkActiveServices()...)
 
 			// Compute worst status
 			for _, c := range report.Checks {

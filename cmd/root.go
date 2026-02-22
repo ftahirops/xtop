@@ -42,7 +42,6 @@ type Config struct {
 	DoctorMode   bool
 	CronMode     bool
 	AlertMode    bool
-	DiscoverMode bool
 	// Shell widget
 	ShellInit   string
 	TmuxStatus  bool
@@ -65,7 +64,6 @@ Modes:
   -md               Single Markdown incident report to stdout, then exit
   -daemon           Background collector (no TUI, writes events to datadir)
   -doctor           Run comprehensive health check
-  -discover         Run server identity discovery
   -version          Print version and exit
 
 Doctor Options:
@@ -119,8 +117,6 @@ Examples:
   eval "$(xtop -shell-init bash)"      Shell health widget
   xtop -tmux-status                    Tmux status segment
   xtop -cron-install                   Print crontab line
-  sudo xtop -discover                 Discover server identity and roles
-  sudo xtop -discover -json            Identity as JSON
   xtop -version
 `, Version)
 }
@@ -168,7 +164,6 @@ func Run() error {
 	flag.StringVar(&cfg.AlertCommand, "alert-command", userCfg.Alerts.Command, "Command to execute on alert notifications")
 	// Doctor flags
 	flag.BoolVar(&cfg.DoctorMode, "doctor", false, "Run comprehensive health check")
-	flag.BoolVar(&cfg.DiscoverMode, "discover", false, "Run server identity discovery")
 	flag.BoolVar(&cfg.CronMode, "cron", false, "Doctor: cron-friendly output (silent if OK)")
 	flag.BoolVar(&cfg.AlertMode, "alert", false, "Doctor: send alert on state change")
 	// Shell widget flags
@@ -204,11 +199,6 @@ func Run() error {
 	}
 
 	// --- Dispatch modes that don't need root first ---
-
-	// Discover mode (needs root for /proc but handles its own checks)
-	if cfg.DiscoverMode {
-		return runDiscover(cfg)
-	}
 
 	// Shell init (doesn't need root)
 	if cfg.ShellInit != "" {
