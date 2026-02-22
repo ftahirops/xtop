@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/xtop-v0.4.0-00d4aa?style=for-the-badge&logo=linux&logoColor=white" alt="version"/>
+  <img src="https://img.shields.io/badge/xtop-v0.8.9-00d4aa?style=for-the-badge&logo=linux&logoColor=white" alt="version"/>
   <img src="https://img.shields.io/badge/Go-1.21+-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="go"/>
   <img src="https://img.shields.io/badge/eBPF-Powered-ff6600?style=for-the-badge&logo=linux&logoColor=white" alt="ebpf"/>
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="license"/>
@@ -28,6 +28,8 @@
   <a href="#-features">Features</a> •
   <a href="#-screenshots">Pages</a> •
   <a href="#-ebpf-deep-investigation">eBPF Probes</a> •
+  <a href="#-doctor-mode">Doctor</a> •
+  <a href="#-server-identity-discovery">Identity</a> •
   <a href="#-installation">Installation</a> •
   <a href="#-documentation">Docs</a>
 </p>
@@ -117,7 +119,7 @@ The heart of xtop. Four parallel bottleneck detectors continuously score system 
 
 ---
 
-### 9 Interactive Pages
+### 11 Interactive Pages
 
 | Key | Page | What You See |
 |---|---|---|
@@ -130,6 +132,8 @@ The heart of xtop. Four parallel bottleneck detectors continuously score system 
 | `6` | **Timeline** | 5-minute rolling ASCII sparkline charts — 16 time series across CPU, memory, IO, network |
 | `7` | **Events** | Automatically detected incidents with timestamps, duration, peak scores, bottleneck type, culprit attribution |
 | `8` | **Probe** | Real-time eBPF investigation results — off-CPU analysis, IO latency histograms, lock contention, TCP retransmit tracking |
+| `9` | **Thresholds** | Live view of all RCA threshold values vs current readings — see exactly which checks are passing/failing |
+| `D` | **DiskGuard** | Filesystem space monitor with auto-contain — SIGSTOP/SIGCONT top disk writers when mounts cross critical thresholds |
 
 ### 4 Overview Layouts
 
@@ -248,16 +252,111 @@ xtop automatically detects and logs incidents:
 
 ---
 
-## 6 Output Modes
+### Doctor Mode
+
+Comprehensive health check that scans every subsystem in one shot:
+
+```bash
+sudo xtop -doctor                    # Beautiful aligned CLI report
+sudo xtop -doctor -watch             # Auto-refreshing (like top)
+sudo xtop -doctor -watch -interval 5 -count 3  # 3 iterations at 5s
+sudo xtop -doctor -json              # Machine-readable JSON
+sudo xtop -doctor -md                # Markdown for tickets
+sudo xtop -doctor -cron              # Cron-friendly (silent if OK, exit codes)
+sudo xtop -doctor -alert             # Send alerts on state changes
+```
+
+**What it checks:**
+
+| Category | Checks |
+|---|---|
+| **CPU** | Utilization, load average (with IO-blocked decomposition), PSI pressure |
+| **Memory** | Usage %, swap %, PSI, absolute available threshold |
+| **Disk** | Per-mount usage, DiskGuard state, per-device latency/util, inode usage, PSI IO |
+| **Network** | Overall health, TCP retransmits, drops, conntrack, CLOSE_WAIT leaks |
+| **System** | File descriptors, systemd failed units, NTP sync, security updates pending |
+| **Security** | Fileless process detection with forensic detail (exe, cmd, cwd, RSS, FDs, network connections) |
+| **Docker** | Disk usage, container health |
+| **SSL** | Let's Encrypt certificate expiration |
+| **Identity** | Service health checks based on discovered server roles |
+
+**Alert dispatch:** Supports webhooks, Slack, Telegram, email, and custom commands. Only fires on state changes (OK→WARN, WARN→CRIT, etc.) to prevent alert fatigue.
+
+**Exit codes:** `0` = OK, `1` = warnings, `2` = critical — integrate directly into monitoring pipelines.
+
+---
+
+### Server Identity Discovery
+
+xtop can discover what your server actually does and tailor health checks accordingly:
+
+```bash
+sudo xtop -discover         # Interactive discovery
+sudo xtop -discover -json   # JSON output
+```
+
+**Detected roles:**
+
+| Role | Detection Method |
+|---|---|
+| **Web Server** | Nginx/Apache/Caddy processes, config files, listening ports (80/443) |
+| **Database** | PostgreSQL/MySQL/MongoDB/Redis processes and ports |
+| **Docker Host** | Docker daemon, containers, images |
+| **Kubernetes** | kubelet, kube-apiserver, etcd |
+| **NAT/Router** | ip_forward enabled, iptables MASQUERADE rules |
+| **VPN Gateway** | WireGuard interfaces, OpenVPN processes |
+| **Load Balancer** | HAProxy, keepalived with VIP discovery |
+| **DNS Server** | named/dnsmasq/systemd-resolved |
+
+Once discovered, identity is saved to `~/.config/xtop/config.json` and doctor mode runs role-specific health checks automatically.
+
+---
+
+### Shell Health Widget
+
+Add system health to your shell prompt:
+
+```bash
+# Bash
+eval "$(xtop -shell-init bash)"
+
+# Zsh
+eval "$(xtop -shell-init zsh)"
+
+# Tmux status bar
+xtop -tmux-status
+```
+
+Shows a colored health indicator (OK/WARN/CRIT) that updates from the daemon's last health check.
+
+---
+
+### Cron Integration
+
+```bash
+# Print crontab line for automated health checks
+xtop -cron-install
+
+# Example cron entry (runs every 5 minutes, alerts on state change)
+*/5 * * * * /usr/local/bin/xtop -doctor -cron -alert 2>/dev/null
+```
+
+---
+
+## 10 Output Modes
 
 | Mode | Command | Use Case |
 |---|---|---|
 | **Interactive TUI** | `sudo xtop` | Live monitoring and investigation |
 | **Watch Mode** | `sudo xtop -watch -section cpu` | Headless CLI output, SSH-friendly |
+| **Doctor** | `sudo xtop -doctor` | Comprehensive health check report |
+| **Doctor Watch** | `sudo xtop -doctor -watch` | Auto-refreshing health checks (like `top`) |
 | **JSON Export** | `sudo xtop -json \| jq` | Scripting, alerting, integrations |
 | **Markdown Report** | `sudo xtop -md > incident.md` | Jira/Slack/GitHub ticket attachment |
 | **Daemon Mode** | `sudo xtop -daemon &` | Background collection + event logging |
 | **Record/Replay** | `sudo xtop -record file` | Flight recorder for postmortem |
+| **Identity Discovery** | `sudo xtop -discover` | Detect server roles and services |
+| **Shell Widget** | `eval "$(xtop -shell-init bash)"` | System health in your bash/zsh prompt |
 
 ---
 
@@ -266,8 +365,13 @@ xtop automatically detects and logs incidents:
 ### One-liner Install
 
 ```bash
-# Download and install (Ubuntu/Debian amd64)
-sudo dpkg -i xtop_0.4.0-1_amd64.deb
+# Ubuntu/Debian (amd64)
+wget https://github.com/ftahirops/xtop/releases/download/v0.8.9/xtop_0.8.9-1_amd64.deb
+sudo dpkg -i xtop_0.8.9-1_amd64.deb
+
+# RHEL/Rocky/Fedora (x86_64)
+wget https://github.com/ftahirops/xtop/releases/download/v0.8.9/xtop-0.8.9-1.x86_64.rpm
+sudo rpm -i xtop-0.8.9-1.x86_64.rpm
 ```
 
 ### Build from Source
@@ -275,8 +379,8 @@ sudo dpkg -i xtop_0.4.0-1_amd64.deb
 ```bash
 git clone https://github.com/ftahirops/xtop.git
 cd xtop
-go build -ldflags="-s -w" -o xtop .
-sudo cp xtop /usr/local/bin/xtop
+CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.8.9" -o xtop .
+sudo install -m 755 xtop /usr/local/bin/xtop
 ```
 
 ### Run
@@ -285,6 +389,7 @@ sudo cp xtop /usr/local/bin/xtop
 sudo xtop              # Full TUI, 1s refresh
 sudo xtop 5            # 5-second intervals
 sudo xtop -watch       # CLI mode, no TUI
+sudo xtop -doctor      # Health check report
 sudo xtop -json | jq   # JSON for scripting
 ```
 
@@ -303,10 +408,18 @@ sudo xtop -json | jq   # JSON for scripting
 | **Permissions** | Root recommended for full `/proc/*/io` access and eBPF probes |
 | **eBPF** (optional) | Kernel with BTF (`/sys/kernel/btf/vmlinux`) + root for probe packs |
 
-### From .deb Package
+### From .deb Package (Ubuntu 22.04/24.04, Debian)
 
 ```bash
-sudo dpkg -i xtop_0.4.0-1_amd64.deb
+wget https://github.com/ftahirops/xtop/releases/download/v0.8.9/xtop_0.8.9-1_amd64.deb
+sudo dpkg -i xtop_0.8.9-1_amd64.deb
+```
+
+### From .rpm Package (Rocky Linux, RHEL, AlmaLinux, Fedora)
+
+```bash
+wget https://github.com/ftahirops/xtop/releases/download/v0.8.9/xtop-0.8.9-1.x86_64.rpm
+sudo rpm -i xtop-0.8.9-1.x86_64.rpm
 ```
 
 ### From Source
@@ -314,14 +427,15 @@ sudo dpkg -i xtop_0.4.0-1_amd64.deb
 ```bash
 git clone https://github.com/ftahirops/xtop.git
 cd xtop
-go build -ldflags="-s -w" -o xtop .
+CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.8.9" -o xtop .
 sudo install -m 755 xtop /usr/local/bin/xtop
 ```
 
 ### Uninstall
 
 ```bash
-sudo dpkg -r xtop
+sudo dpkg -r xtop        # Debian/Ubuntu
+sudo rpm -e xtop          # RHEL/Rocky
 # or
 sudo rm /usr/local/bin/xtop
 ```
@@ -341,33 +455,47 @@ Modes:
   -json             Single JSON snapshot to stdout, then exit
   -md               Single Markdown incident report to stdout, then exit
   -daemon           Background collector (writes events to datadir)
+  -doctor           Comprehensive health check report
+  -discover         Run server identity discovery
   -version          Print version and exit
+
+Doctor Options:
+  -doctor -watch    Auto-refreshing doctor (like top/watch)
+  -doctor -json     Health check as JSON
+  -doctor -md       Health check as Markdown table
+  -cron             Cron-friendly output (silent if OK, exit codes 0/1/2)
+  -alert            Send alert on health state change
+  -cron-install     Print crontab line for automated health checks
+
+Shell Widget:
+  -shell-init SHELL Output shell init script (bash or zsh)
+  -tmux-status      Output tmux-formatted status segment
 
 Options:
   -interval N       Collection interval in seconds (default: 1)
   -history N        Snapshots to keep in ring buffer (default: 300)
   -section NAME     Section for -watch mode (overview,cpu,mem,io,net,cgroup,rca)
-  -count N          Iterations for -watch mode (0 = infinite)
+  -count N          Iterations for -watch and -doctor -watch (0 = infinite)
   -datadir PATH     Data directory for daemon mode (default: ~/.xtop/)
   -record FILE      Record snapshots to file during TUI session
   -replay FILE      Replay recorded file through TUI (no root needed)
   -prom             Enable Prometheus metrics endpoint
-  -prom-addr ADDR   Prometheus listen address (default: :9100)
-  -alert-webhook URL  Webhook URL for alert notifications (daemon mode)
-  -alert-command CMD  Command to execute on alert notifications (daemon mode)
+  -prom-addr ADDR   Prometheus listen address (default: 127.0.0.1:9100)
+  -alert-webhook URL  Webhook URL for alert notifications
+  -alert-command CMD  Command to execute on alert notifications
 ```
 
 ### Key Bindings
 
 | Key | Action |
 |---|---|
-| `0` - `8` | Switch to page (Overview, CPU, Memory, IO, Network, Cgroups, Timeline, Events, Probe) |
+| `0` - `9` | Switch to page (Overview, CPU, Memory, IO, Network, Cgroups, Timeline, Events, Probe, Thresholds) |
+| `D` | Open DiskGuard page |
 | `b` / `Esc` | Back to Overview |
 | `j` / `k` | Scroll down / up |
 | `g` / `G` | Jump to top / Jump down |
 | `v` / `V` | Cycle overview layout forward / backward |
 | `F1` - `F4` | Direct layout selection |
-| `D` | Open DiskGuard page |
 | `Ctrl+D` | Save current layout as default |
 | `I` | Start 10-second eBPF probe investigation |
 | `a` | Toggle auto-refresh (pause/resume) |
@@ -417,6 +545,25 @@ sudo xtop -watch -section rca          # RCA analysis only
 sudo xtop -watch -section mem -count 5 # Memory, 5 iterations then exit
 sudo xtop -watch -section net -interval 2
 
+# === Doctor Health Checks ===
+sudo xtop -doctor                      # One-shot health report
+sudo xtop -doctor -watch               # Auto-refreshing (like top)
+sudo xtop -doctor -watch -interval 5 -count 3  # 3 iterations at 5s
+sudo xtop -doctor -json                # JSON output for scripting
+sudo xtop -doctor -md                  # Markdown for tickets
+sudo xtop -doctor -cron                # Cron-friendly (silent if OK)
+sudo xtop -doctor -alert               # Alert on state change
+
+# === Server Identity Discovery ===
+sudo xtop -discover                    # Detect server roles
+sudo xtop -discover -json              # JSON output
+
+# === Shell Health Widget ===
+eval "$(xtop -shell-init bash)"        # Add to ~/.bashrc
+eval "$(xtop -shell-init zsh)"         # Add to ~/.zshrc
+xtop -tmux-status                      # Tmux status bar segment
+xtop -cron-install                     # Print crontab line
+
 # === Machine-Readable Output ===
 sudo xtop -json | jq '.analysis.Health'
 sudo xtop -json | jq '.analysis.RCA[] | select(.Score > 0)'
@@ -437,7 +584,7 @@ sudo xtop -daemon -datadir /var/lib/xtop -interval 2
 sudo xtop -prom -prom-addr :9100
 curl -s http://localhost:9100 | head
 
-# === Alert Hooks (daemon mode) ===
+# === Alert Hooks ===
 sudo xtop -daemon -alert-webhook https://example.com/xtop
 sudo xtop -daemon -alert-command 'logger -t xtop \"$XTOP_EVENT\"'
 ```
@@ -455,8 +602,15 @@ Use `config.example.json` as a starting point.
   "interval_sec": 1,
   "history_size": 300,
   "default_section": "overview",
-  "prometheus": { "enabled": false, "addr": ":9100" },
-  "alerts": { "webhook": "", "command": "" }
+  "prometheus": { "enabled": false, "addr": "127.0.0.1:9100" },
+  "alerts": {
+    "webhook": "",
+    "command": "",
+    "email": "",
+    "slack_webhook": "",
+    "telegram_bot_token": "",
+    "telegram_chat_id": ""
+  }
 }
 ```
 
@@ -478,8 +632,9 @@ When `-prom` is enabled, xtop exposes a minimal metrics set including:
 
 ## Alert Payloads
 
-Alert hooks are emitted in daemon mode when `-alert-webhook` or `-alert-command` is set.
-Events include: `health_critical`, `health_ok`, and `event_closed`.
+Alerts are emitted by both daemon mode and doctor mode (`-alert`) when health state changes.
+Supported channels: **webhook**, **Slack**, **Telegram**, **email**, and **custom command**.
+Events include: `health_critical`, `health_ok`, `event_closed`, and `doctor_alert`.
 
 Webhook payload example:
 
@@ -547,12 +702,16 @@ sudo xtop
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                        xtop TUI / CLI                           │
-│   9 pages • 4 layouts • bordered panels • sparkline charts      │
+│  11 pages • 4 layouts • watch mode • doctor • shell widget      │
 ├─────────────────────────────────────────────────────────────────┤
 │                       Analysis Engine                            │
 │   RCA Scoring • Evidence Gating • Anomaly Tracking               │
 │   Causal Chains • Capacity Prediction • Owner Attribution        │
-├─────────────────────────────────────────────────────────────────┤
+├──────────────────────┬──────────────────────────────────────────┤
+│   Doctor Engine       │         Identity Discovery              │
+│   Health checks • SSL │   Role detection • Service probing       │
+│   Alerts • Cron       │   Docker • K8s • VPN • DB • Web          │
+├──────────────────────┴──────────────────────────────────────────┤
 │                      Rate Calculator                             │
 │   Delta computation • Per-device/interface/cgroup/process rates   │
 ├───────────────────────┬─────────────────────────────────────────┤
