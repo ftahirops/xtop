@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/ftahirops/xtop/model"
 )
@@ -244,7 +245,100 @@ func ComputeWarnings(snap *model.Snapshot, rates *model.RateSnapshot) []model.Wa
 		}
 	}
 
+	// Fileless process detection
+	for _, fp := range snap.Global.FilelessProcs {
+		if fp.NetConns > 0 {
+			warns = append(warns, model.Warning{
+				Severity: "crit",
+				Signal:   "fileless+net",
+				Detail:   fmt.Sprintf("PID %d (%s) running from memory with %d outbound connections", fp.PID, fp.Comm, fp.NetConns),
+				Value:    fmt.Sprintf("%s -> %s", fp.ExePath, strings.Join(fp.RemoteIPs, ", ")),
+			})
+		} else {
+			warns = append(warns, model.Warning{
+				Severity: "warn",
+				Signal:   "fileless",
+				Detail:   fmt.Sprintf("PID %d (%s) running from deleted/memory executable", fp.PID, fp.Comm),
+				Value:    fp.ExePath,
+			})
+		}
+	}
+
 	return warns
+}
+
+// NetHealthLevel returns the overall network health: "OK", "DEGRADED", or "CRITICAL".
+func NetHealthLevel(snap *model.Snapshot, rates *model.RateSnapshot) string {
+	if rates == nil {
+		return "OK"
+	}
+	level := "OK"
+
+	// TCP retransmissions
+	if rates.RetransRate > 50 {
+		return "CRITICAL"
+	}
+	if rates.RetransRate > 5 {
+		level = "DEGRADED"
+	}
+
+	// Network drops
+	for _, nr := range rates.NetRates {
+		totalDrops := nr.RxDropsPS + nr.TxDropsPS
+		if totalDrops > 100 {
+			return "CRITICAL"
+		}
+		if totalDrops > 10 && level == "OK" {
+			level = "DEGRADED"
+		}
+		// Link utilization
+		if nr.UtilPct > 95 {
+			return "CRITICAL"
+		}
+		if nr.UtilPct > 85 && level == "OK" {
+			level = "DEGRADED"
+		}
+	}
+
+	// Conntrack pressure
+	ct := snap.Global.Conntrack
+	if ct.Max > 0 {
+		pct := float64(ct.Count) / float64(ct.Max) * 100
+		if pct > 95 {
+			return "CRITICAL"
+		}
+		if pct > 75 && level == "OK" {
+			level = "DEGRADED"
+		}
+	}
+
+	// TCP state anomalies
+	states := snap.Global.TCPStates
+	if states.CloseWait > 100 {
+		if level == "OK" {
+			level = "DEGRADED"
+		}
+	}
+	if states.TimeWait > 10000 {
+		if level == "OK" {
+			level = "DEGRADED"
+		}
+	}
+
+	// Ephemeral port pressure
+	eph := snap.Global.EphemeralPorts
+	ephRange := eph.RangeHi - eph.RangeLo + 1
+	if ephRange > 0 {
+		ephPct := float64(eph.InUse) / float64(ephRange) * 100
+		if ephPct > 90 {
+			return "CRITICAL"
+		}
+		if ephPct > 70 && level == "OK" {
+			level = "DEGRADED"
+		}
+	}
+
+	return level
 }
 
 func severity(value, warnThresh, critThresh float64) string {

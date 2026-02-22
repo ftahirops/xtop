@@ -19,7 +19,7 @@ import (
 )
 
 // Version is set at build time via ldflags.
-var Version = "0.7.3"
+var Version = "0.8.9"
 
 // Config holds CLI configuration.
 type Config struct {
@@ -38,6 +38,15 @@ type Config struct {
 	PromAddr     string
 	AlertWebhook string
 	AlertCommand string
+	// Doctor mode
+	DoctorMode   bool
+	CronMode     bool
+	AlertMode    bool
+	DiscoverMode bool
+	// Shell widget
+	ShellInit   string
+	TmuxStatus  bool
+	CronInstall bool
 }
 
 // validSections lists sections available for -watch and -section.
@@ -55,7 +64,18 @@ Modes:
   -json             Single JSON snapshot to stdout, then exit
   -md               Single Markdown incident report to stdout, then exit
   -daemon           Background collector (no TUI, writes events to datadir)
+  -doctor           Run comprehensive health check
+  -discover         Run server identity discovery
   -version          Print version and exit
+
+Doctor Options:
+  -cron             Doctor: cron-friendly output (silent if OK)
+  -alert            Doctor: send alert on state change
+  -cron-install     Print crontab line for automated health checks
+
+Shell Widget:
+  -shell-init SHELL Output shell init script (bash or zsh)
+  -tmux-status      Output tmux-formatted status segment
 
 Options:
   -interval N       Collection interval in seconds (default: 1)
@@ -89,6 +109,18 @@ Examples:
   xtop -replay /var/log/xtop.wlog
   sudo xtop -daemon &                  Background daemon, records events
   sudo xtop -daemon -datadir /var/lib/xtop -interval 2
+  sudo xtop -doctor                    Health check report
+  sudo xtop -doctor -watch             Doctor with auto-refresh (like top)
+  sudo xtop -doctor -watch -interval 5 -count 3
+  sudo xtop -doctor -json              Health check as JSON
+  sudo xtop -doctor -md                Health check as Markdown
+  sudo xtop -doctor -cron              Cron-friendly (silent if OK, exit codes)
+  sudo xtop -doctor -alert             Alert on state changes
+  eval "$(xtop -shell-init bash)"      Shell health widget
+  xtop -tmux-status                    Tmux status segment
+  xtop -cron-install                   Print crontab line
+  sudo xtop -discover                 Discover server identity and roles
+  sudo xtop -discover -json            Identity as JSON
   xtop -version
 `, Version)
 }
@@ -134,6 +166,15 @@ func Run() error {
 	flag.StringVar(&cfg.PromAddr, "prom-addr", promAddrDefault, "Prometheus listen address")
 	flag.StringVar(&cfg.AlertWebhook, "alert-webhook", userCfg.Alerts.Webhook, "Webhook URL for alert notifications")
 	flag.StringVar(&cfg.AlertCommand, "alert-command", userCfg.Alerts.Command, "Command to execute on alert notifications")
+	// Doctor flags
+	flag.BoolVar(&cfg.DoctorMode, "doctor", false, "Run comprehensive health check")
+	flag.BoolVar(&cfg.DiscoverMode, "discover", false, "Run server identity discovery")
+	flag.BoolVar(&cfg.CronMode, "cron", false, "Doctor: cron-friendly output (silent if OK)")
+	flag.BoolVar(&cfg.AlertMode, "alert", false, "Doctor: send alert on state change")
+	// Shell widget flags
+	flag.StringVar(&cfg.ShellInit, "shell-init", "", "Output shell init script (bash or zsh)")
+	flag.BoolVar(&cfg.TmuxStatus, "tmux-status", false, "Output tmux-formatted status segment")
+	flag.BoolVar(&cfg.CronInstall, "cron-install", false, "Print crontab line for automated health checks")
 
 	flag.Usage = printUsage
 	flag.Parse()
@@ -152,6 +193,40 @@ func Run() error {
 	}
 
 	cfg.Interval = time.Duration(intervalSec) * time.Second
+
+	// Resolve default data directory
+	if cfg.DataDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("cannot determine home directory for data dir: %w (use -datadir to specify)", err)
+		}
+		cfg.DataDir = filepath.Join(home, ".xtop")
+	}
+
+	// --- Dispatch modes that don't need root first ---
+
+	// Discover mode (needs root for /proc but handles its own checks)
+	if cfg.DiscoverMode {
+		return runDiscover(cfg)
+	}
+
+	// Shell init (doesn't need root)
+	if cfg.ShellInit != "" {
+		runShellInit(cfg.ShellInit, cfg.DataDir)
+		return nil
+	}
+
+	// Tmux status (doesn't need root)
+	if cfg.TmuxStatus {
+		runTmuxStatus(cfg.DataDir)
+		return nil
+	}
+
+	// Cron install (doesn't need root)
+	if cfg.CronInstall {
+		runCronInstall()
+		return nil
+	}
 
 	// Validate section
 	if cfg.WatchMode {
@@ -173,15 +248,6 @@ func Run() error {
 	// Check for root (needed for /proc/*/io)
 	if os.Geteuid() != 0 && cfg.ReplayPath == "" {
 		fmt.Fprintf(os.Stderr, "Warning: running without root — some metrics (process IO) may be unavailable\n")
-	}
-
-	// Resolve default data directory
-	if cfg.DataDir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return fmt.Errorf("cannot determine home directory for data dir: %w (use -datadir to specify)", err)
-		}
-		cfg.DataDir = filepath.Join(home, ".xtop")
 	}
 
 	var promStore *engine.MetricsStore
@@ -215,6 +281,14 @@ func Run() error {
 		return runReplay(cfg, wrapTicker)
 	}
 
+	// --doctor mode
+	if cfg.DoctorMode {
+		if cfg.WatchMode {
+			return runDoctorWatch(cfg)
+		}
+		return runDoctor(cfg)
+	}
+
 	// --daemon mode
 	if cfg.DaemonMode {
 		return engine.RunDaemon(engine.DaemonConfig{
@@ -223,16 +297,18 @@ func Run() error {
 			History:  cfg.HistorySize,
 			Metrics:  promStore,
 			Alerts: engine.AlertConfig{
-				Webhook: cfg.AlertWebhook,
-				Command: cfg.AlertCommand,
+				Webhook:          cfg.AlertWebhook,
+				Command:          cfg.AlertCommand,
+				Email:            userCfg.Alerts.Email,
+				SlackWebhook:     userCfg.Alerts.SlackWebhook,
+				TelegramBotToken: userCfg.Alerts.TelegramBotToken,
+				TelegramChatID:   userCfg.Alerts.TelegramChatID,
 			},
 		})
 	}
 
 	// Create engine
 	eng := engine.NewEngine(cfg.HistorySize)
-
-	// -version handled above
 
 	// -json mode: single snapshot to stdout
 	if cfg.JSONMode {
@@ -255,8 +331,8 @@ func Run() error {
 	}
 
 	// Normal TUI mode
-	model := ui.NewModel(wrapTicker(eng), cfg.Interval, cfg.DataDir)
-	p := tea.NewProgram(model, tea.WithAltScreen())
+	m := ui.NewModel(wrapTicker(eng), cfg.Interval, cfg.DataDir)
+	p := tea.NewProgram(m, tea.WithAltScreen())
 	_, err := p.Run()
 	return err
 }
@@ -454,8 +530,8 @@ func runRecord(eng *engine.Engine, cfg Config, wrap func(engine.Ticker) engine.T
 	rec := engine.NewRecorder(eng, f)
 	ticker := wrap(rec)
 
-	model := ui.NewModel(ticker, cfg.Interval, cfg.DataDir)
-	p := tea.NewProgram(model, tea.WithAltScreen())
+	m := ui.NewModel(ticker, cfg.Interval, cfg.DataDir)
+	p := tea.NewProgram(m, tea.WithAltScreen())
 	_, err = p.Run()
 	rec.Close()
 	return err
@@ -474,8 +550,8 @@ func runReplay(cfg Config, wrap func(engine.Ticker) engine.Ticker) error {
 		return fmt.Errorf("cannot parse replay file: %w", err)
 	}
 
-	model := ui.NewModel(wrap(player), cfg.Interval, cfg.DataDir)
-	p := tea.NewProgram(model, tea.WithAltScreen())
+	m := ui.NewModel(wrap(player), cfg.Interval, cfg.DataDir)
+	p := tea.NewProgram(m, tea.WithAltScreen())
 	_, err = p.Run()
 	return err
 }

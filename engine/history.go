@@ -14,6 +14,7 @@ type History struct {
 	size    int
 	cap     int
 	anomaly *AnomalyState
+	alert   *AlertState
 	mu      sync.RWMutex
 }
 
@@ -24,6 +25,7 @@ func NewHistory(capacity int) *History {
 		rateBuf: make([]model.RateSnapshot, capacity),
 		cap:     capacity,
 		anomaly: &AnomalyState{},
+		alert:   &AlertState{},
 	}
 }
 

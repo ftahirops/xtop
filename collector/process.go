@@ -179,6 +179,7 @@ func readProcStat(pidDir string, pm *model.ProcessMetrics) error {
 	pm.UTime = util.ParseUint64(rest[11])
 	pm.STime = util.ParseUint64(rest[12])
 	pm.NumThreads = util.ParseInt(rest[17])
+	pm.StartTimeTicks = util.ParseUint64(rest[19]) // field 22 = starttime (index 19 after comm)
 	pm.Processor = util.ParseInt(rest[36])
 
 	return nil

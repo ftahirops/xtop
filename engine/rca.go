@@ -28,6 +28,12 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History) 
 		analyzeCPU(curr, rates),
 		analyzeNetwork(curr, rates),
 	}
+
+	// Compute v2 domain confidence for each entry
+	for i := range result.RCA {
+		result.RCA[i].DomainConf = domainConfidence(result.RCA[i].EvidenceV2)
+	}
+
 	sort.Slice(result.RCA, func(i, j int) bool {
 		return result.RCA[i].Score > result.RCA[j].Score
 	})
@@ -44,29 +50,50 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History) 
 		result.PrimaryProcess = primary.TopProcess
 	}
 
-	// Health level — based on score AND evidence quality
+	// Health level — v2: uses trust gate + domain confidence
 	if result.PrimaryScore >= 60 {
 		primary := result.RCA[0]
-		if primary.EvidenceGroups >= minEvidenceGroups {
+		if v2TrustGate(primary.EvidenceV2) {
 			result.Health = model.HealthCritical
-			result.Confidence = computeConfidence(primary)
+			result.Confidence = int(primary.DomainConf * 100)
 		} else {
-			// High score but insufficient evidence → inconclusive
 			result.Health = model.HealthInconclusive
-			result.Confidence = computeConfidence(primary)
+			result.Confidence = int(primary.DomainConf * 100)
 		}
 	} else if result.PrimaryScore >= 25 {
 		primary := result.RCA[0]
-		if primary.EvidenceGroups >= minEvidenceGroups {
+		if v2TrustGate(primary.EvidenceV2) {
 			result.Health = model.HealthDegraded
-			result.Confidence = computeConfidence(primary)
+			result.Confidence = int(primary.DomainConf * 100)
 		} else {
 			result.Health = model.HealthInconclusive
-			result.Confidence = computeConfidence(primary)
+			result.Confidence = int(primary.DomainConf * 100)
 		}
 	} else {
 		result.Health = model.HealthOK
 		result.Confidence = 95
+	}
+
+	// Alert state machine: apply sustained-threshold filtering
+	if hist != nil && hist.alert != nil {
+		hasCritEvidence := false
+		if len(result.RCA) > 0 {
+			for _, e := range result.RCA[0].EvidenceV2 {
+				if e.ID == "mem.oom.kills" && e.Strength >= 0.35 {
+					hasCritEvidence = true
+					break
+				}
+			}
+			if rates != nil {
+				for _, mr := range rates.MountRates {
+					if mr.ETASeconds > 0 && mr.ETASeconds < 300 {
+						hasCritEvidence = true
+						break
+					}
+				}
+			}
+		}
+		result.Health = hist.alert.Update(result.Health, hasCritEvidence)
 	}
 
 	// Propagate system identity
@@ -100,47 +127,24 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History) 
 		result.NextRisk = fmt.Sprintf("%s trend (%s)", w.Signal, w.Value)
 	}
 
-	// Causal chain — only if sufficient evidence
+	// Causal chain — v2 DAG
 	if result.PrimaryScore > 0 && len(result.RCA) > 0 && result.RCA[0].EvidenceGroups >= minEvidenceGroups {
-		result.CausalChain = buildCausalChain(curr, rates, result)
+		if dag := buildCausalDAG(result); dag != nil {
+			result.CausalDAG = dag
+			result.CausalChain = dag.LinearChain
+		}
 	}
 
 	// Anomaly tracking
 	trackAnomaly(result, hist)
 
+	// Hidden latency detection: metrics look fine but threads are waiting
+	detectHiddenLatency(curr, rates, result)
+
 	// Actions
 	result.Actions = SuggestActions(result)
 
 	return result
-}
-
-// clamp returns min(v/max, 1.0)
-func clamp(v, max float64) float64 {
-	if max <= 0 {
-		return 0
-	}
-	r := v / max
-	if r > 1 {
-		return 1
-	}
-	if r < 0 {
-		return 0
-	}
-	return r
-}
-
-// computeConfidence uses evidence group count.
-// 1 group = 30%, 2 groups = 50%, 3 = 65%, 4 = 80%, 5+ = 90%+
-func computeConfidence(rca model.RCAEntry) int {
-	g := rca.EvidenceGroups
-	if g <= 0 {
-		return 20
-	}
-	conf := 30 + 20*(g-1)
-	if conf > 98 {
-		conf = 98
-	}
-	return conf
 }
 
 // ---------- IO Score ----------
@@ -183,62 +187,7 @@ func analyzeIO(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEntry {
 		dirtyPct = float64(mem.Dirty) / float64(mem.Total) * 100
 	}
 
-	// --- Evidence group checks ---
-	groupsPassed := 0
-
-	// Group 1: PSI
-	psiPassed := ioSome > 0.05 || ioFull > 0.01
-	r.Checks = append(r.Checks, model.EvidenceCheck{
-		Group: "PSI", Label: "IO PSI elevated",
-		Passed: psiPassed,
-		Value:  fmt.Sprintf("some=%.1f%% full=%.1f%%", ioSome*100, ioFull*100),
-		Confidence: "M", Source: "procfs", Strength: clamp(ioSome, 0.5),
-	})
-	if psiPassed {
-		groupsPassed++
-	}
-
-	// Group 2: D-state
-	dPassed := dCount > 0
-	r.Checks = append(r.Checks, model.EvidenceCheck{
-		Group: "D-state", Label: "D-state tasks",
-		Passed: dPassed,
-		Value:  fmt.Sprintf("%d tasks", dCount),
-		Confidence: "M", Source: "procfs", Strength: clamp(float64(dCount), 10),
-	})
-	if dPassed {
-		groupsPassed++
-	}
-
-	// Group 3: Disk latency
-	diskPassed := worstAwait > 10 || worstUtil > 80
-	devStr := worstDev
-	if devStr == "" {
-		devStr = "none"
-	}
-	r.Checks = append(r.Checks, model.EvidenceCheck{
-		Group: "Disk", Label: "Disk latency/util",
-		Passed: diskPassed,
-		Value:  fmt.Sprintf("%s await=%.0fms util=%.0f%%", devStr, worstAwait, worstUtil),
-		Confidence: "M", Source: "sysfs", Strength: clamp(worstAwait, 50),
-	})
-	if diskPassed {
-		groupsPassed++
-	}
-
-	// Group 4: Dirty/writeback
-	dirtyPassed := dirtyPct > 5
-	r.Checks = append(r.Checks, model.EvidenceCheck{
-		Group: "Dirty", Label: "Dirty pages elevated",
-		Passed: dirtyPassed,
-		Value:  fmt.Sprintf("%.1f%% of RAM", dirtyPct),
-		Confidence: "L", Source: "procfs", Strength: clamp(dirtyPct, 20),
-	})
-	if dirtyPassed {
-		groupsPassed++
-	}
-
-	// Group 5: Filesystem full
+	// Filesystem space
 	var worstFreePct float64 = 100
 	var worstMount string
 	if rates != nil {
@@ -250,54 +199,50 @@ func analyzeIO(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEntry {
 		}
 	}
 	fsFull := worstFreePct < 15
-	fsVal := "all OK"
-	if worstMount != "" {
-		fsVal = fmt.Sprintf("%s %.0f%% free", worstMount, worstFreePct)
+
+	// --- v2 evidence ---
+	r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("io.psi", model.DomainIO,
+		ioSome*100, 5, 20, true, 0.9,
+		fmt.Sprintf("IO PSI some=%.1f%% full=%.1f%%", ioSome*100, ioFull*100), "avg10",
+		nil, nil))
+	r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("io.dstate", model.DomainIO,
+		float64(dCount), 1, 10, true, 0.7,
+		fmt.Sprintf("%d D-state tasks", dCount), "1s",
+		nil, nil))
+	r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("io.disk.latency", model.DomainIO,
+		worstAwait, 20, 80, false, 0.7,
+		fmt.Sprintf("%s await=%.0fms", worstDev, worstAwait), "1s",
+		nil, map[string]string{"device": worstDev}))
+	r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("io.disk.util", model.DomainIO,
+		worstUtil, 70, 95, false, 0.7,
+		fmt.Sprintf("%s util=%.0f%%", worstDev, worstUtil), "1s",
+		nil, map[string]string{"device": worstDev}))
+	r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("io.writeback", model.DomainIO,
+		dirtyPct, 5, 20, false, 0.6,
+		fmt.Sprintf("dirty pages=%.1f%% of RAM", dirtyPct), "1s",
+		nil, nil))
+	r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("io.fsfull", model.DomainIO,
+		100-worstFreePct, 85, 95, true, 0.9,
+		fmt.Sprintf("%s %.0f%% used", worstMount, 100-worstFreePct), "1s",
+		nil, map[string]string{"mount": worstMount}))
+
+	// v2 switchover: weighted scoring replaces clamp-based
+	v2Score := weightedDomainScore(r.EvidenceV2)
+	if !v2TrustGate(r.EvidenceV2) {
+		v2Score = 0
 	}
-	r.Checks = append(r.Checks, model.EvidenceCheck{
-		Group: "FSFull", Label: "Filesystem space low",
-		Passed: fsFull,
-		Value:  fsVal,
-		Confidence: "M", Source: "sysfs", Strength: clamp(100-worstFreePct, 90),
-	})
-	if fsFull {
-		groupsPassed++
-	}
-
-	r.EvidenceGroups = groupsPassed
-
-	// Compute weighted score
-	score := 35*clamp(ioSome, 0.5) +
-		25*clamp(ioFull, 0.1) +
-		15*clamp(float64(dCount), 10) +
-		15*clamp(worstAwait, 50) +
-		10*clamp(worstUtil, 95)
-
-	// Filesystem full contributes to IO bottleneck
-	if fsFull {
-		score += 10 * clamp(100-worstFreePct, 90)
-	}
-
-	r.Score = int(score)
-
-	// TRUST GATE: require minimum 2 evidence groups to report
-	if groupsPassed < minEvidenceGroups {
-		r.Score = 0
-	}
-
-	// D-state high boost (only if other evidence too)
-	if dCount >= 10 && groupsPassed >= minEvidenceGroups && r.Score < 60 {
+	r.Score = int(v2Score)
+	if dCount >= 10 && v2TrustGate(r.EvidenceV2) && r.Score < 60 {
 		r.Score = 60
 	}
-
-	// Noise suppression
 	if r.Score < 20 {
 		r.Score = 0
 	}
-
 	cap100(&r.Score)
+	r.EvidenceGroups = evidenceGroupsFired(r.EvidenceV2, 0.35)
+	r.Checks = evidenceToChecks(r.EvidenceV2)
 
-	// Evidence strings (for display)
+	// Evidence strings
 	if ioSome > 0.05 {
 		r.Evidence = append(r.Evidence, fmt.Sprintf("IO PSI some=%.1f%%", ioSome*100))
 	}
@@ -305,30 +250,31 @@ func analyzeIO(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEntry {
 		r.Evidence = append(r.Evidence, fmt.Sprintf("IO PSI full=%.1f%%", ioFull*100))
 	}
 	if dCount > 0 {
-		r.Evidence = append(r.Evidence, fmt.Sprintf("%d D-state tasks [%s]", dCount, strings.Join(dProcs, ", ")))
+		r.Evidence = append(r.Evidence, fmt.Sprintf("D-state tasks=%d (%s)", dCount, strings.Join(dProcs, ", ")))
 	}
-	if worstAwait > 5 {
-		r.Evidence = append(r.Evidence, fmt.Sprintf("Disk %s await=%.0fms util=%.0f%%", worstDev, worstAwait, worstUtil))
+	if worstAwait > 20 {
+		r.Evidence = append(r.Evidence, fmt.Sprintf("%s await=%.0fms", worstDev, worstAwait))
+	}
+	if worstUtil > 70 {
+		r.Evidence = append(r.Evidence, fmt.Sprintf("%s util=%.0f%%", worstDev, worstUtil))
 	}
 	if dirtyPct > 5 {
-		r.Evidence = append(r.Evidence, fmt.Sprintf("Dirty=%.1f%% of RAM (%s)", dirtyPct, formatB(mem.Dirty)))
+		r.Evidence = append(r.Evidence, fmt.Sprintf("Dirty pages=%.1f%% of RAM", dirtyPct))
 	}
 	if fsFull {
-		r.Evidence = append(r.Evidence, fmt.Sprintf("%s %.0f%% full (%.0f%% free)", worstMount, 100-worstFreePct, worstFreePct))
+		r.Evidence = append(r.Evidence, fmt.Sprintf("%s %.0f%% used", worstMount, 100-worstFreePct))
 	}
 
 	// Chain
-	if r.Score > 0 && groupsPassed >= minEvidenceGroups {
-		if worstAwait > 20 {
-			r.Chain = append(r.Chain, fmt.Sprintf("%s latency %.0fms", worstDev, worstAwait))
-		}
-		if ioFull > 0.01 {
-			r.Chain = append(r.Chain, fmt.Sprintf("IO PSI full=%.1f%%", ioFull*100))
-		}
+	if r.Score > 0 && r.EvidenceGroups >= minEvidenceGroups {
+		r.Chain = append(r.Chain, "IO starvation detected")
 		if dCount > 0 {
-			r.Chain = append(r.Chain, fmt.Sprintf("D-state=%d", dCount))
+			r.Chain = append(r.Chain, fmt.Sprintf("%d tasks in D-state", dCount))
 		}
-		r.Chain = append(r.Chain, "app latency risk")
+		if worstAwait > 20 {
+			r.Chain = append(r.Chain, fmt.Sprintf("%s latency=%.0fms", worstDev, worstAwait))
+		}
+		r.Chain = append(r.Chain, "Application latency risk")
 	}
 
 	// Culprit
@@ -361,114 +307,60 @@ func analyzeMemory(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEnt
 		directReclaimRate = rates.DirectReclaimRate
 	}
 
-	// --- Evidence group checks ---
-	groupsPassed := 0
-
-	// Group 1: PSI
-	psiPassed := memSome > 0.05 || memFull > 0.01
-	r.Checks = append(r.Checks, model.EvidenceCheck{
-		Group: "PSI", Label: "MEM PSI elevated",
-		Passed: psiPassed,
-		Value:  fmt.Sprintf("some=%.1f%% full=%.1f%%", memSome*100, memFull*100),
-		Confidence: "M", Source: "procfs", Strength: clamp(memSome, 0.5),
-	})
-	if psiPassed {
-		groupsPassed++
-	}
-
-	// Group 2: Available low
-	availLow := availPct < 20
-	r.Checks = append(r.Checks, model.EvidenceCheck{
-		Group: "Available", Label: "MemAvailable low",
-		Passed: availLow,
-		Value:  fmt.Sprintf("%.1f%% (%s free)", availPct, formatB(mem.Available)),
-		Confidence: "M", Source: "procfs", Strength: clamp(100-availPct, 100),
-	})
-	if availLow {
-		groupsPassed++
-	}
-
-	// Group 3: Swap active
-	swapActive := swapIOMBs > 0.1
-	r.Checks = append(r.Checks, model.EvidenceCheck{
-		Group: "Swap", Label: "Swap IO active",
-		Passed: swapActive,
-		Value:  fmt.Sprintf("%.1f MB/s", swapIOMBs),
-		Confidence: "M", Source: "procfs", Strength: clamp(swapIOMBs, 50),
-	})
-	if swapActive {
-		groupsPassed++
-	}
-
-	// Group 4: Direct reclaim
-	reclaimActive := directReclaimRate > 0
-	r.Checks = append(r.Checks, model.EvidenceCheck{
-		Group: "Reclaim", Label: "Direct reclaim active",
-		Passed: reclaimActive,
-		Value:  fmt.Sprintf("%.0f pages/s (ratio=%.0f%%)", directReclaimRate, directPct*100),
-		Confidence: "M", Source: "procfs", Strength: clamp(directReclaimRate, 1000),
-	})
-	if reclaimActive {
-		groupsPassed++
-	}
-
-	// Group 5: Major faults
-	majFaultHigh := majFaultRate > 10
-	r.Checks = append(r.Checks, model.EvidenceCheck{
-		Group: "MajFault", Label: "Major faults elevated",
-		Passed: majFaultHigh,
-		Value:  fmt.Sprintf("%.0f/s", majFaultRate),
-		Confidence: "M", Source: "procfs", Strength: clamp(majFaultRate, 500),
-	})
-	if majFaultHigh {
-		groupsPassed++
-	}
-
-	// Group 6: OOM
+	// --- v2 evidence ---
+	usedPct := 100 - availPct
 	oomDetected := curr.Global.VMStat.OOMKill > 0
-	r.Checks = append(r.Checks, model.EvidenceCheck{
-		Group: "OOM", Label: "OOM kills detected",
-		Passed: oomDetected,
-		Value:  fmt.Sprintf("%d cumulative", curr.Global.VMStat.OOMKill),
-		Confidence: "H", Source: "procfs", Strength: 1.0,
-	})
+	oomVal := float64(0)
 	if oomDetected {
-		groupsPassed++
+		oomVal = 1
 	}
+	r.EvidenceV2 = append(r.EvidenceV2,
+		emitEvidence("mem.psi", model.DomainMemory,
+			memSome*100, 5, 20, true, 0.9,
+			fmt.Sprintf("MEM PSI some=%.1f%% full=%.1f%%", memSome*100, memFull*100), "avg10",
+			nil, nil),
+		emitEvidence("mem.available.low", model.DomainMemory,
+			usedPct, 85, 95, true, 0.9,
+			fmt.Sprintf("MemAvailable=%.1f%% (%s free)", availPct, formatB(mem.Available)), "1s",
+			nil, nil),
+		emitEvidence("mem.reclaim.direct", model.DomainMemory,
+			directReclaimRate, 10, 500, false, 0.7,
+			fmt.Sprintf("direct reclaim=%.0f pages/s", directReclaimRate), "1s",
+			nil, nil),
+		emitEvidence("mem.swap.activity", model.DomainMemory,
+			swapIOMBs, 2, 50, true, 0.8,
+			fmt.Sprintf("swap IO=%.1f MB/s", swapIOMBs), "1s",
+			nil, nil),
+		emitEvidence("mem.major.faults", model.DomainMemory,
+			majFaultRate, 10, 200, false, 0.7,
+			fmt.Sprintf("major faults=%.0f/s", majFaultRate), "1s",
+			nil, nil),
+		emitEvidence("mem.oom.kills", model.DomainMemory,
+			oomVal, 1, 1, true, 1.0,
+			fmt.Sprintf("OOM kills=%d", curr.Global.VMStat.OOMKill), "cumulative",
+			nil, nil),
+	)
 
-	r.EvidenceGroups = groupsPassed
-
-	// Weighted score
-	score := 30*clamp(memSome, 0.5) +
-		25*clamp(memFull, 0.1) +
-		20*clamp(swapIOMBs, 50) +
-		15*clamp(directPct, 0.6) +
-		10*clamp(majFaultRate, 500)
-
-	r.Score = int(score)
-
-	// TRUST GATE: require minimum 2 evidence groups to report
-	if groupsPassed < minEvidenceGroups {
-		r.Score = 0
+	// v2 scoring
+	v2Score := weightedDomainScore(r.EvidenceV2)
+	if !v2TrustGate(r.EvidenceV2) {
+		v2Score = 0
 	}
-
-	// Gate: if avail > 25% and PSI low → cap 20
+	r.Score = int(v2Score)
+	if oomDetected && v2TrustGate(r.EvidenceV2) && r.Score < 70 {
+		r.Score = 70
+	}
 	if availPct > 25 && memSome < 0.1 && memFull < 0.02 {
 		if r.Score > 20 {
 			r.Score = 20
 		}
 	}
-
-	// OOM override: if OOM detected and other evidence, floor at 70
-	if oomDetected && groupsPassed >= minEvidenceGroups && r.Score < 70 {
-		r.Score = 70
-	}
-
 	if r.Score < 20 {
 		r.Score = 0
 	}
-
 	cap100(&r.Score)
+	r.EvidenceGroups = evidenceGroupsFired(r.EvidenceV2, 0.35)
+	r.Checks = evidenceToChecks(r.EvidenceV2)
 
 	// Evidence strings
 	if memSome > 0.05 {
@@ -494,12 +386,12 @@ func analyzeMemory(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEnt
 	}
 
 	// Chain
-	if r.Score > 0 && groupsPassed >= minEvidenceGroups {
+	if r.Score > 0 && r.EvidenceGroups >= minEvidenceGroups {
 		r.Chain = append(r.Chain, "Memory pressure detected")
-		if swapActive {
+		if swapIOMBs > 0.1 {
 			r.Chain = append(r.Chain, "System actively swapping")
 		}
-		if reclaimActive {
+		if directReclaimRate > 0 {
 			r.Chain = append(r.Chain, "Kernel reclaiming pages synchronously")
 		}
 		r.Chain = append(r.Chain, "Allocation stall risk")
@@ -567,112 +459,52 @@ func analyzeCPU(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEntry 
 		}
 	}
 
-	// --- Evidence group checks ---
-	groupsPassed := 0
-
-	// Group 1: PSI
-	psiPassed := cpuSome > 0.05 || cpuFull > 0.01
-	r.Checks = append(r.Checks, model.EvidenceCheck{
-		Group: "PSI", Label: "CPU PSI elevated",
-		Passed: psiPassed,
-		Value:  fmt.Sprintf("some=%.1f%% full=%.1f%%", cpuSome*100, cpuFull*100),
-		Confidence: "M", Source: "procfs", Strength: clamp(cpuSome, 0.5),
-	})
-	if psiPassed {
-		groupsPassed++
-	}
-
-	// Group 2: Run queue saturation
-	rqPassed := rqRatio > 1.5
-	r.Checks = append(r.Checks, model.EvidenceCheck{
-		Group: "RunQueue", Label: "Run queue saturated",
-		Passed: rqPassed,
-		Value:  fmt.Sprintf("%.1f ratio (%d runnable / %d cores)", rqRatio, int(running), nCPUs),
-		Confidence: "M", Source: "procfs", Strength: clamp(rqRatio, 3.0),
-	})
-	if rqPassed {
-		groupsPassed++
-	}
-
-	// Group 3: Context switches
 	csPerCore := ctxRate / float64(nCPUs)
-	csPassed := csPerCore > 30000
-	r.Checks = append(r.Checks, model.EvidenceCheck{
-		Group: "CtxSwitch", Label: "Context switches high",
-		Passed: csPassed,
-		Value:  fmt.Sprintf("%.0f/s (%.0f/core)", ctxRate, csPerCore),
-		Confidence: "L", Source: "procfs", Strength: clamp(csPerCore, 100000),
-	})
-	if csPassed {
-		groupsPassed++
+
+	// --- v2 evidence ---
+	r.EvidenceV2 = append(r.EvidenceV2,
+		emitEvidence("cpu.psi", model.DomainCPU,
+			cpuSome*100, 5, 20, true, 0.9,
+			fmt.Sprintf("CPU PSI some=%.1f%% full=%.1f%%", cpuSome*100, cpuFull*100), "avg10",
+			nil, nil),
+		emitEvidence("cpu.runqueue", model.DomainCPU,
+			rqRatio, 1.0, 2.0, false, 0.7,
+			fmt.Sprintf("runqueue ratio=%.1f (%d/%d cores)", rqRatio, int(running), nCPUs), "1s",
+			nil, nil),
+		emitEvidence("cpu.ctxswitch", model.DomainCPU,
+			csPerCore, 2000, 10000, true, 0.6,
+			fmt.Sprintf("ctx switches=%.0f/core", csPerCore), "1s",
+			nil, nil),
+		emitEvidence("cpu.steal", model.DomainCPU,
+			stealPct, 5, 15, true, 0.9,
+			fmt.Sprintf("CPU steal=%.1f%%", stealPct), "1s",
+			nil, nil),
+		emitEvidence("cpu.cgroup.throttle", model.DomainCPU,
+			maxThrottlePct, 5, 25, true, 0.8,
+			fmt.Sprintf("cgroup throttle=%.1f%% (%s)", maxThrottlePct, maxThrottleCg), "1s",
+			nil, map[string]string{"cgroup": maxThrottleCg}),
+	)
+
+	// v2 scoring
+	v2Score := weightedDomainScore(r.EvidenceV2)
+	if !v2TrustGate(r.EvidenceV2) {
+		v2Score = 0
 	}
-
-	// Group 4: Throttling
-	thrPassed := maxThrottlePct > 5
-	thrVal := "none"
-	if maxThrottleCg != "" {
-		thrVal = fmt.Sprintf("%s %.1f%%", maxThrottleCg, maxThrottlePct)
-	}
-	r.Checks = append(r.Checks, model.EvidenceCheck{
-		Group: "Throttle", Label: "Cgroup throttling",
-		Passed: thrPassed,
-		Value:  thrVal,
-		Confidence: "M", Source: "sysfs", Strength: clamp(maxThrottlePct, 50),
-	})
-	if thrPassed {
-		groupsPassed++
-	}
-
-	// Group 5: Steal
-	stealPassed := stealPct > 5
-	r.Checks = append(r.Checks, model.EvidenceCheck{
-		Group: "Steal", Label: "CPU steal (hypervisor)",
-		Passed: stealPassed,
-		Value:  fmt.Sprintf("%.1f%%", stealPct),
-		Confidence: "H", Source: "procfs", Strength: clamp(stealPct, 25),
-	})
-	if stealPassed {
-		groupsPassed++
-	}
-
-	r.EvidenceGroups = groupsPassed
-
-	// Weighted score
-	score := 35*clamp(cpuSome, 0.5) +
-		20*clamp(cpuFull, 0.1) +
-		15*clamp(rqRatio, 3.0) +
-		15*clamp(ctxRate, 150000) +
-		15*clamp(maxThrottlePct/100, 0.5)
-
-	r.Score = int(score)
-
-	// TRUST GATE: require minimum 2 evidence groups to report
-	if groupsPassed < minEvidenceGroups {
-		r.Score = 0
-	}
-
-	// Gate: if busy < 50% and PSI low → cap at 30
+	r.Score = int(v2Score)
 	if busyPct < 50 && cpuSome < 0.10 && cpuFull < 0.02 {
 		if r.Score > 30 {
 			r.Score = 30
 		}
 	}
-
-	// Noise suppression: need real signals
-	if cpuSome < 0.03 && cpuFull < 0.01 && rqRatio < 1.2 && maxThrottlePct < 5 && ctxRate < 30000 {
-		r.Score = 0
-	}
-
-	// Steal bonus (only with other evidence)
-	if stealPassed && groupsPassed >= minEvidenceGroups {
+	if stealPct > 5 && v2TrustGate(r.EvidenceV2) {
 		r.Score += 10
 	}
-
 	if r.Score < 20 {
 		r.Score = 0
 	}
-
 	cap100(&r.Score)
+	r.EvidenceGroups = evidenceGroupsFired(r.EvidenceV2, 0.35)
+	r.Checks = evidenceToChecks(r.EvidenceV2)
 
 	// Evidence strings
 	if cpuSome > 0.05 {
@@ -681,24 +513,24 @@ func analyzeCPU(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEntry 
 	if cpuFull > 0.01 {
 		r.Evidence = append(r.Evidence, fmt.Sprintf("CPU PSI full=%.1f%%", cpuFull*100))
 	}
-	if rqPassed {
+	if rqRatio > 1.5 {
 		r.Evidence = append(r.Evidence, fmt.Sprintf("Run queue ratio=%.1f (%d runnable / %d cores)", rqRatio, int(running), nCPUs))
 	}
-	if csPassed {
+	if csPerCore > 30000 {
 		r.Evidence = append(r.Evidence, fmt.Sprintf("Context switches=%.0f/s (%.0f/core)", ctxRate, csPerCore))
 	}
-	if thrPassed {
+	if maxThrottlePct > 5 {
 		r.Evidence = append(r.Evidence, fmt.Sprintf("Cgroup %s throttled %.1f%%", maxThrottleCg, maxThrottlePct))
 		r.TopCgroup = maxThrottleCg
 	}
-	if stealPassed {
+	if stealPct > 5 {
 		r.Evidence = append(r.Evidence, fmt.Sprintf("CPU steal=%.1f%% (hypervisor)", stealPct))
 	}
 
 	// Chain
-	if r.Score > 0 && groupsPassed >= minEvidenceGroups {
+	if r.Score > 0 && r.EvidenceGroups >= minEvidenceGroups {
 		r.Chain = append(r.Chain, "CPU contention detected")
-		if rqPassed {
+		if rqRatio > 1.5 {
 			r.Chain = append(r.Chain, fmt.Sprintf("More runnable threads (%d) than CPUs (%d)", int(running), nCPUs))
 		}
 		r.Chain = append(r.Chain, "Scheduling latency risk")
@@ -744,171 +576,105 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEn
 		conntrackPct = float64(ct.Count) / float64(ct.Max)
 	}
 
-	softirqPct := rates.CPUSoftIRQPct / 100
 	st := curr.Global.TCPStates
 
-	// --- Evidence group checks ---
-	groupsPassed := 0
-
-	// Group 1: Drops
-	dropsPassed := totalDrops > 1
-	r.Checks = append(r.Checks, model.EvidenceCheck{
-		Group: "Drops", Label: "Packet drops",
-		Passed: dropsPassed,
-		Value:  fmt.Sprintf("%.0f/s", totalDrops),
-		Confidence: "M", Source: "procfs", Strength: clamp(totalDrops, 100),
-	})
-	if dropsPassed {
-		groupsPassed++
-	}
-
-	// Group 2: Retransmits
-	retransPassed := retransRate > 5
-	r.Checks = append(r.Checks, model.EvidenceCheck{
-		Group: "Retrans", Label: "TCP retransmits",
-		Passed: retransPassed,
-		Value:  fmt.Sprintf("%.0f/s", retransRate),
-		Confidence: "M", Source: "procfs", Strength: clamp(retransRate, 100),
-	})
-	if retransPassed {
-		groupsPassed++
-	}
-
-	// Group 3: Conntrack
-	ctPassed := conntrackPct > 0.7
-	r.Checks = append(r.Checks, model.EvidenceCheck{
-		Group: "Conntrack", Label: "Conntrack table pressure",
-		Passed: ctPassed,
-		Value:  fmt.Sprintf("%.0f%% (%d/%d)", conntrackPct*100, ct.Count, ct.Max),
-		Confidence: "M", Source: "procfs", Strength: clamp(conntrackPct, 1.0),
-	})
-	if ctPassed {
-		groupsPassed++
-	}
-
-	// Group 4: SoftIRQ
-	siPassed := rates.CPUSoftIRQPct > 5
-	r.Checks = append(r.Checks, model.EvidenceCheck{
-		Group: "SoftIRQ", Label: "SoftIRQ CPU overhead",
-		Passed: siPassed,
-		Value:  fmt.Sprintf("%.1f%%", rates.CPUSoftIRQPct),
-		Confidence: "L", Source: "procfs", Strength: clamp(rates.CPUSoftIRQPct, 25),
-	})
-	if siPassed {
-		groupsPassed++
-	}
-
-	// Group 5: TCP state issues
-	tcpStatePassed := st.TimeWait > 5000 || st.CloseWait > 100 || st.SynSent > 50
-	tcpStateVal := fmt.Sprintf("TW=%d CW=%d SYN=%d", st.TimeWait, st.CloseWait, st.SynSent)
-	r.Checks = append(r.Checks, model.EvidenceCheck{
-		Group: "TCPState", Label: "TCP state anomaly",
-		Passed: tcpStatePassed,
-		Value:  tcpStateVal,
-		Confidence: "L", Source: "procfs", Strength: clamp(float64(st.TimeWait), 10000),
-	})
-	if tcpStatePassed {
-		groupsPassed++
-	}
-
-	// Group 6: Errors
-	errorsPassed := totalErrors > 1
-	r.Checks = append(r.Checks, model.EvidenceCheck{
-		Group: "Errors", Label: "Network errors",
-		Passed: errorsPassed,
-		Value:  fmt.Sprintf("%.0f/s", totalErrors),
-		Confidence: "M", Source: "procfs", Strength: clamp(totalErrors, 100),
-	})
-	if errorsPassed {
-		groupsPassed++
-	}
-
-	// Group 7: Ephemeral port exhaustion
+	// Ephemeral ports
 	eph := curr.Global.EphemeralPorts
 	ephRange := eph.RangeHi - eph.RangeLo + 1
 	var ephPct float64
 	if ephRange > 0 {
 		ephPct = float64(eph.InUse) / float64(ephRange) * 100
 	}
-	ephPassed := ephPct > 50
-	r.Checks = append(r.Checks, model.EvidenceCheck{
-		Group: "Ephemeral", Label: "Ephemeral port pressure",
-		Passed: ephPassed,
-		Value:  fmt.Sprintf("%.0f%% (%d/%d)", ephPct, eph.InUse, ephRange),
-		Confidence: "M", Source: "procfs", Strength: clamp(ephPct, 100),
-	})
-	if ephPassed {
-		groupsPassed++
+
+	// --- v2 evidence ---
+	var retransRatio float64
+	if rates.OutSegRate > 0 {
+		retransRatio = retransRate / rates.OutSegRate * 100
 	}
-
-	r.EvidenceGroups = groupsPassed
-
-	// Weighted score
-	score := 35*clamp(totalDrops, 100) +
-		25*clamp(retransRate, 100) +
-		15*clamp(conntrackPct, 1.0) +
-		15*clamp(softirqPct, 0.25) +
-		10*clamp(float64(curr.Global.Sockets.TCPOrphan), 1000)
-
-	r.Score = int(score)
-
-	// TRUST GATE: require minimum 2 evidence groups to report
-	if groupsPassed < minEvidenceGroups {
-		r.Score = 0
+	// Composite TCP state: use whichever is worst, scaled to TIME_WAIT range
+	tcpStateVal := float64(st.TimeWait)
+	if cwScaled := float64(st.CloseWait) * 100; cwScaled > tcpStateVal {
+		tcpStateVal = cwScaled
 	}
+	if synScaled := float64(st.SynSent) * 200; synScaled > tcpStateVal {
+		tcpStateVal = synScaled
+	}
+	r.EvidenceV2 = append(r.EvidenceV2,
+		emitEvidence("net.drops", model.DomainNetwork,
+			totalDrops, 1, 100, true, 0.8,
+			fmt.Sprintf("net drops=%.0f/s", totalDrops), "1s",
+			nil, nil),
+		emitEvidence("net.tcp.retrans", model.DomainNetwork,
+			retransRatio, 1, 5, true, 0.8,
+			fmt.Sprintf("retrans=%.0f/s (%.1f%% ratio)", retransRate, retransRatio), "1s",
+			nil, nil),
+		emitEvidence("net.conntrack", model.DomainNetwork,
+			conntrackPct*100, 70, 95, true, 0.9,
+			fmt.Sprintf("conntrack=%.0f%% (%d/%d)", conntrackPct*100, ct.Count, ct.Max), "1s",
+			nil, nil),
+		emitEvidence("net.softirq", model.DomainNetwork,
+			rates.CPUSoftIRQPct, 5, 25, false, 0.6,
+			fmt.Sprintf("softirq CPU=%.1f%%", rates.CPUSoftIRQPct), "1s",
+			nil, nil),
+		emitEvidence("net.tcp.state", model.DomainNetwork,
+			tcpStateVal, 3000, 15000, false, 0.6,
+			fmt.Sprintf("TW=%d CW=%d SYN=%d", st.TimeWait, st.CloseWait, st.SynSent), "1s",
+			nil, nil),
+	)
 
-	// Gate: drops and retrans near zero → cap 25
+	// v2 scoring
+	v2Score := weightedDomainScore(r.EvidenceV2)
+	if !v2TrustGate(r.EvidenceV2) {
+		v2Score = 0
+	}
+	r.Score = int(v2Score)
 	if totalDrops < 1 && retransRate < 5 {
 		if r.Score > 25 {
 			r.Score = 25
 		}
 	}
-
-	// Boost: drops high + softirq high (only with evidence)
-	if dropsPassed && siPassed && groupsPassed >= minEvidenceGroups {
+	if totalDrops > 1 && rates.CPUSoftIRQPct > 5 && v2TrustGate(r.EvidenceV2) {
 		r.Score += 10
 	}
-
 	if r.Score < 20 {
 		r.Score = 0
 	}
-
 	cap100(&r.Score)
+	r.EvidenceGroups = evidenceGroupsFired(r.EvidenceV2, 0.35)
+	r.Checks = evidenceToChecks(r.EvidenceV2)
 
 	// Evidence strings
-	if dropsPassed {
+	if totalDrops > 1 {
 		r.Evidence = append(r.Evidence, fmt.Sprintf("Network drops=%.0f/s", totalDrops))
 	}
-	if retransPassed {
+	if retransRate > 5 {
 		r.Evidence = append(r.Evidence, fmt.Sprintf("TCP retransmits=%.0f/s", retransRate))
 	}
-	if ctPassed {
+	if conntrackPct > 0.7 {
 		r.Evidence = append(r.Evidence, fmt.Sprintf("Conntrack=%.0f%% (%d/%d)", conntrackPct*100, ct.Count, ct.Max))
 	}
-	if siPassed {
+	if rates.CPUSoftIRQPct > 5 {
 		r.Evidence = append(r.Evidence, fmt.Sprintf("SoftIRQ CPU=%.1f%%", rates.CPUSoftIRQPct))
 	}
-	if tcpStatePassed {
-		if st.TimeWait > 5000 {
-			r.Evidence = append(r.Evidence, fmt.Sprintf("TIME_WAIT=%d (port exhaustion risk)", st.TimeWait))
-		}
-		if st.CloseWait > 100 {
-			r.Evidence = append(r.Evidence, fmt.Sprintf("CLOSE_WAIT=%d (app not closing)", st.CloseWait))
-		}
+	if st.TimeWait > 5000 {
+		r.Evidence = append(r.Evidence, fmt.Sprintf("TIME_WAIT=%d (port exhaustion risk)", st.TimeWait))
 	}
-	if errorsPassed {
+	if st.CloseWait > 100 {
+		r.Evidence = append(r.Evidence, fmt.Sprintf("CLOSE_WAIT=%d (app not closing)", st.CloseWait))
+	}
+	if totalErrors > 1 {
 		r.Evidence = append(r.Evidence, fmt.Sprintf("Network errors=%.0f/s", totalErrors))
 	}
-	if ephPassed {
+	if ephPct > 50 {
 		r.Evidence = append(r.Evidence, fmt.Sprintf("Ephemeral ports=%.0f%% (%d/%d)", ephPct, eph.InUse, ephRange))
 	}
 
 	// Chain
-	if r.Score > 0 && groupsPassed >= minEvidenceGroups {
-		if retransPassed {
+	if r.Score > 0 && r.EvidenceGroups >= minEvidenceGroups {
+		if retransRate > 5 {
 			r.Chain = append(r.Chain, fmt.Sprintf("retrans=%.0f/s", retransRate))
 		}
-		if dropsPassed {
+		if totalDrops > 1 {
 			r.Chain = append(r.Chain, fmt.Sprintf("drops=%.0f/s", totalDrops))
 		}
 		r.Chain = append(r.Chain, "connection quality risk")
@@ -999,90 +765,6 @@ func isKernelThread(comm string) bool {
 	return false
 }
 
-func buildCausalChain(snap *model.Snapshot, rates *model.RateSnapshot, result *model.AnalysisResult) string {
-	if result.PrimaryScore == 0 {
-		return ""
-	}
-	var parts []string
-	switch result.PrimaryBottleneck {
-	case BottleneckIO:
-		if rates != nil {
-			for _, d := range rates.DiskRates {
-				if d.UtilPct > 50 || d.AvgAwaitMs > 20 {
-					parts = append(parts, fmt.Sprintf("%s latency %.0fms", d.Name, d.AvgAwaitMs))
-					break
-				}
-			}
-		}
-		if snap.Global.PSI.IO.Full.Avg10 > 0 {
-			parts = append(parts, fmt.Sprintf("IO PSI full=%.1f%%", snap.Global.PSI.IO.Full.Avg10))
-		}
-		dCount := 0
-		for _, p := range snap.Processes {
-			if p.State == "D" {
-				dCount++
-			}
-		}
-		if dCount > 0 {
-			parts = append(parts, fmt.Sprintf("D-state=%d", dCount))
-		}
-		parts = append(parts, fmt.Sprintf("load=%.1f", snap.Global.CPU.LoadAvg.Load1))
-		parts = append(parts, "app latency risk")
-	case BottleneckMemory:
-		if snap.Global.PSI.Memory.Full.Avg10 > 0 {
-			parts = append(parts, fmt.Sprintf("MEM PSI full=%.1f%%", snap.Global.PSI.Memory.Full.Avg10))
-		}
-		if rates != nil && rates.DirectReclaimRate > 0 {
-			parts = append(parts, "direct reclaim active")
-		}
-		if rates != nil && (rates.SwapInRate > 0 || rates.SwapOutRate > 0) {
-			parts = append(parts, fmt.Sprintf("swap in=%.1f out=%.1f MB/s", rates.SwapInRate, rates.SwapOutRate))
-		}
-		var availPct float64
-		if snap.Global.Memory.Total > 0 {
-			availPct = float64(snap.Global.Memory.Available) / float64(snap.Global.Memory.Total) * 100
-		}
-		parts = append(parts, fmt.Sprintf("avail=%.0f%%", availPct))
-		parts = append(parts, "allocation stall risk")
-	case BottleneckCPU:
-		if snap.Global.PSI.CPU.Some.Avg10 > 0 {
-			parts = append(parts, fmt.Sprintf("CPU PSI some=%.1f%%", snap.Global.PSI.CPU.Some.Avg10))
-		}
-		parts = append(parts, fmt.Sprintf("runnable=%d vs %d cores", snap.Global.CPU.LoadAvg.Running, snap.Global.CPU.NumCPUs))
-		if rates != nil && rates.CtxSwitchRate > 50000 {
-			parts = append(parts, fmt.Sprintf("ctxsw=%.0f/s", rates.CtxSwitchRate))
-		}
-		parts = append(parts, "scheduling latency risk")
-	case BottleneckNetwork:
-		if rates != nil && rates.RetransRate > 5 {
-			parts = append(parts, fmt.Sprintf("retrans=%.0f/s", rates.RetransRate))
-		}
-		if rates != nil {
-			for _, nr := range rates.NetRates {
-				if nr.RxDropsPS+nr.TxDropsPS > 0 {
-					parts = append(parts, fmt.Sprintf("%s drops=%.0f/s", nr.Name, nr.RxDropsPS+nr.TxDropsPS))
-					break
-				}
-			}
-		}
-		parts = append(parts, "connection quality risk")
-	}
-	// Build culprit string: prefer process(PID), fallback to cgroup name
-	culprit := ""
-	if result.PrimaryProcess != "" && result.PrimaryPID > 0 {
-		culprit = fmt.Sprintf("%s(%d)", result.PrimaryProcess, result.PrimaryPID)
-	} else if result.PrimaryCulprit != "" && result.PrimaryCulprit != "/" {
-		culprit = cleanCgroupName(result.PrimaryCulprit)
-	}
-	if culprit != "" {
-		parts = append(parts, fmt.Sprintf("culprit: %s", culprit))
-	}
-	if len(parts) == 0 {
-		return ""
-	}
-	return strings.Join(parts, " -> ")
-}
-
 // cleanCgroupName extracts a human-readable name from a cgroup path.
 // "/system.slice/docker-abc123.scope" → "docker-abc123"
 // "/user.slice/user-1000.slice" → "user-1000"
@@ -1101,6 +783,115 @@ func cleanCgroupName(path string) string {
 		return path
 	}
 	return name
+}
+
+// detectHiddenLatency identifies when all traditional metrics look fine (CPU low,
+// memory OK, IO calm) but processes show signs of hidden waiting — high voluntary
+// context switches relative to CPU time, suggesting lock contention, futex waits,
+// or scheduler delays. This is the "something is slow but metrics look fine" case.
+func detectHiddenLatency(curr *model.Snapshot, rates *model.RateSnapshot, result *model.AnalysisResult) {
+	if rates == nil {
+		return
+	}
+
+	// Only trigger when system appears healthy or inconclusive
+	if result.Health == model.HealthCritical || result.Health == model.HealthDegraded {
+		return
+	}
+
+	// System must be idle enough that traditional metrics wouldn't explain slowness
+	if rates.CPUBusyPct > 50 {
+		return
+	}
+
+	// Find processes with high voluntary ctx switches but low CPU usage.
+	// High vol_ctxsw + low CPU = thread is sleeping/waiting a lot (locks, IO, futexes).
+	type waiter struct {
+		comm      string
+		pid       int
+		volRate   float64
+		cpuPct    float64
+		waitRatio float64 // vol_ctxsw per % CPU — higher = more waiting
+	}
+
+	var waiters []waiter
+	var totalVolRate float64
+
+	for _, pr := range rates.ProcessRates {
+		if isKernelThread(pr.Comm) {
+			continue
+		}
+		if pr.CtxSwitchRate < 100 {
+			continue // not interesting
+		}
+		totalVolRate += pr.CtxSwitchRate
+
+		// High context switches with low CPU = suspicious
+		cpuPct := pr.CPUPct
+		if cpuPct < 0.1 {
+			cpuPct = 0.1 // avoid division by zero
+		}
+		ratio := pr.CtxSwitchRate / cpuPct
+		if ratio > 500 { // > 500 switches per % CPU = heavy waiting
+			waiters = append(waiters, waiter{
+				comm:      pr.Comm,
+				pid:       pr.PID,
+				volRate:   pr.CtxSwitchRate,
+				cpuPct:    pr.CPUPct,
+				waitRatio: ratio,
+			})
+		}
+	}
+
+	if len(waiters) == 0 {
+		return
+	}
+
+	// Sort by wait ratio descending
+	sort.Slice(waiters, func(i, j int) bool {
+		return waiters[i].waitRatio > waiters[j].waitRatio
+	})
+
+	top := waiters[0]
+
+	// Estimate off-CPU percentage: total vol switches / (vol + nonvol) as a proxy
+	// This is a rough estimate — true off-CPU requires eBPF, but high voluntary
+	// switches with low CPU is a strong signal.
+	nCPU := curr.Global.CPU.NumCPUs
+	if nCPU == 0 {
+		nCPU = 1
+	}
+	// Rough estimate: each voluntary context switch means ~some microseconds of waiting.
+	// At 10000 switches/s with ~100us avg wait, that's ~1s of waiting per second = ~100/nCPU% off-CPU.
+	estimatedWaitPct := totalVolRate / float64(nCPU) / 100 // rough scaling
+	if estimatedWaitPct > 100 {
+		estimatedWaitPct = 100
+	}
+
+	// Only flag if the wait seems significant
+	if estimatedWaitPct < 15 && top.waitRatio < 2000 {
+		return
+	}
+
+	result.HiddenLatency = true
+	result.HiddenLatencyPct = estimatedWaitPct
+	result.HiddenLatencyComm = top.comm
+
+	if top.waitRatio > 5000 {
+		result.HiddenLatencyDesc = fmt.Sprintf(
+			"CPU %.0f%% but %s is context-switching %.0f/s with only %.1f%% CPU — likely lock contention or blocking IO. Run: sudo xtop then press 'p' for eBPF probe.",
+			rates.CPUBusyPct, top.comm, top.volRate, top.cpuPct)
+	} else {
+		result.HiddenLatencyDesc = fmt.Sprintf(
+			"CPU %.0f%% but threads are waiting (%.0f voluntary switches/s across %d procs). Top waiter: %s. Run: sudo xtop then press 'p' for eBPF off-CPU analysis.",
+			rates.CPUBusyPct, totalVolRate, len(waiters), top.comm)
+	}
+
+	// Upgrade health to INCONCLUSIVE if it was OK, to flag this isn't truly healthy
+	if result.Health == model.HealthOK && estimatedWaitPct > 30 {
+		result.Health = model.HealthInconclusive
+		result.Confidence = 40
+	}
 }
 
 func cap100(score *int) {

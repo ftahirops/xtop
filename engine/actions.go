@@ -38,14 +38,14 @@ func SuggestActions(result *model.AnalysisResult) []model.Action {
 					continue
 				}
 				switch c.Group {
-				case "FSFull":
+				case "io.fsfull":
 					actions = append(actions,
 						model.Action{Summary: "Check filesystem usage", Command: "df -h"},
 						model.Action{Summary: "Find large files", Command: "find / -xdev -type f -size +100M -exec ls -lh {} \\; 2>/dev/null | head -20"},
 						model.Action{Summary: "Check deleted-open files", Command: "lsof +L1 2>/dev/null | head -20"},
 						model.Action{Summary: "Rotate logs", Command: "journalctl --vacuum-size=100M"},
 					)
-				case "Dirty pages":
+				case "io.writeback":
 					actions = append(actions,
 						model.Action{Summary: "Check for large write bursts or backup jobs", Command: "grep -r . /proc/sys/vm/dirty_*"},
 						model.Action{Summary: "Reduce dirty page pressure", Command: "sysctl vm.dirty_ratio=10 vm.dirty_background_ratio=5"},
@@ -76,16 +76,16 @@ func SuggestActions(result *model.AnalysisResult) []model.Action {
 					continue
 				}
 				switch c.Group {
-				case "Swap active":
+				case "mem.swap.activity":
 					actions = append(actions,
 						model.Action{Summary: "Check swap IO pressure", Command: "vmstat 1 5"},
 						model.Action{Summary: "Find swapped-out processes", Command: "awk '/VmSwap/{if($2>0)print FILENAME,$2}' /proc/*/status 2>/dev/null | sort -k2 -rn | head -10"},
 					)
-				case "Direct reclaim":
+				case "mem.reclaim.direct":
 					actions = append(actions,
 						model.Action{Summary: "Check reclaim activity", Command: "grep -E 'pgsteal|pgscan|pgmajfault' /proc/vmstat"},
 					)
-				case "OOM":
+				case "mem.oom.kills":
 					actions = append(actions,
 						model.Action{Summary: "Check OOM kills", Command: "dmesg -T | grep -i 'out of memory' | tail -5"},
 					)
@@ -109,15 +109,15 @@ func SuggestActions(result *model.AnalysisResult) []model.Action {
 					continue
 				}
 				switch c.Group {
-				case "Run queue":
+				case "cpu.runqueue":
 					actions = append(actions,
 						model.Action{Summary: "Check run queue depth", Command: "sar -q 1 5 2>/dev/null || vmstat 1 5"},
 					)
-				case "Throttling":
+				case "cpu.cgroup.throttle":
 					actions = append(actions,
 						model.Action{Summary: "Check cgroup CPU throttling", Command: "find /sys/fs/cgroup -name cpu.stat -exec grep -l throttled {} \\; | head -5"},
 					)
-				case "Steal":
+				case "cpu.steal":
 					actions = append(actions,
 						model.Action{Summary: "Check hypervisor CPU steal (VM contention)", Command: "mpstat -P ALL 1 3"},
 					)
@@ -142,15 +142,15 @@ func SuggestActions(result *model.AnalysisResult) []model.Action {
 					continue
 				}
 				switch c.Group {
-				case "Drops":
+				case "net.drops":
 					actions = append(actions,
 						model.Action{Summary: "Check interface ring buffer (increase if drops)", Command: "ethtool -g eth0 2>/dev/null"},
 					)
-				case "Conntrack":
+				case "net.conntrack":
 					actions = append(actions,
 						model.Action{Summary: "Increase conntrack table size", Command: "sysctl net.nf_conntrack_max"},
 					)
-				case "TCP states":
+				case "net.tcp.state":
 					actions = append(actions,
 						model.Action{Summary: "Check TIME_WAIT and ephemeral port pressure", Command: "ss -tan state time-wait | wc -l"},
 						model.Action{Summary: "Enable TIME_WAIT reuse if needed", Command: "sysctl net.ipv4.tcp_tw_reuse=1"},

@@ -242,11 +242,23 @@ type AnalysisResult struct {
 
 	// Causal chain
 	CausalChain string
+	CausalDAG   *CausalDAG // structured causal chain (nil = not computed)
 
 	// Anomaly tracking
 	AnomalyStartedAgo  int    // seconds since primary bottleneck first appeared (0=not active)
 	AnomalyTrigger     string // which signal first crossed threshold
 	CulpritSinceAgo    int    // seconds since culprit became top consumer
+
+	// Deployment correlation: process that started near anomaly onset
+	RecentDeploy     string // e.g. "node server.js"
+	RecentDeployPID  int    // PID of recently deployed process
+	RecentDeployAge  int    // seconds since the process started
+
+	// Hidden latency detection (metrics look fine but threads are waiting)
+	HiddenLatency     bool   // true if hidden latency detected
+	HiddenLatencyDesc string // human-readable explanation
+	HiddenLatencyPct  float64 // estimated off-CPU wait percentage
+	HiddenLatencyComm string  // top waiting process
 
 	// Stability tracking
 	StableSince      int     // seconds system has been continuously OK (0=not stable)
@@ -277,6 +289,7 @@ type MetricChange struct {
 	Current string  // current value string
 	Unit    string  // e.g. "%", "MB/s", "/s"
 	Rising  bool    // true if increasing, false if decreasing
+	ZScore  float64 // statistical significance (0 = not computed)
 }
 
 // DegradationWarning describes a slow, sustained trend.
@@ -325,4 +338,82 @@ type RCAEntry struct {
 	Evidence       []string
 	Checks         []EvidenceCheck // structured evidence with pass/fail
 	Chain          []string
+	EvidenceV2     []Evidence      // v2 evidence objects (parallel to legacy Checks)
+	DomainConf     float64         // v2 domain confidence 0..0.98
+}
+
+// Domain represents a resource domain for v2 evidence.
+type Domain string
+
+const (
+	DomainCPU     Domain = "cpu"
+	DomainMemory  Domain = "memory"
+	DomainIO      Domain = "io"
+	DomainNetwork Domain = "network"
+)
+
+// Severity represents evidence severity level.
+type Severity string
+
+const (
+	SeverityInfo Severity = "info"
+	SeverityWarn Severity = "warn"
+	SeverityCrit Severity = "crit"
+)
+
+// OwnerAttribution identifies a resource consumer associated with evidence.
+type OwnerAttribution struct {
+	Kind       string  // "cgroup", "service", "pid"
+	ID         string  // cgroup path, service name, or "pid:1234"
+	Share      float64 // 0..1 fraction of observed load
+	Confidence float64 // 0..1
+}
+
+// Evidence is a v2 structured evidence object with smooth scoring.
+type Evidence struct {
+	ID         string            // e.g. "io.psi.some", "mem.available.low"
+	Message    string            // human-readable description
+	Window     string            // time window e.g. "avg10", "1s"
+	Domain     Domain            // resource domain
+	Severity   Severity          // severity level
+	Strength   float64           // 0..1 normalized signal strength
+	Confidence float64           // 0..1 measurement confidence
+	Value      float64           // raw measured value
+	Threshold  float64           // critical threshold
+	Measured   bool              // true if from direct measurement (BPF/counter)
+	Owners     []OwnerAttribution
+	Tags       map[string]string // e.g. "weight": "psi", "device": "sda"
+}
+
+// CausalNodeType identifies a node's role in the causal DAG.
+type CausalNodeType string
+
+const (
+	CausalRootCause    CausalNodeType = "root_cause"
+	CausalIntermediate CausalNodeType = "intermediate"
+	CausalSymptom      CausalNodeType = "symptom"
+)
+
+// CausalNode is a node in the causal DAG.
+type CausalNode struct {
+	ID          string
+	Label       string
+	Type        CausalNodeType
+	Domain      Domain
+	EvidenceIDs []string
+}
+
+// CausalEdge is a directed edge in the causal DAG.
+type CausalEdge struct {
+	From   string
+	To     string
+	Rule   string
+	Weight float64
+}
+
+// CausalDAG represents a directed acyclic graph of causal relationships.
+type CausalDAG struct {
+	Nodes       []CausalNode
+	Edges       []CausalEdge
+	LinearChain string // human-readable "→"-joined string
 }

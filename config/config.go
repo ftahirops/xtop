@@ -6,6 +6,8 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+
+	"github.com/ftahirops/xtop/model"
 )
 
 // Config holds user-configurable defaults and integrations.
@@ -14,8 +16,9 @@ type Config struct {
 	IntervalSec   int              `json:"interval_sec"`
 	HistorySize   int              `json:"history_size"`
 	Section       string           `json:"default_section"`
-	Prometheus    PrometheusConfig `json:"prometheus"`
-	Alerts        AlertConfig      `json:"alerts"`
+	Prometheus     PrometheusConfig     `json:"prometheus"`
+	Alerts         AlertConfig          `json:"alerts"`
+	ServerIdentity *model.ServerIdentity `json:"server_identity,omitempty"`
 }
 
 type PrometheusConfig struct {
@@ -24,8 +27,12 @@ type PrometheusConfig struct {
 }
 
 type AlertConfig struct {
-	Webhook string `json:"webhook"`
-	Command string `json:"command"`
+	Webhook          string `json:"webhook"`
+	Command          string `json:"command"`
+	Email            string `json:"email"`
+	SlackWebhook     string `json:"slack_webhook"`
+	TelegramBotToken string `json:"telegram_bot_token"`
+	TelegramChatID   string `json:"telegram_chat_id"`
 }
 
 // Default returns a config with sensible defaults.

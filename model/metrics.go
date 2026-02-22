@@ -176,6 +176,18 @@ type DeletedOpenFile struct {
 	SizeBytes uint64
 }
 
+// FilelessProcess represents a process running from memory with no on-disk binary.
+type FilelessProcess struct {
+	PID       int
+	Comm      string
+	ExePath   string   // readlink result, e.g. "/memfd:payload (deleted)"
+	IsMemFD   bool     // /memfd: prefix
+	IsDeleted bool     // (deleted) suffix, not memfd
+	NetConns  int      // ESTABLISHED + SYN_SENT outbound connections
+	RemoteIPs []string // up to 5 unique remote IPs
+	RSS       uint64   // resident memory, for context
+}
+
 // NetworkStats holds per-interface counters from /proc/net/dev
 // plus metadata from /sys/class/net/.
 type NetworkStats struct {
@@ -337,6 +349,7 @@ type GlobalMetrics struct {
 	Mounts         []MountStats
 	DeletedOpen    []DeletedOpenFile
 	BigFiles       []BigFile
+	FilelessProcs  []FilelessProcess
 }
 
 // CgroupMetrics holds metrics for a single cgroup.
@@ -405,4 +418,7 @@ type ProcessMetrics struct {
 	// File descriptors
 	FDCount     int    // count of open FDs from /proc/PID/fd
 	FDSoftLimit uint64 // soft limit from /proc/PID/limits
+
+	// Start time (clock ticks since boot, from /proc/PID/stat field 22)
+	StartTimeTicks uint64
 }

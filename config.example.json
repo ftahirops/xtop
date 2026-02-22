@@ -9,6 +9,10 @@
   },
   "alerts": {
     "webhook": "",
-    "command": ""
+    "command": "",
+    "email": "",
+    "slack_webhook": "",
+    "telegram_bot_token": "",
+    "telegram_chat_id": ""
   }
 }

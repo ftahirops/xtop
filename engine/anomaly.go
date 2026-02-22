@@ -2,7 +2,9 @@ package engine
 
 import (
 	"fmt"
+	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/ftahirops/xtop/model"
@@ -77,6 +79,11 @@ func trackAnomaly(result *model.AnalysisResult, hist *History) {
 	} else {
 		a.StableStart = time.Time{} // reset
 		result.StableSince = 0
+	}
+
+	// Deployment correlation: find recently started processes near anomaly onset
+	if result.PrimaryScore > 0 && result.AnomalyStartedAgo > 0 && result.AnomalyStartedAgo < 120 {
+		trackDeployCorrelation(result, hist)
 	}
 
 	// Change detection: compare current to ~30s ago
@@ -257,8 +264,72 @@ func trackBiggestChange(result *model.AnalysisResult, hist *History) {
 		}
 	}
 
-	// Sort by absolute magnitude
+	// New process detection: flag processes that appeared since ~30s ago
+	// with meaningful CPU or IO activity
+	if oldRates != nil && currRates != nil {
+		oldComms := make(map[string]bool)
+		for _, p := range oldRates.ProcessRates {
+			oldComms[p.Comm] = true
+		}
+		for _, p := range currRates.ProcessRates {
+			if oldComms[p.Comm] {
+				continue
+			}
+			if isKernelThread(p.Comm) {
+				continue
+			}
+			if p.CPUPct > 1 || (p.ReadMBs+p.WriteMBs) > 0.1 {
+				desc := fmt.Sprintf("%.1f%% CPU", p.CPUPct)
+				if p.ReadMBs+p.WriteMBs > 0.1 {
+					desc = fmt.Sprintf("%.1f MB/s IO", p.ReadMBs+p.WriteMBs)
+				}
+				changes = append(changes, model.MetricChange{
+					Name:     p.Comm + " NEW",
+					Delta:    p.CPUPct,
+					DeltaPct: 100, // new = 100% change
+					Current:  desc,
+					Unit:     "",
+					Rising:   true,
+				})
+			}
+		}
+	}
+
+	// Compute z-scores across all changes for statistical significance
+	if len(changes) > 1 {
+		// Mean and stddev of absolute DeltaPct
+		var sum, sumSq float64
+		for _, c := range changes {
+			v := abs(c.DeltaPct)
+			sum += v
+			sumSq += v * v
+		}
+		n := float64(len(changes))
+		mean := sum / n
+		variance := sumSq/n - mean*mean
+		if variance < 0 {
+			variance = 0
+		}
+		stddev := 0.0
+		if variance > 0 {
+			// Manual sqrt via Newton's method (avoid math import)
+			stddev = variance
+			for i := 0; i < 20; i++ {
+				stddev = (stddev + variance/stddev) / 2
+			}
+		}
+		if stddev > 0.01 {
+			for i := range changes {
+				changes[i].ZScore = (abs(changes[i].DeltaPct) - mean) / stddev
+			}
+		}
+	}
+
+	// Sort by z-score (falling back to DeltaPct if z-scores are zero)
 	sort.Slice(changes, func(i, j int) bool {
+		if changes[i].ZScore != 0 || changes[j].ZScore != 0 {
+			return changes[i].ZScore > changes[j].ZScore
+		}
 		return abs(changes[i].DeltaPct) > abs(changes[j].DeltaPct)
 	})
 
@@ -544,6 +615,84 @@ func trackDegradation(result *model.AnalysisResult, hist *History) {
 			addDeg("TCP retransmits", "rising", ratePerMin, "/s/min")
 		}
 	}
+}
+
+// trackDeployCorrelation finds processes that started recently (within 2 minutes
+// of anomaly onset) and reports them as potential deployment triggers.
+func trackDeployCorrelation(result *model.AnalysisResult, hist *History) {
+	curr := hist.Latest()
+	if curr == nil {
+		return
+	}
+
+	// Read system uptime to convert starttime ticks to wall-clock age
+	uptimeContent, err := readFileString("/proc/uptime")
+	if err != nil {
+		return
+	}
+	fields := strings.Fields(uptimeContent)
+	if len(fields) < 1 {
+		return
+	}
+	uptimeSec := parseFloat(fields[0])
+	if uptimeSec < 1 {
+		return
+	}
+
+	const hz = 100.0 // USER_HZ
+	bestAge := 999999.0
+	bestComm := ""
+	bestPID := 0
+
+	for _, p := range curr.Processes {
+		if p.StartTimeTicks == 0 {
+			continue
+		}
+		if isKernelThread(p.Comm) {
+			continue
+		}
+		// Process age in seconds
+		procAge := uptimeSec - float64(p.StartTimeTicks)/hz
+		if procAge < 0 {
+			continue
+		}
+		// Only consider processes started in the last 5 minutes
+		if procAge > 300 {
+			continue
+		}
+		// Skip very short-lived processes (< 2 seconds)
+		if procAge < 2 {
+			continue
+		}
+		// Prefer the most recently started non-trivial process
+		if procAge < bestAge {
+			bestAge = procAge
+			bestComm = p.Comm
+			bestPID = p.PID
+		}
+	}
+
+	if bestComm != "" {
+		result.RecentDeploy = bestComm
+		result.RecentDeployPID = bestPID
+		result.RecentDeployAge = int(bestAge)
+	}
+}
+
+// readFileString reads a file to string (for /proc files in engine package).
+func readFileString(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+// parseFloat parses a float64 from string, returning 0 on error.
+func parseFloat(s string) float64 {
+	f := 0.0
+	fmt.Sscanf(s, "%f", &f)
+	return f
 }
 
 func abs(x float64) float64 {

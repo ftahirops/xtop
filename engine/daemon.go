@@ -33,6 +33,17 @@ type compactSummary struct {
 	CPUPSISome float64   `json:"cpu_psi"`
 	MemPSIFull float64   `json:"mem_psi"`
 	IOPSIFull  float64   `json:"io_psi"`
+	DiskState  string    `json:"disk_state"`
+	NetState   string    `json:"net_state"`
+	// RCA fields for smart shell widget
+	Culprit        string `json:"culprit,omitempty"`
+	Process        string `json:"process,omitempty"`
+	ProcessPID     int    `json:"pid,omitempty"`
+	CausalChain    string `json:"chain,omitempty"`
+	HiddenLatency  bool   `json:"hidden_latency,omitempty"`
+	HiddenDesc     string `json:"hidden_desc,omitempty"`
+	RecentDeploy   string `json:"recent_deploy,omitempty"`
+	DeployAge      int    `json:"deploy_age,omitempty"`
 }
 
 // RunDaemon runs xtop as a background collector, writing events to DataDir.
@@ -146,16 +157,32 @@ func RunDaemon(cfg DaemonConfig) error {
 				cpuBusy = rates.CPUBusyPct
 			}
 
+			diskState := result.DiskGuardWorst
+			if diskState == "" {
+				diskState = "OK"
+			}
+			netState := NetHealthLevel(snap, rates)
+
 			summary := compactSummary{
-				Timestamp:  snap.Timestamp,
-				Health:     result.Health.String(),
-				Score:      result.PrimaryScore,
-				Bottleneck: result.PrimaryBottleneck,
-				CPUBusy:    cpuBusy,
-				MemUsedPct: memPct,
-				CPUPSISome: snap.Global.PSI.CPU.Some.Avg10,
-				MemPSIFull: snap.Global.PSI.Memory.Full.Avg10,
-				IOPSIFull:  snap.Global.PSI.IO.Full.Avg10,
+				Timestamp:      snap.Timestamp,
+				Health:         result.Health.String(),
+				Score:          result.PrimaryScore,
+				Bottleneck:     result.PrimaryBottleneck,
+				CPUBusy:        cpuBusy,
+				MemUsedPct:     memPct,
+				CPUPSISome:     snap.Global.PSI.CPU.Some.Avg10,
+				MemPSIFull:     snap.Global.PSI.Memory.Full.Avg10,
+				IOPSIFull:      snap.Global.PSI.IO.Full.Avg10,
+				DiskState:      diskState,
+				NetState:       netState,
+				Culprit:        result.PrimaryCulprit,
+				Process:        result.PrimaryProcess,
+				ProcessPID:     result.PrimaryPID,
+				CausalChain:    result.CausalChain,
+				HiddenLatency:  result.HiddenLatency,
+				HiddenDesc:     result.HiddenLatencyDesc,
+				RecentDeploy:   result.RecentDeploy,
+				DeployAge:      result.RecentDeployAge,
 			}
 			writeSummaryLine(summaryPath, summary)
 		}

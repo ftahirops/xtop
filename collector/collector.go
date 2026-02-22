@@ -44,6 +44,7 @@ func NewRegistry() *Registry {
 			&SysctlCollector{},
 			&FilesystemCollector{},
 			&DeletedOpenCollector{MaxFiles: 20},
+			&FilelessCollector{},
 			&BigFileCollector{MaxFiles: 10, MinSize: 50 * 1024 * 1024},
 			&ProcessCollector{MaxProcs: 50},
 		},
