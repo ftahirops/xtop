@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -160,6 +161,16 @@ func validateWebhookURL(rawURL string) error {
 	for _, b := range blocked {
 		if host == b {
 			return fmt.Errorf("webhook URL host %q is blocked", host)
+		}
+	}
+	// #26: Block private IP ranges
+	if ip := net.ParseIP(host); ip != nil {
+		privateRanges := []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fd00::/8", "fc00::/7", "127.0.0.0/8", "169.254.0.0/16"}
+		for _, cidr := range privateRanges {
+			_, network, err := net.ParseCIDR(cidr)
+			if err == nil && network.Contains(ip) {
+				return fmt.Errorf("webhook URL host %q is in private IP range %s", host, cidr)
+			}
 		}
 	}
 	return nil

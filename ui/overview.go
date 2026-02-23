@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -17,10 +18,12 @@ const (
 	LayoutCompact  LayoutMode = 1 // B: Compact Table
 	LayoutAdaptive LayoutMode = 2 // C: Adaptive Expand
 	LayoutGrid     LayoutMode = 3 // D: Dashboard Grid
-	layoutCount    LayoutMode = 4
+	LayoutHtop     LayoutMode = 4 // E: htop-style
+	LayoutBtop     LayoutMode = 5 // F: btop-style
+	layoutCount    LayoutMode = 6
 )
 
-var layoutNames = []string{"Two-Column", "Compact", "Adaptive", "Grid"}
+var layoutNames = []string{"Two-Column", "Compact", "Adaptive", "Grid", "htop", "btop"}
 
 func (l LayoutMode) String() string {
 	if int(l) < len(layoutNames) {
@@ -50,6 +53,10 @@ func renderOverview(snap *model.Snapshot, rates *model.RateSnapshot, result *mod
 		content = renderLayoutC(snap, rates, result, history, pm, ss, width, height)
 	case LayoutGrid:
 		content = renderLayoutD(snap, rates, result, history, pm, ss, width, height)
+	case LayoutHtop:
+		content = renderLayoutE(snap, rates, result, history, pm, ss, width, height)
+	case LayoutBtop:
+		content = renderLayoutF(snap, rates, result, history, pm, ss, width, height)
 	default:
 		content = renderLayoutA(snap, rates, result, history, pm, ss, width, height)
 	}
@@ -86,7 +93,7 @@ func renderHeader(snap *model.Snapshot, rates *model.RateSnapshot, result *model
 			parts = append(parts, si.Hostname)
 		}
 		if len(si.IPs) > 0 {
-			parts = append(parts, strings.Join(si.IPs, ", "))
+			parts = append(parts, strings.Join(model.MaskIPs(si.IPs), ", "))
 		}
 		if si.Virtualization != "" {
 			parts = append(parts, si.Virtualization)
@@ -169,6 +176,52 @@ func renderHeader(snap *model.Snapshot, rates *model.RateSnapshot, result *model
 			sb.WriteString(warnStyle.Render(diskStr))
 		} else {
 			sb.WriteString(okStyle.Render(diskStr))
+		}
+	}
+
+	// Active sessions summary
+	if len(snap.Global.Sessions) > 0 {
+		uniqueIPs := make(map[string]bool)
+		var users []string
+		seen := make(map[string]bool)
+		for _, s := range snap.Global.Sessions {
+			if s.From != "" && s.From != "-" {
+				uniqueIPs[s.From] = true
+			}
+			key := s.User + "@" + s.From
+			if !seen[key] {
+				seen[key] = true
+				label := s.User
+				if s.From != "" && s.From != "-" {
+					label += "@" + s.From
+				} else if s.TTY != "" {
+					label += "@" + s.TTY
+				}
+				cmd := s.Command
+				if len(cmd) > 20 {
+					cmd = cmd[:17] + "..."
+				}
+				if cmd != "" {
+					label += "(" + cmd + ")"
+				}
+				users = append(users, label)
+			}
+		}
+		sb.WriteString("\n ")
+		sb.WriteString(dimStyle.Render("USERS: "))
+		sb.WriteString(valueStyle.Render(fmt.Sprintf("%d", len(snap.Global.Sessions))))
+		sb.WriteString(dimStyle.Render(" sessions "))
+		sb.WriteString(valueStyle.Render(fmt.Sprintf("%d", len(uniqueIPs))))
+		sb.WriteString(dimStyle.Render(" IPs"))
+		sb.WriteString(dimStyle.Render(" │ "))
+		// Show up to 4 user entries
+		show := users
+		if len(show) > 4 {
+			show = show[:4]
+		}
+		sb.WriteString(dimStyle.Render(strings.Join(show, "  ")))
+		if len(users) > 4 {
+			sb.WriteString(dimStyle.Render(fmt.Sprintf(" +%d more", len(users)-4)))
 		}
 	}
 
@@ -600,14 +653,15 @@ func renderTrendBlock(result *model.AnalysisResult, history *engine.History, wid
 	if oldest != nil && latest != nil {
 		durLabel = fmt.Sprintf(" (%s)", formatDuration(latest.Timestamp.Sub(oldest.Timestamp)))
 	}
-	sb.WriteString(titleStyle.Render(fmt.Sprintf(" Trend%s", durLabel)))
-	sb.WriteString("\n")
 
 	// Box inner width: total width - 5 for border chars (` │ ... │`)
 	innerW := width - 7
 	if innerW < 40 {
 		innerW = 40
 	}
+
+	title := fmt.Sprintf(" %s ", titleStyle.Render(fmt.Sprintf("Trend%s", durLabel)))
+	sb.WriteString(boxTopTitle(title, innerW) + "\n")
 
 	// Sparkline chart width: inner width - label(8) - padding(2) - " now=XXX.X"(~12)
 	chartW := innerW - 22
@@ -683,8 +737,6 @@ func renderTrendBlock(result *model.AnalysisResult, history *engine.History, wid
 		netSoftIRQ[i] = r.CPUSoftIRQPct
 	}
 
-	sb.WriteString(boxTop(innerW) + "\n")
-
 	line := func(label string, data []float64, maxV float64) {
 		content := fmt.Sprintf("  %s %s", styledPad(dimStyle.Render(label), 8), sparkline(data, chartW, 0, maxV))
 		sb.WriteString(boxRow(content, innerW) + "\n")
@@ -742,12 +794,16 @@ func renderTrendBlock(result *model.AnalysisResult, history *engine.History, wid
 
 // ─── SHARED: OWNERS BLOCK ───────────────────────────────────────────────────
 
-func renderOwnersBlock(result *model.AnalysisResult) string {
+func renderOwnersBlock(result *model.AnalysisResult, width int) string {
 	var sb strings.Builder
-	sb.WriteString(titleStyle.Render(" Top Resource Owners"))
-	sb.WriteString("\n")
 
-	innerW := 78
+	innerW := width - 7
+	if innerW < 40 {
+		innerW = 40
+	}
+	if innerW > 100 {
+		innerW = 100
+	}
 	var lines []string
 
 	renderLine := func(resource string, owners []model.Owner) {
@@ -779,7 +835,8 @@ func renderOwnersBlock(result *model.AnalysisResult) string {
 		renderLine("NET", result.NetOwners)
 	}
 
-	sb.WriteString(boxTop(innerW) + "\n")
+	title := fmt.Sprintf(" %s ", titleStyle.Render("Top Resource Owners"))
+	sb.WriteString(boxTopTitle(title, innerW) + "\n")
 	for _, l := range lines {
 		sb.WriteString(boxRow(l, innerW) + "\n")
 	}
@@ -789,12 +846,19 @@ func renderOwnersBlock(result *model.AnalysisResult) string {
 
 // ─── SHARED: RCA BOX ────────────────────────────────────────────────────────
 
-func renderRCABox(result *model.AnalysisResult) string {
+func renderRCABox(result *model.AnalysisResult, width int) string {
 	var sb strings.Builder
-	sb.WriteString(titleStyle.Render(" Root Cause Analysis"))
-	sb.WriteString("\n")
 
-	innerW := 72
+	innerW := width - 7
+	if innerW < 40 {
+		innerW = 40
+	}
+	if innerW > 100 {
+		innerW = 100
+	}
+
+	title := fmt.Sprintf(" %s ", titleStyle.Render("Root Cause Analysis"))
+	sb.WriteString(boxTopTitle(title, innerW) + "\n")
 
 	// Always 3 lines for stable layout
 	lines := [3]string{" ", " ", " "}
@@ -852,7 +916,6 @@ func renderRCABox(result *model.AnalysisResult) string {
 		}
 	}
 
-	sb.WriteString(boxTop(innerW) + "\n")
 	for _, l := range lines {
 		sb.WriteString(boxRow(l, innerW) + "\n")
 	}
@@ -862,18 +925,21 @@ func renderRCABox(result *model.AnalysisResult) string {
 
 // ─── SHARED: CAPACITY BLOCK ─────────────────────────────────────────────────
 
-func renderCapacityBlock(result *model.AnalysisResult, withBars bool, barW int) string {
+func renderCapacityBlock(result *model.AnalysisResult, withBars bool, barW int, width int) string {
 	var sb strings.Builder
-	sb.WriteString(titleStyle.Render(" Capacity Remaining"))
-	sb.WriteString("\n")
 
-	innerW := colKey + barW + 40
-	if !withBars {
-		innerW = colKey + 40
+	innerW := width - 7
+	if innerW < 40 {
+		innerW = 40
+	}
+	if innerW > 100 {
+		innerW = 100
 	}
 
+	title := fmt.Sprintf(" %s ", titleStyle.Render("Capacity Remaining"))
+
 	if result == nil {
-		sb.WriteString(boxTop(innerW) + "\n")
+		sb.WriteString(boxTopTitle(title, innerW) + "\n")
 		sb.WriteString(boxRow(dimStyle.Render("collecting..."), innerW) + "\n")
 		sb.WriteString(boxBot(innerW) + "\n")
 		return sb.String()
@@ -886,10 +952,10 @@ func renderCapacityBlock(result *model.AnalysisResult, withBars bool, barW int) 
 			styledPad("", barW),
 			styledPad(dimStyle.Render("Free"), 6),
 			dimStyle.Render("Current / Limit"))
-		sb.WriteString(boxTop(innerW) + "\n")
+		sb.WriteString(boxTopTitle(title, innerW) + "\n")
 		sb.WriteString(boxRow(hdr, innerW) + "\n")
 	} else {
-		sb.WriteString(boxTop(innerW) + "\n")
+		sb.WriteString(boxTopTitle(title, innerW) + "\n")
 	}
 
 	for _, cap := range result.Capacities {
@@ -955,14 +1021,19 @@ func capacityBar(pct float64, width int) string {
 
 // ─── SHARED: EXHAUSTION WARNINGS ────────────────────────────────────────────
 
-func renderExhaustionBlock(result *model.AnalysisResult) string {
+func renderExhaustionBlock(result *model.AnalysisResult, width int) string {
 	var sb strings.Builder
-	sb.WriteString(titleStyle.Render(" Exhaustion Warnings"))
-	sb.WriteString("\n")
 
-	innerW := 50
+	innerW := width - 7
+	if innerW < 40 {
+		innerW = 40
+	}
+	if innerW > 100 {
+		innerW = 100
+	}
 
-	sb.WriteString(boxTop(innerW) + "\n")
+	title := fmt.Sprintf(" %s ", titleStyle.Render("Exhaustion Warnings"))
+	sb.WriteString(boxTopTitle(title, innerW) + "\n")
 	if result == nil || len(result.Exhaustions) == 0 {
 		sb.WriteString(boxRow(dimStyle.Render("none"), innerW) + "\n")
 	} else {
@@ -978,14 +1049,19 @@ func renderExhaustionBlock(result *model.AnalysisResult) string {
 
 // ─── SHARED: WHAT CHANGED BLOCK ─────────────────────────────────────────────
 
-func renderChangesBlock(result *model.AnalysisResult) string {
+func renderChangesBlock(result *model.AnalysisResult, width int) string {
 	var sb strings.Builder
-	sb.WriteString(titleStyle.Render(" What Changed (30s)"))
-	sb.WriteString("\n")
 
-	innerW := 60
+	innerW := width - 7
+	if innerW < 40 {
+		innerW = 40
+	}
+	if innerW > 100 {
+		innerW = 100
+	}
 
-	sb.WriteString(boxTop(innerW) + "\n")
+	title := fmt.Sprintf(" %s ", titleStyle.Render("What Changed (30s)"))
+	sb.WriteString(boxTopTitle(title, innerW) + "\n")
 	if result == nil || len(result.TopChanges) == 0 {
 		sb.WriteString(boxRow(dimStyle.Render("no significant changes"), innerW) + "\n")
 	} else {
@@ -1055,14 +1131,19 @@ func renderChangesInline(result *model.AnalysisResult) string {
 
 // ─── SHARED: SUGGESTED ACTIONS BLOCK ─────────────────────────────────────────
 
-func renderActionsBlock(result *model.AnalysisResult) string {
+func renderActionsBlock(result *model.AnalysisResult, width int) string {
 	var sb strings.Builder
-	sb.WriteString(titleStyle.Render(" Suggested Actions"))
-	sb.WriteString("\n")
 
-	innerW := 72
+	innerW := width - 7
+	if innerW < 40 {
+		innerW = 40
+	}
+	if innerW > 100 {
+		innerW = 100
+	}
 
-	sb.WriteString(boxTop(innerW) + "\n")
+	title := fmt.Sprintf(" %s ", titleStyle.Render("Suggested Actions"))
+	sb.WriteString(boxTopTitle(title, innerW) + "\n")
 	if result == nil || len(result.Actions) == 0 {
 		sb.WriteString(boxRow(dimStyle.Render("no actions — system healthy"), innerW) + "\n")
 	} else {
@@ -1092,18 +1173,23 @@ func renderActionsBlock(result *model.AnalysisResult) string {
 
 // ─── SHARED: DEGRADATION BLOCK ──────────────────────────────────────────────
 
-func renderDegradationBlock(result *model.AnalysisResult) string {
+func renderDegradationBlock(result *model.AnalysisResult, width int) string {
 	if result == nil || len(result.Degradations) == 0 {
 		return ""
 	}
 
 	var sb strings.Builder
-	sb.WriteString(titleStyle.Render(" Slow Degradation"))
-	sb.WriteString("\n")
 
-	innerW := 60
+	innerW := width - 7
+	if innerW < 40 {
+		innerW = 40
+	}
+	if innerW > 100 {
+		innerW = 100
+	}
 
-	sb.WriteString(boxTop(innerW) + "\n")
+	title := fmt.Sprintf(" %s ", titleStyle.Render("Slow Degradation"))
+	sb.WriteString(boxTopTitle(title, innerW) + "\n")
 	for _, d := range result.Degradations {
 		dur := fmtDuration(d.Duration)
 		content := warnStyle.Render(fmt.Sprintf(" %s %s", d.Metric, d.Direction)) +
@@ -1394,4 +1480,148 @@ func renderExplainPanel(result *model.AnalysisResult, width int) string {
 	}
 
 	return sb.String()
+}
+
+// ─── SHARED: PROCESS TABLE ──────────────────────────────────────────────────
+
+// renderProcessTable renders a sorted process table (CPU% descending).
+func renderProcessTable(rates *model.RateSnapshot, width, maxRows int) string {
+	if rates == nil || len(rates.ProcessRates) == 0 || maxRows <= 0 {
+		return ""
+	}
+
+	// Sort by CPU% descending (copy to avoid mutating)
+	procs := make([]model.ProcessRate, len(rates.ProcessRates))
+	copy(procs, rates.ProcessRates)
+	sort.Slice(procs, func(i, j int) bool {
+		return procs[i].CPUPct > procs[j].CPUPct
+	})
+
+	var sb strings.Builder
+
+	// Column widths: PID(7) CPU%(6) MEM%(6) STATE(6) THR(4) RSS(8) IO R/W(16) COMMAND(fill)
+	fixedW := 7 + 6 + 6 + 6 + 4 + 8 + 16 + 4 // 4 for spacing
+	cmdW := width - fixedW - 2                  // 2 for leading space
+	if cmdW < 8 {
+		cmdW = 8
+	}
+
+	// Header
+	hdr := fmt.Sprintf(" %s%s%s%s%s%s%s%s",
+		styledPad(dimStyle.Render("PID"), 7),
+		styledPad(dimStyle.Render("CPU%"), 6),
+		styledPad(dimStyle.Render("MEM%"), 6),
+		styledPad(dimStyle.Render("STATE"), 6),
+		styledPad(dimStyle.Render("THR"), 4),
+		styledPad(dimStyle.Render("RSS"), 8),
+		styledPad(dimStyle.Render("IO R/W"), 16),
+		dimStyle.Render("COMMAND"))
+	sb.WriteString(hdr + "\n")
+
+	// Rows
+	n := maxRows
+	if n > len(procs) {
+		n = len(procs)
+	}
+	for i := 0; i < n; i++ {
+		p := procs[i]
+
+		// CPU% coloring
+		cpuStr := fmt.Sprintf("%.1f", p.CPUPct)
+		cpuStyled := dimStyle.Render(cpuStr)
+		if p.CPUPct > 50 {
+			cpuStyled = critStyle.Render(cpuStr)
+		} else if p.CPUPct > 20 {
+			cpuStyled = warnStyle.Render(cpuStr)
+		} else if p.CPUPct > 0.1 {
+			cpuStyled = valueStyle.Render(cpuStr)
+		}
+
+		// MEM% coloring
+		memStr := fmt.Sprintf("%.1f", p.MemPct)
+		memStyled := dimStyle.Render(memStr)
+		if p.MemPct > 50 {
+			memStyled = critStyle.Render(memStr)
+		} else if p.MemPct > 20 {
+			memStyled = warnStyle.Render(memStr)
+		} else if p.MemPct > 0.1 {
+			memStyled = valueStyle.Render(memStr)
+		}
+
+		// State coloring
+		stateStyled := dimStyle.Render(p.State)
+		switch p.State {
+		case "R":
+			stateStyled = okStyle.Render("R")
+		case "D":
+			stateStyled = critStyle.Render("D")
+		}
+
+		// IO R/W
+		ioStr := fmt.Sprintf("%.1f/%.1f MB/s", p.ReadMBs, p.WriteMBs)
+
+		// Command
+		cmd := p.Comm
+		if len(cmd) > cmdW {
+			cmd = cmd[:cmdW-3] + "..."
+		}
+
+		row := fmt.Sprintf(" %s%s%s%s%s%s%s%s",
+			styledPad(dimStyle.Render(fmt.Sprintf("%d", p.PID)), 7),
+			styledPad(cpuStyled, 6),
+			styledPad(memStyled, 6),
+			styledPad(stateStyled, 6),
+			styledPad(dimStyle.Render(fmt.Sprintf("%d", p.NumThreads)), 4),
+			styledPad(dimStyle.Render(fmtBytes(p.RSS)), 8),
+			styledPad(dimStyle.Render(ioStr), 16),
+			valueStyle.Render(cmd))
+		sb.WriteString(row + "\n")
+	}
+
+	return sb.String()
+}
+
+// perCoreBusy computes per-core CPU busy % from two consecutive snapshots.
+func perCoreBusy(prev, curr *model.Snapshot) []float64 {
+	if prev == nil || curr == nil {
+		return nil
+	}
+	prevCPU := prev.Global.CPU.PerCPU
+	currCPU := curr.Global.CPU.PerCPU
+	n := len(currCPU)
+	if len(prevCPU) < n {
+		n = len(prevCPU)
+	}
+	if n == 0 {
+		return nil
+	}
+
+	pcts := make([]float64, n)
+	for i := 0; i < n; i++ {
+		prevTotal := prevCPU[i].Total()
+		currTotal := currCPU[i].Total()
+		// #10: Guard against uint64 underflow on counter reset
+		if currTotal < prevTotal {
+			continue
+		}
+		delta := currTotal - prevTotal
+		if delta == 0 {
+			continue
+		}
+		if currCPU[i].Idle < prevCPU[i].Idle {
+			continue
+		}
+		idle := currCPU[i].Idle - prevCPU[i].Idle
+		if idle > delta {
+			continue
+		}
+		pcts[i] = float64(delta-idle) / float64(delta) * 100
+		if pcts[i] < 0 {
+			pcts[i] = 0
+		}
+		if pcts[i] > 100 {
+			pcts[i] = 100
+		}
+	}
+	return pcts
 }

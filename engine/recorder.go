@@ -3,6 +3,7 @@ package engine
 import (
 	"encoding/json"
 	"io"
+	"log"
 	"sync"
 
 	"github.com/ftahirops/xtop/model"
@@ -64,8 +65,8 @@ func (r *Recorder) RecordTickWithProbe(probe *ProbeFindings) (*model.Snapshot, *
 			Result:   result,
 			Probe:    probe,
 		}); err != nil {
-			// Log encode error but don't fail the tick
-			_ = err
+			// #38: Log encode error instead of swallowing
+			log.Printf("xtop: recorder encode error: %v", err)
 		}
 		r.mu.Unlock()
 	}

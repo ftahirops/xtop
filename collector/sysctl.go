@@ -1,11 +1,18 @@
 package collector
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/ftahirops/xtop/model"
 	"github.com/ftahirops/xtop/util"
 )
+
+// parseHex64 parses a hex string to uint64, returning 0 on error.
+func parseHex64(s string) uint64 {
+	v, _ := strconv.ParseUint(strings.TrimSpace(s), 16, 64)
+	return v
+}
 
 // SysctlCollector reads conntrack stats and FD usage.
 type SysctlCollector struct{}
@@ -37,10 +44,11 @@ func (s *SysctlCollector) collectConntrack(snap *model.Snapshot) {
 		if len(fields) < 8 {
 			continue
 		}
-		ct.Found += util.ParseUint64(fields[2])
-		ct.Invalid += util.ParseUint64(fields[4])
-		ct.Insert += util.ParseUint64(fields[5])
-		ct.Delete += util.ParseUint64(fields[7])
+		// #24: nf_conntrack stat file uses hex values
+		ct.Found += parseHex64(fields[2])
+		ct.Invalid += parseHex64(fields[4])
+		ct.Insert += parseHex64(fields[5])
+		ct.Delete += parseHex64(fields[7])
 	}
 }
 

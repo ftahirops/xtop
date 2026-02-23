@@ -54,6 +54,18 @@ func collectIPs() []string {
 		if iface.Flags&net.FlagUp == 0 {
 			continue
 		}
+		// Skip virtual/container interfaces — only show real host IPs
+		name := strings.ToLower(iface.Name)
+		if strings.HasPrefix(name, "docker") ||
+			strings.HasPrefix(name, "veth") ||
+			strings.HasPrefix(name, "br-") ||
+			strings.HasPrefix(name, "cni") ||
+			strings.HasPrefix(name, "flannel") ||
+			strings.HasPrefix(name, "cali") ||
+			strings.HasPrefix(name, "tunl") ||
+			strings.HasPrefix(name, "weave") {
+			continue
+		}
 		addrs, err := iface.Addrs()
 		if err != nil {
 			continue

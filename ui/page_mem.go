@@ -23,7 +23,10 @@ func renderMemPage(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 	psi := snap.Global.PSI.Memory
 
 	// === Summary ===
-	availPct := float64(mem.Available) / float64(mem.Total) * 100
+	availPct := float64(0)
+	if mem.Total > 0 {
+		availPct = float64(mem.Available) / float64(mem.Total) * 100
+	}
 	usedPct := 100 - availPct
 
 	bw := iw/2 - 15
@@ -57,6 +60,9 @@ func renderMemPage(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 
 	// === Full Breakdown ===
 	totalF := float64(mem.Total)
+	if totalF == 0 {
+		totalF = 1 // avoid division by zero
+	}
 	breakdown := []struct {
 		label string
 		bytes uint64

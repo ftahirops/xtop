@@ -19,7 +19,7 @@ import (
 )
 
 // Version is set at build time via ldflags.
-var Version = "0.8.9"
+var Version = "0.9.5"
 
 // Config holds CLI configuration.
 type Config struct {
@@ -39,14 +39,22 @@ type Config struct {
 	AlertWebhook string
 	AlertCommand string
 	// Doctor mode
-	DoctorMode   bool
+	DoctorMode    bool
+	DiscoverMode  bool
 	CronMode     bool
 	AlertMode    bool
+	// Forensics mode
+	ForensicsMode bool
 	// Shell widget
 	ShellInit   string
 	TmuxStatus  bool
 	CronInstall bool
+	// Privacy
+	MaskIPs bool
 }
+
+// MaskIPs is a global flag accessible from UI and doctor rendering.
+var MaskIPsEnabled bool
 
 // validSections lists sections available for -watch and -section.
 var validSections = []string{"overview", "cpu", "mem", "io", "net", "cgroup", "rca"}
@@ -64,6 +72,8 @@ Modes:
   -md               Single Markdown incident report to stdout, then exit
   -daemon           Background collector (no TUI, writes events to datadir)
   -doctor           Run comprehensive health check
+  -discover         Interactive server discovery and tuning
+  -forensics        Retroactive incident analysis from system logs
   -version          Print version and exit
 
 Doctor Options:
@@ -128,6 +138,14 @@ func Run() error {
 	var showVersion bool
 
 	userCfg := xtopcfg.Load()
+
+	// Apply threshold profile from config
+	if userCfg.ThresholdProfile != "" {
+		if p, ok := engine.Profiles[userCfg.ThresholdProfile]; ok {
+			engine.ActiveProfile = p
+		}
+	}
+
 	if userCfg.IntervalSec > 0 {
 		intervalSec = userCfg.IntervalSec
 	} else {
@@ -164,12 +182,16 @@ func Run() error {
 	flag.StringVar(&cfg.AlertCommand, "alert-command", userCfg.Alerts.Command, "Command to execute on alert notifications")
 	// Doctor flags
 	flag.BoolVar(&cfg.DoctorMode, "doctor", false, "Run comprehensive health check")
+	flag.BoolVar(&cfg.DiscoverMode, "discover", false, "Interactive server discovery and tuning")
+	flag.BoolVar(&cfg.ForensicsMode, "forensics", false, "Retroactive incident analysis from system logs")
 	flag.BoolVar(&cfg.CronMode, "cron", false, "Doctor: cron-friendly output (silent if OK)")
 	flag.BoolVar(&cfg.AlertMode, "alert", false, "Doctor: send alert on state change")
 	// Shell widget flags
 	flag.StringVar(&cfg.ShellInit, "shell-init", "", "Output shell init script (bash or zsh)")
 	flag.BoolVar(&cfg.TmuxStatus, "tmux-status", false, "Output tmux-formatted status segment")
 	flag.BoolVar(&cfg.CronInstall, "cron-install", false, "Print crontab line for automated health checks")
+	// Privacy
+	flag.BoolVar(&cfg.MaskIPs, "mask-ips", false, "Mask IP addresses in output (for demos/screenshots)")
 
 	flag.Usage = printUsage
 	flag.Parse()
@@ -188,6 +210,8 @@ func Run() error {
 	}
 
 	cfg.Interval = time.Duration(intervalSec) * time.Second
+	MaskIPsEnabled = cfg.MaskIPs
+	model.MaskIPsEnabled = cfg.MaskIPs
 
 	// Resolve default data directory
 	if cfg.DataDir == "" {
@@ -269,6 +293,16 @@ func Run() error {
 	// --replay mode
 	if cfg.ReplayPath != "" {
 		return runReplay(cfg, wrapTicker)
+	}
+
+	// --forensics mode
+	if cfg.ForensicsMode {
+		return runForensics(cfg)
+	}
+
+	// --discover mode
+	if cfg.DiscoverMode {
+		return runDiscover()
 	}
 
 	// --doctor mode
@@ -434,7 +468,10 @@ func renderMarkdownReport(snap *model.Snapshot, rates *model.RateSnapshot, resul
 		snap.Global.CPU.LoadAvg.Load15, snap.Global.CPU.NumCPUs))
 
 	mem := snap.Global.Memory
-	memPct := float64(mem.Total-mem.Available) / float64(mem.Total) * 100
+	memPct := float64(0)
+	if mem.Total > 0 {
+		memPct = float64(mem.Total-mem.Available) / float64(mem.Total) * 100
+	}
 	sb.WriteString(fmt.Sprintf("- **Memory:** %.0f%% used (%s available / %s total)\n",
 		memPct, fmtBytesSimple(mem.Available), fmtBytesSimple(mem.Total)))
 

@@ -227,21 +227,29 @@ func (d *EventDetector) LoadEvents(events []model.Event) {
 	d.completed = append(events, d.completed...)
 }
 
-// EventLogWriter appends events to a JSONL file.
+// EventLogWriter appends events to a JSONL file with size-based rotation.
 type EventLogWriter struct {
-	path string
-	mu   sync.Mutex
+	path    string
+	maxSize int64 // max file size before rotation (default 10MB)
+	mu      sync.Mutex
 }
 
 // NewEventLogWriter creates a writer for the given path.
 func NewEventLogWriter(path string) *EventLogWriter {
-	return &EventLogWriter{path: path}
+	return &EventLogWriter{path: path, maxSize: 10 * 1024 * 1024}
 }
 
-// Write appends an event to the log file.
+// Write appends an event to the log file, rotating if it exceeds maxSize.
 func (w *EventLogWriter) Write(e model.Event) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+
+	// #23: Rotate if file exceeds maxSize
+	if fi, err := os.Stat(w.path); err == nil && fi.Size() > w.maxSize {
+		// Rename current to .1, discard older
+		_ = os.Remove(w.path + ".1")
+		_ = os.Rename(w.path, w.path+".1")
+	}
 
 	f, err := os.OpenFile(w.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {

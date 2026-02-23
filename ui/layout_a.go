@@ -21,7 +21,7 @@ func renderLayoutA(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 	sb.WriteString(renderHeader(snap, rates, result))
 	sb.WriteString("\n")
 	sb.WriteString(separator(width))
-	sb.WriteString("\n\n")
+	sb.WriteString("\n")
 
 	leftW := width/2 - 2
 	if leftW < 30 {
@@ -46,31 +46,35 @@ func renderLayoutA(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 	}
 
 	for _, s := range ss {
-		left.WriteString(fmt.Sprintf(" %s %s  %s\n",
+		title := fmt.Sprintf(" %s %s  %s ",
 			styledPad(valueStyle.Render(s.Name), colName),
 			styledPad(s.StatusStyle.Render(s.Status), colStat),
-			dimStyle.Render(fmt.Sprintf("PSI %s", s.PressureStr))))
+			dimStyle.Render(fmt.Sprintf("PSI %s", s.PressureStr)))
 
-		left.WriteString(renderKVBox(s.Details, boxInnerW))
+		left.WriteString(boxTopTitle(title, boxInnerW) + "\n")
+		for _, d := range s.Details {
+			key := d.Key
+			if len(key) > 14 {
+				key = key[:14]
+			}
+			content := fmt.Sprintf("%s %s",
+				styledPad(dimStyle.Render(key+":"), colKey),
+				valueStyle.Render(d.Val))
+			left.WriteString(boxRow(content, boxInnerW) + "\n")
+		}
+		left.WriteString(boxBot(boxInnerW) + "\n")
 	}
 
 	// Build right column: RCA + Changes + Actions + Owners + Capacity + Probe + Exhaustion + Degradation + Trend
 	var right strings.Builder
-	right.WriteString(renderRCABox(result))
-	right.WriteString("\n")
-	right.WriteString(renderChangesBlock(result))
-	right.WriteString("\n")
-	right.WriteString(renderActionsBlock(result))
-	right.WriteString("\n")
-	right.WriteString(renderOwnersBlock(result))
-	right.WriteString("\n")
-	right.WriteString(renderCapacityBlock(result, true, 16))
-	right.WriteString("\n")
+	right.WriteString(renderRCABox(result, rightW))
+	right.WriteString(renderChangesBlock(result, rightW))
+	right.WriteString(renderActionsBlock(result, rightW))
+	right.WriteString(renderOwnersBlock(result, rightW))
+	right.WriteString(renderCapacityBlock(result, true, 16, rightW))
 	right.WriteString(renderProbeStatusLine(pm))
-	right.WriteString("\n")
-	right.WriteString(renderExhaustionBlock(result))
-	right.WriteString("\n")
-	right.WriteString(renderDegradationBlock(result))
+	right.WriteString(renderExhaustionBlock(result, rightW))
+	right.WriteString(renderDegradationBlock(result, rightW))
 	right.WriteString(renderTrendBlock(result, history, rightW, true))
 
 	// Join columns with vertical separator

@@ -201,28 +201,34 @@ func analyzeIO(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEntry {
 	fsFull := worstFreePct < 15
 
 	// --- v2 evidence ---
+	w, c := threshold("io.psi", 5, 20)
 	r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("io.psi", model.DomainIO,
-		ioSome*100, 5, 20, true, 0.9,
+		ioSome*100, w, c, true, 0.9,
 		fmt.Sprintf("IO PSI some=%.1f%% full=%.1f%%", ioSome*100, ioFull*100), "avg10",
 		nil, nil))
+	w, c = threshold("io.dstate", 1, 10)
 	r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("io.dstate", model.DomainIO,
-		float64(dCount), 1, 10, true, 0.7,
+		float64(dCount), w, c, true, 0.7,
 		fmt.Sprintf("%d D-state tasks", dCount), "1s",
 		nil, nil))
+	w, c = threshold("io.disk.latency", 20, 80)
 	r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("io.disk.latency", model.DomainIO,
-		worstAwait, 20, 80, false, 0.7,
+		worstAwait, w, c, false, 0.7,
 		fmt.Sprintf("%s await=%.0fms", worstDev, worstAwait), "1s",
 		nil, map[string]string{"device": worstDev}))
+	w, c = threshold("io.disk.util", 70, 95)
 	r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("io.disk.util", model.DomainIO,
-		worstUtil, 70, 95, false, 0.7,
+		worstUtil, w, c, false, 0.7,
 		fmt.Sprintf("%s util=%.0f%%", worstDev, worstUtil), "1s",
 		nil, map[string]string{"device": worstDev}))
+	w, c = threshold("io.writeback", 5, 20)
 	r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("io.writeback", model.DomainIO,
-		dirtyPct, 5, 20, false, 0.6,
+		dirtyPct, w, c, false, 0.6,
 		fmt.Sprintf("dirty pages=%.1f%% of RAM", dirtyPct), "1s",
 		nil, nil))
+	w, c = threshold("io.fsfull", 85, 95)
 	r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("io.fsfull", model.DomainIO,
-		100-worstFreePct, 85, 95, true, 0.9,
+		100-worstFreePct, w, c, true, 0.9,
 		fmt.Sprintf("%s %.0f%% used", worstMount, 100-worstFreePct), "1s",
 		nil, map[string]string{"mount": worstMount}))
 
@@ -314,29 +320,35 @@ func analyzeMemory(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEnt
 	if oomDetected {
 		oomVal = 1
 	}
+	w, c := threshold("mem.psi", 5, 20)
+	w2, c2 := threshold("mem.available.low", 85, 95)
+	w3, c3 := threshold("mem.reclaim.direct", 10, 500)
+	w4, c4 := threshold("mem.swap.activity", 2, 50)
+	w5, c5 := threshold("mem.major.faults", 10, 200)
+	w6, c6 := threshold("mem.oom.kills", 1, 1)
 	r.EvidenceV2 = append(r.EvidenceV2,
 		emitEvidence("mem.psi", model.DomainMemory,
-			memSome*100, 5, 20, true, 0.9,
+			memSome*100, w, c, true, 0.9,
 			fmt.Sprintf("MEM PSI some=%.1f%% full=%.1f%%", memSome*100, memFull*100), "avg10",
 			nil, nil),
 		emitEvidence("mem.available.low", model.DomainMemory,
-			usedPct, 85, 95, true, 0.9,
+			usedPct, w2, c2, true, 0.9,
 			fmt.Sprintf("MemAvailable=%.1f%% (%s free)", availPct, formatB(mem.Available)), "1s",
 			nil, nil),
 		emitEvidence("mem.reclaim.direct", model.DomainMemory,
-			directReclaimRate, 10, 500, false, 0.7,
+			directReclaimRate, w3, c3, false, 0.7,
 			fmt.Sprintf("direct reclaim=%.0f pages/s", directReclaimRate), "1s",
 			nil, nil),
 		emitEvidence("mem.swap.activity", model.DomainMemory,
-			swapIOMBs, 2, 50, true, 0.8,
+			swapIOMBs, w4, c4, true, 0.8,
 			fmt.Sprintf("swap IO=%.1f MB/s", swapIOMBs), "1s",
 			nil, nil),
 		emitEvidence("mem.major.faults", model.DomainMemory,
-			majFaultRate, 10, 200, false, 0.7,
+			majFaultRate, w5, c5, false, 0.7,
 			fmt.Sprintf("major faults=%.0f/s", majFaultRate), "1s",
 			nil, nil),
 		emitEvidence("mem.oom.kills", model.DomainMemory,
-			oomVal, 1, 1, true, 1.0,
+			oomVal, w6, c6, true, 1.0,
 			fmt.Sprintf("OOM kills=%d", curr.Global.VMStat.OOMKill), "cumulative",
 			nil, nil),
 	)
@@ -462,25 +474,30 @@ func analyzeCPU(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEntry 
 	csPerCore := ctxRate / float64(nCPUs)
 
 	// --- v2 evidence ---
+	w, c := threshold("cpu.psi", 5, 20)
+	w2, c2 := threshold("cpu.runqueue", 1.0, 2.0)
+	w3, c3 := threshold("cpu.ctxswitch", 2000, 10000)
+	w4, c4 := threshold("cpu.steal", 5, 15)
+	w5, c5 := threshold("cpu.cgroup.throttle", 5, 25)
 	r.EvidenceV2 = append(r.EvidenceV2,
 		emitEvidence("cpu.psi", model.DomainCPU,
-			cpuSome*100, 5, 20, true, 0.9,
+			cpuSome*100, w, c, true, 0.9,
 			fmt.Sprintf("CPU PSI some=%.1f%% full=%.1f%%", cpuSome*100, cpuFull*100), "avg10",
 			nil, nil),
 		emitEvidence("cpu.runqueue", model.DomainCPU,
-			rqRatio, 1.0, 2.0, false, 0.7,
+			rqRatio, w2, c2, false, 0.7,
 			fmt.Sprintf("runqueue ratio=%.1f (%d/%d cores)", rqRatio, int(running), nCPUs), "1s",
 			nil, nil),
 		emitEvidence("cpu.ctxswitch", model.DomainCPU,
-			csPerCore, 2000, 10000, true, 0.6,
+			csPerCore, w3, c3, true, 0.6,
 			fmt.Sprintf("ctx switches=%.0f/core", csPerCore), "1s",
 			nil, nil),
 		emitEvidence("cpu.steal", model.DomainCPU,
-			stealPct, 5, 15, true, 0.9,
+			stealPct, w4, c4, true, 0.9,
 			fmt.Sprintf("CPU steal=%.1f%%", stealPct), "1s",
 			nil, nil),
 		emitEvidence("cpu.cgroup.throttle", model.DomainCPU,
-			maxThrottlePct, 5, 25, true, 0.8,
+			maxThrottlePct, w5, c5, true, 0.8,
 			fmt.Sprintf("cgroup throttle=%.1f%% (%s)", maxThrottlePct, maxThrottleCg), "1s",
 			nil, map[string]string{"cgroup": maxThrottleCg}),
 	)
@@ -599,25 +616,30 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEn
 	if synScaled := float64(st.SynSent) * 200; synScaled > tcpStateVal {
 		tcpStateVal = synScaled
 	}
+	w, c := threshold("net.drops", 1, 100)
+	w2, c2 := threshold("net.tcp.retrans", 1, 5)
+	w3, c3 := threshold("net.conntrack", 70, 95)
+	w4, c4 := threshold("net.softirq", 5, 25)
+	w5, c5 := threshold("net.tcp.state", 3000, 15000)
 	r.EvidenceV2 = append(r.EvidenceV2,
 		emitEvidence("net.drops", model.DomainNetwork,
-			totalDrops, 1, 100, true, 0.8,
+			totalDrops, w, c, true, 0.8,
 			fmt.Sprintf("net drops=%.0f/s", totalDrops), "1s",
 			nil, nil),
 		emitEvidence("net.tcp.retrans", model.DomainNetwork,
-			retransRatio, 1, 5, true, 0.8,
+			retransRatio, w2, c2, true, 0.8,
 			fmt.Sprintf("retrans=%.0f/s (%.1f%% ratio)", retransRate, retransRatio), "1s",
 			nil, nil),
 		emitEvidence("net.conntrack", model.DomainNetwork,
-			conntrackPct*100, 70, 95, true, 0.9,
+			conntrackPct*100, w3, c3, true, 0.9,
 			fmt.Sprintf("conntrack=%.0f%% (%d/%d)", conntrackPct*100, ct.Count, ct.Max), "1s",
 			nil, nil),
 		emitEvidence("net.softirq", model.DomainNetwork,
-			rates.CPUSoftIRQPct, 5, 25, false, 0.6,
+			rates.CPUSoftIRQPct, w4, c4, false, 0.6,
 			fmt.Sprintf("softirq CPU=%.1f%%", rates.CPUSoftIRQPct), "1s",
 			nil, nil),
 		emitEvidence("net.tcp.state", model.DomainNetwork,
-			tcpStateVal, 3000, 15000, false, 0.6,
+			tcpStateVal, w5, c5, false, 0.6,
 			fmt.Sprintf("TW=%d CW=%d SYN=%d", st.TimeWait, st.CloseWait, st.SynSent), "1s",
 			nil, nil),
 	)

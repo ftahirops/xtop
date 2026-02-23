@@ -18,7 +18,9 @@ type Config struct {
 	Section       string           `json:"default_section"`
 	Prometheus     PrometheusConfig     `json:"prometheus"`
 	Alerts         AlertConfig          `json:"alerts"`
-	ServerIdentity *model.ServerIdentity `json:"server_identity,omitempty"`
+	ServerIdentity   *model.ServerIdentity `json:"server_identity,omitempty"`
+	CriticalServices []string              `json:"critical_services,omitempty"`
+	ThresholdProfile string                `json:"threshold_profile,omitempty"`
 }
 
 type PrometheusConfig struct {

@@ -3,6 +3,7 @@
 package ebpf
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"sort"
@@ -26,8 +27,13 @@ type ProbeResults struct {
 // RunProbe attaches all available eBPF probes, collects data for the given
 // duration, reads the BPF maps, and returns the results. It is safe to call
 // from a goroutine. Each pack is best-effort: if one fails to attach, others
-// still run.
+// still run. Use RunProbeCtx for cancellation support.
 func RunProbe(duration time.Duration) (*ProbeResults, error) {
+	return RunProbeCtx(context.Background(), duration)
+}
+
+// RunProbeCtx is like RunProbe but supports cancellation via context.
+func RunProbeCtx(ctx context.Context, duration time.Duration) (*ProbeResults, error) {
 	cap := Detect()
 	if !cap.Available {
 		return nil, fmt.Errorf("eBPF not available: %s", cap.Reason)
@@ -250,8 +256,16 @@ func RunProbe(duration time.Duration) (*ProbeResults, error) {
 		return nil, fmt.Errorf("no probes attached: %v", results.Errors)
 	}
 
-	// Collect data for the duration
-	time.Sleep(duration)
+	// #15: Collect data for the duration, cancellable via context
+	select {
+	case <-time.After(duration):
+	case <-ctx.Done():
+		// Close probes and return early on cancellation
+		for _, p := range packs {
+			p.closer()
+		}
+		return nil, ctx.Err()
+	}
 
 	// Read all maps
 	for _, p := range packs {

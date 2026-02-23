@@ -56,7 +56,7 @@ func (h *History) Len() int {
 	return h.size
 }
 
-// Latest returns the most recent snapshot.
+// Latest returns a copy of the most recent snapshot.
 func (h *History) Latest() *model.Snapshot {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -64,10 +64,11 @@ func (h *History) Latest() *model.Snapshot {
 		return nil
 	}
 	idx := (h.head - 1 + h.cap) % h.cap
-	return &h.buf[idx]
+	snap := h.buf[idx] // copy
+	return &snap
 }
 
-// Previous returns the snapshot before the most recent one.
+// Previous returns a copy of the snapshot before the most recent one.
 func (h *History) Previous() *model.Snapshot {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -75,10 +76,11 @@ func (h *History) Previous() *model.Snapshot {
 		return nil
 	}
 	idx := (h.head - 2 + h.cap) % h.cap
-	return &h.buf[idx]
+	snap := h.buf[idx] // copy
+	return &snap
 }
 
-// Get returns the snapshot at position i (0 = oldest in buffer).
+// Get returns a copy of the snapshot at position i (0 = oldest in buffer).
 func (h *History) Get(i int) *model.Snapshot {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -86,10 +88,11 @@ func (h *History) Get(i int) *model.Snapshot {
 		return nil
 	}
 	idx := (h.head - h.size + i + h.cap) % h.cap
-	return &h.buf[idx]
+	snap := h.buf[idx] // copy
+	return &snap
 }
 
-// GetRate returns the rate snapshot at position i (0 = oldest in buffer).
+// GetRate returns a copy of the rate snapshot at position i (0 = oldest in buffer).
 func (h *History) GetRate(i int) *model.RateSnapshot {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -97,9 +100,9 @@ func (h *History) GetRate(i int) *model.RateSnapshot {
 		return nil
 	}
 	idx := (h.head - h.size + i + h.cap) % h.cap
-	r := &h.rateBuf[idx]
+	r := h.rateBuf[idx] // copy
 	if r.DeltaSec == 0 {
 		return nil // no rate computed for this position
 	}
-	return r
+	return &r
 }

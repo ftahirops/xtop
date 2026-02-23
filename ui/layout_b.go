@@ -19,7 +19,7 @@ func renderLayoutB(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 	sb.WriteString(renderHeader(snap, rates, result))
 	sb.WriteString("\n")
 	sb.WriteString(separator(width))
-	sb.WriteString("\n\n")
+	sb.WriteString("\n")
 
 	tableInnerW := width - 7
 	if tableInnerW < 60 {
@@ -30,13 +30,10 @@ func renderLayoutB(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 	}
 
 	// System Health Summary table
-	sb.WriteString(titleStyle.Render(" System Health Summary"))
-	sb.WriteString("\n")
-
-	// Table header inside box
+	summaryTitle := fmt.Sprintf(" %s ", titleStyle.Render("System Health Summary"))
 	hdr := fmt.Sprintf("%-12s %-8s %10s %15s   %-20s  %s",
 		"Subsystem", "Status", "Pressure", "Capacity Left", "Key Metric", "Top Owner")
-	sb.WriteString(boxTop(tableInnerW) + "\n")
+	sb.WriteString(boxTopTitle(summaryTitle, tableInnerW) + "\n")
 	sb.WriteString(boxRow(dimStyle.Render(hdr), tableInnerW) + "\n")
 	sb.WriteString(boxMid(tableInnerW) + "\n")
 
@@ -88,13 +85,8 @@ func renderLayoutB(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 	}
 	sb.WriteString(boxBot(tableInnerW) + "\n")
 
-	sb.WriteString("\n")
-
 	// Detail for highest-pressure subsystem
 	worst := ss[worstIdx]
-	sb.WriteString(titleStyle.Render(fmt.Sprintf(" Detail: %s", worst.Name)))
-	sb.WriteString("\n")
-
 	detailInnerW := width - 7
 	if detailInnerW < 40 {
 		detailInnerW = 40
@@ -102,7 +94,23 @@ func renderLayoutB(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 	if detailInnerW > maxBoxInner {
 		detailInnerW = maxBoxInner
 	}
-	sb.WriteString(renderKVBox(worst.Details, detailInnerW))
+
+	detailTitle := fmt.Sprintf(" %s %s  %s ",
+		styledPad(titleStyle.Render(worst.Name), colName),
+		styledPad(worst.StatusStyle.Render(worst.Status), colStat),
+		dimStyle.Render(fmt.Sprintf("PSI %s", worst.PressureStr)))
+	sb.WriteString(boxTopTitle(detailTitle, detailInnerW) + "\n")
+	for _, d := range worst.Details {
+		key := d.Key
+		if len(key) > 14 {
+			key = key[:14]
+		}
+		content := fmt.Sprintf("%s %s",
+			styledPad(dimStyle.Render(key+":"), colKey),
+			valueStyle.Render(d.Val))
+		sb.WriteString(boxRow(content, detailInnerW) + "\n")
+	}
+	sb.WriteString(boxBot(detailInnerW) + "\n")
 
 	// RCA + Changes + Owners + Probe
 	sb.WriteString(renderRCAInline(result))
@@ -110,11 +118,8 @@ func renderLayoutB(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 	sb.WriteString(renderOwnersInline(result))
 	sb.WriteString(renderProbeStatusLine(pm))
 
-	sb.WriteString("\n")
-
 	// Trend (one line per resource)
 	sb.WriteString(renderTrendBlock(result, history, width, true))
-	sb.WriteString("\n")
 
 	return sb.String()
 }

@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"sort"
 	"strings"
@@ -140,9 +141,9 @@ func trackBiggestChange(result *model.AnalysisResult, hist *History) {
 
 	var changes []model.MetricChange
 
-	addChange := func(name string, oldVal, curVal float64, unit string) {
+	addChange := func(name string, oldVal, curVal float64, unit string, minAbsDiff float64) {
 		diff := curVal - oldVal
-		if abs(diff) < 0.5 {
+		if abs(diff) < minAbsDiff {
 			return
 		}
 		pct := float64(0)
@@ -150,6 +151,10 @@ func trackBiggestChange(result *model.AnalysisResult, hist *History) {
 			pct = diff / oldVal * 100
 		} else if curVal > 0.1 {
 			pct = 100 // new from zero
+		}
+		// Skip small percentage changes — reduces noise from normal fluctuations
+		if abs(pct) < 30 {
+			return
 		}
 		changes = append(changes, model.MetricChange{
 			Name:     name,
@@ -162,29 +167,30 @@ func trackBiggestChange(result *model.AnalysisResult, hist *History) {
 	}
 
 	// System-wide metrics
-	addChange("CPU PSI", old.Global.PSI.CPU.Some.Avg10, curr.Global.PSI.CPU.Some.Avg10, "%")
-	addChange("MEM PSI", old.Global.PSI.Memory.Full.Avg10, curr.Global.PSI.Memory.Full.Avg10, "%")
-	addChange("IO PSI", old.Global.PSI.IO.Full.Avg10, curr.Global.PSI.IO.Full.Avg10, "%")
+	addChange("CPU PSI", old.Global.PSI.CPU.Some.Avg10, curr.Global.PSI.CPU.Some.Avg10, "%", 2)
+	addChange("MEM PSI", old.Global.PSI.Memory.Full.Avg10, curr.Global.PSI.Memory.Full.Avg10, "%", 2)
+	addChange("IO PSI", old.Global.PSI.IO.Full.Avg10, curr.Global.PSI.IO.Full.Avg10, "%", 2)
 
 	if old.Global.Memory.Total > 0 && curr.Global.Memory.Total > 0 {
 		oldPct := float64(old.Global.Memory.Total-old.Global.Memory.Available) / float64(old.Global.Memory.Total) * 100
 		curPct := float64(curr.Global.Memory.Total-curr.Global.Memory.Available) / float64(curr.Global.Memory.Total) * 100
-		addChange("MEM usage", oldPct, curPct, "%")
+		addChange("MEM usage", oldPct, curPct, "%", 3)
 	}
 
 	nCPU := curr.Global.CPU.NumCPUs
 	if nCPU == 0 {
 		nCPU = 1
 	}
-	oldLoadPct := old.Global.CPU.LoadAvg.Load1 / float64(nCPU) * 100
-	curLoadPct := curr.Global.CPU.LoadAvg.Load1 / float64(nCPU) * 100
-	addChange("run queue", oldLoadPct, curLoadPct, "%")
+	// Use Load5 instead of Load1 for smoother run queue tracking
+	oldLoadPct := old.Global.CPU.LoadAvg.Load5 / float64(nCPU) * 100
+	curLoadPct := curr.Global.CPU.LoadAvg.Load5 / float64(nCPU) * 100
+	addChange("run queue", oldLoadPct, curLoadPct, "%", 10)
 
 	// Rate-based metrics (need both old and current rates)
 	if oldRates != nil && currRates != nil {
-		addChange("swap in", oldRates.SwapInRate, currRates.SwapInRate, " MB/s")
-		addChange("retransmits", oldRates.RetransRate, currRates.RetransRate, "/s")
-		addChange("ctx switches", oldRates.CtxSwitchRate, currRates.CtxSwitchRate, "/s")
+		addChange("swap in", oldRates.SwapInRate, currRates.SwapInRate, " MB/s", 0.5)
+		addChange("retransmits", oldRates.RetransRate, currRates.RetransRate, "/s", 5)
+		addChange("ctx switches", oldRates.CtxSwitchRate, currRates.CtxSwitchRate, "/s", 5000)
 
 		// Worst disk latency
 		oldWorstAwait := float64(0)
@@ -202,7 +208,7 @@ func trackBiggestChange(result *model.AnalysisResult, hist *History) {
 			}
 		}
 		if curWorstDisk != "" {
-			addChange(curWorstDisk+" latency", oldWorstAwait, curWorstAwait, "ms")
+			addChange(curWorstDisk+" latency", oldWorstAwait, curWorstAwait, "ms", 5)
 		}
 
 		// Network drops
@@ -214,7 +220,7 @@ func trackBiggestChange(result *model.AnalysisResult, hist *History) {
 		for _, n := range currRates.NetRates {
 			curDrops += n.RxDropsPS + n.TxDropsPS
 		}
-		addChange("net drops", oldDrops, curDrops, "/s")
+		addChange("net drops", oldDrops, curDrops, "/s", 1)
 
 		// Per-process IO changes: find biggest IO movers
 		oldIO := make(map[string]float64) // comm -> total IO MB/s
@@ -224,23 +230,11 @@ func trackBiggestChange(result *model.AnalysisResult, hist *History) {
 		for _, p := range currRates.ProcessRates {
 			curIO := p.ReadMBs + p.WriteMBs
 			prevIO := oldIO[p.Comm]
-			diff := curIO - prevIO
-			if abs(diff) > 0.5 {
-				pct := float64(0)
-				if prevIO > 0.1 {
-					pct = diff / prevIO * 100
-				} else if curIO > 0.5 {
-					pct = 100
-				}
-				changes = append(changes, model.MetricChange{
-					Name:     p.Comm + " IO",
-					Delta:    diff,
-					DeltaPct: pct,
-					Current:  fmt.Sprintf("%.1f MB/s", curIO),
-					Unit:     "MB/s",
-					Rising:   diff > 0,
-				})
+			// Only report if at least one side had meaningful IO (>1 MB/s)
+			if curIO < 1 && prevIO < 1 {
+				continue
 			}
+			addChange(p.Comm+" IO", prevIO, curIO, " MB/s", 1)
 		}
 
 		// Per-process CPU changes
@@ -250,17 +244,7 @@ func trackBiggestChange(result *model.AnalysisResult, hist *History) {
 		}
 		for _, p := range currRates.ProcessRates {
 			prevCPU := oldCPU[p.Comm]
-			diff := p.CPUPct - prevCPU
-			if abs(diff) > 5 { // only report >5% CPU changes
-				changes = append(changes, model.MetricChange{
-					Name:     p.Comm + " CPU",
-					Delta:    diff,
-					DeltaPct: diff, // already in %
-					Current:  fmt.Sprintf("%.1f%%", p.CPUPct),
-					Unit:     "%",
-					Rising:   diff > 0,
-				})
-			}
+			addChange(p.Comm+" CPU", prevCPU, p.CPUPct, "%", 20)
 		}
 	}
 
@@ -278,7 +262,7 @@ func trackBiggestChange(result *model.AnalysisResult, hist *History) {
 			if isKernelThread(p.Comm) {
 				continue
 			}
-			if p.CPUPct > 1 || (p.ReadMBs+p.WriteMBs) > 0.1 {
+			if p.CPUPct > 5 || (p.ReadMBs+p.WriteMBs) > 1 {
 				desc := fmt.Sprintf("%.1f%% CPU", p.CPUPct)
 				if p.ReadMBs+p.WriteMBs > 0.1 {
 					desc = fmt.Sprintf("%.1f MB/s IO", p.ReadMBs+p.WriteMBs)
@@ -310,14 +294,7 @@ func trackBiggestChange(result *model.AnalysisResult, hist *History) {
 		if variance < 0 {
 			variance = 0
 		}
-		stddev := 0.0
-		if variance > 0 {
-			// Manual sqrt via Newton's method (avoid math import)
-			stddev = variance
-			for i := 0; i < 20; i++ {
-				stddev = (stddev + variance/stddev) / 2
-			}
-		}
+		stddev := math.Sqrt(variance)
 		if stddev > 0.01 {
 			for i := range changes {
 				changes[i].ZScore = (abs(changes[i].DeltaPct) - mean) / stddev

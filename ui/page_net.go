@@ -8,6 +8,9 @@ import (
 	"github.com/ftahirops/xtop/model"
 )
 
+// defaultEphemeralRange is the Linux default ephemeral port range (32768-60999 = 28232 ports).
+const defaultEphemeralRange = 28232
+
 func renderNetPage(snap *model.Snapshot, rates *model.RateSnapshot, result *model.AnalysisResult, pm probeQuerier, width, height int) string {
 	var sb strings.Builder
 	iw := pageInnerW(width)
@@ -35,10 +38,15 @@ func renderNetPage(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 	} else {
 		healthLines = append(healthLines, critStyle.Render("CRITICAL"))
 	}
-	for i := 0; i < 3; i++ {
-		if i < len(netIssues) {
-			healthLines = append(healthLines, netIssues[i])
-		}
+	shown := 3
+	if len(netIssues) < shown {
+		shown = len(netIssues)
+	}
+	for i := 0; i < shown; i++ {
+		healthLines = append(healthLines, netIssues[i])
+	}
+	if len(netIssues) > 3 {
+		healthLines = append(healthLines, dimStyle.Render(fmt.Sprintf("  (+%d more issues)", len(netIssues)-3)))
 	}
 	sb.WriteString(boxSection("NETWORK HEALTH", healthLines, iw))
 
@@ -97,7 +105,7 @@ func renderNetPage(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 	eph := snap.Global.EphemeralPorts
 	ephRange := eph.RangeHi - eph.RangeLo + 1
 	if ephRange <= 0 {
-		ephRange = 28232 // fallback: default range 32768-60999
+		ephRange = defaultEphemeralRange
 	}
 	fdMax := snap.Global.FD.Max
 	if fdMax == 0 {
@@ -268,7 +276,7 @@ func renderNetPage(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 			"REMOTE IP", "TOTAL", "ESTAB", "TIME_WAIT", "CLOSE_WAIT")))
 		for _, r := range snap.Global.TopRemoteIPs {
 			row := fmt.Sprintf("%-18s %6d %6d %10d %10d",
-				r.IP, r.Connections, r.Established, r.TimeWait, r.CloseWait)
+				model.MaskIP(r.IP), r.Connections, r.Established, r.TimeWait, r.CloseWait)
 			if r.TimeWait > 500 || r.CloseWait > 50 {
 				remLines = append(remLines, warnStyle.Render(row))
 			} else {

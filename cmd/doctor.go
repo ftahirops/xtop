@@ -135,15 +135,20 @@ func runDoctor(cfg Config) error {
 
 	renderDoctorCLI(report, "")
 
-	// Exit code based on worst status
+	// #36: Return exit code via error instead of os.Exit to allow deferred cleanup
 	if report.WorstStatus == CheckCrit {
-		os.Exit(2)
+		return ExitCodeError{Code: 2}
 	}
 	if report.WorstStatus == CheckWarn {
-		os.Exit(1)
+		return ExitCodeError{Code: 1}
 	}
 	return nil
 }
+
+// ExitCodeError signals a non-zero exit code without calling os.Exit directly.
+type ExitCodeError struct{ Code int }
+
+func (e ExitCodeError) Error() string { return fmt.Sprintf("exit %d", e.Code) }
 
 // runDoctorWatch runs doctor checks in a watch loop with auto-refresh.
 func runDoctorWatch(cfg Config) error {
@@ -152,6 +157,14 @@ func runDoctorWatch(cfg Config) error {
 
 	intervalTicker := time.NewTicker(cfg.Interval)
 	defer intervalTicker.Stop()
+
+	// #18: Create engine once and reuse across iterations
+	eng := engine.NewEngine(cfg.HistorySize)
+	ticker := engine.Ticker(eng)
+
+	// Prime with first tick for rate baseline
+	ticker.Tick()
+	time.Sleep(cfg.Interval)
 
 	iteration := 0
 
@@ -163,12 +176,6 @@ func runDoctorWatch(cfg Config) error {
 		case <-intervalTicker.C:
 			iteration++
 
-			eng := engine.NewEngine(cfg.HistorySize)
-			ticker := engine.Ticker(eng)
-
-			// Collect two snapshots for rate calculation
-			ticker.Tick()
-			time.Sleep(cfg.Interval)
 			snap, rates, result := ticker.Tick()
 
 			if snap == nil {
@@ -645,7 +652,7 @@ func checkFileless(snap *model.Snapshot) []CheckResult {
 		lines = append(lines, rssLine)
 		if fp.NetConns > 0 {
 			lines = append(lines, fmt.Sprintf("%snet%s  %d outbound -> %s",
-				B, R, fp.NetConns, strings.Join(fp.RemoteIPs, ", ")))
+				B, R, fp.NetConns, strings.Join(model.MaskIPs(fp.RemoteIPs), ", ")))
 		}
 		if info.mapsHint != "" {
 			lines = append(lines, fmt.Sprintf("%smap%s  %s", B, R, info.mapsHint))
@@ -1091,10 +1098,9 @@ func renderDoctorCron(report DoctorReport) error {
 	fmt.Printf("xtop %s: %s — %s\n", report.Hostname, report.WorstStatus, strings.Join(issues, "; "))
 
 	if report.WorstStatus == CheckCrit {
-		os.Exit(2)
+		return ExitCodeError{Code: 2}
 	}
-	os.Exit(1)
-	return nil
+	return ExitCodeError{Code: 1}
 }
 
 // --- State change tracking ---

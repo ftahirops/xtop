@@ -10,6 +10,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/ftahirops/xtop/engine"
 	"github.com/ftahirops/xtop/model"
 )
@@ -29,10 +30,13 @@ const (
 	PageProbe
 	PageThresholds
 	PageDiskGuard
+	PageSecurity
+	PageLogs
+	PageServices
 	pageCount
 )
 
-var pageNames = []string{"Overview", "CPU", "Memory", "IO", "Network", "CGroups", "Timeline", "Events", "Probe", "Thresholds", "DiskGuard"}
+var pageNames = []string{"Overview", "CPU", "Memory", "IO", "Network", "CGroups", "Timeline", "Events", "Probe", "Thresholds", "DiskGuard", "Security", "Logs", "Services"}
 
 type tickMsg time.Time
 
@@ -129,6 +133,9 @@ type Model struct {
 	// Probe state
 	probeManager *engine.ProbeManager
 
+	// Server identity roles (loaded from config)
+	serverRoles []string
+
 	// DiskGuard mode
 	diskGuardMode       string
 	diskGuardMsg        string             // action feedback message
@@ -151,12 +158,13 @@ func NewModel(ticker engine.Ticker, interval time.Duration, dataDir string) Mode
 		}
 	}
 
-	// Load default layout from user config
+	// Load default layout and roles from user config
 	cfg := loadConfig()
 	layout := LayoutMode(cfg.DefaultLayout)
 	if layout < 0 || layout >= layoutCount {
 		layout = LayoutTwoCol
 	}
+	roles := cfg.Roles
 
 	base := ticker.Base()
 	return Model{
@@ -165,6 +173,7 @@ func NewModel(ticker engine.Ticker, interval time.Duration, dataDir string) Mode
 		interval:      interval,
 		eventDetector: detector,
 		layoutMode:    layout,
+		serverRoles:   roles,
 		probeManager:  engine.NewProbeManager(),
 		diskGuardMode: "Monitor",
 		frozenPIDs:    make(map[int]frozenProc),
@@ -406,6 +415,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.layoutMode = LayoutAdaptive
 		case "f4":
 			m.layoutMode = LayoutGrid
+		case "f5":
+			m.layoutMode = LayoutHtop
+		case "f6":
+			m.layoutMode = LayoutBtop
 		case "enter":
 			// Culprit jump: from overview or events, go to bottleneck detail page
 			if m.page == PageOverview && m.result != nil && m.result.PrimaryBottleneck != "" {
@@ -426,12 +439,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "D":
 			m.page = PageDiskGuard
 			m.scroll = 0
+		case "L":
+			m.page = PageSecurity
+			m.scroll = 0
+		case "O":
+			m.page = PageLogs
+			m.scroll = 0
+		case "H":
+			m.page = PageServices
+			m.scroll = 0
 		case "ctrl+d":
 			// Set current layout as default
 			if err := saveDefaultLayout(m.layoutMode); err != nil {
-				m.saveMsg = fmt.Sprintf("Config error: %v", err)
+				m.saveMsg = fmt.Sprintf("Error: %v", err)
 			} else {
-				m.saveMsg = fmt.Sprintf("Default layout set: %s", m.layoutMode)
+				m.saveMsg = fmt.Sprintf("Default layout: %s", m.layoutMode)
 			}
 			m.saveMsgTime = time.Now()
 		case "e":
@@ -468,10 +490,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if freezeDenylist[comm] {
 						m.diskGuardMsg = fmt.Sprintf("Skipped: PID %d (%s) is in denylist", pid, comm)
 					} else {
-						// Verify PID identity before killing
+						// #11: Verify PID identity before killing — store and re-check
 						st := readProcStartTime(pid)
 						if st == "" {
 							m.diskGuardMsg = fmt.Sprintf("PID %d no longer exists", pid)
+						} else if st2 := readProcStartTime(pid); st2 != st {
+							m.diskGuardMsg = fmt.Sprintf("PID %d was reused, aborting kill", pid)
 						} else {
 							err := syscall.Kill(pid, syscall.SIGKILL)
 							if err != nil {
@@ -508,7 +532,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					} else if _, already := m.frozenPIDs[pid]; already {
 						m.diskGuardMsg = fmt.Sprintf("PID %d (%s) already frozen", pid, comm)
 					} else {
+						// #11: Verify PID still exists before sending SIGSTOP
 						st := readProcStartTime(pid)
+						if st == "" {
+							m.diskGuardMsg = fmt.Sprintf("PID %d no longer exists", pid)
+							m.diskGuardMsgT = time.Now()
+							break
+						}
 						err := syscall.Kill(pid, syscall.SIGSTOP)
 						if err != nil {
 							m.diskGuardMsg = fmt.Sprintf("Failed to freeze PID %d: %v", pid, err)
@@ -614,6 +644,12 @@ func (m Model) View() string {
 			dgMsg = m.diskGuardMsg
 		}
 		content = renderDiskGuardPage(m.snap, m.rates, m.result, m.probeManager, m.diskGuardMode, dgMsg, m.frozenPIDs, m.width, m.height)
+	case PageSecurity:
+		content = renderSecurityPage(m.snap, m.rates, m.result, m.probeManager, m.width, m.height)
+	case PageLogs:
+		content = renderLogsPage(m.snap, m.rates, m.result, m.probeManager, m.width, m.height)
+	case PageServices:
+		content = renderServicesPage(m.snap, m.rates, m.result, m.probeManager, m.width, m.height)
 	}
 
 	// Explain verdict panel (appended after page content)
@@ -621,8 +657,14 @@ func (m Model) View() string {
 		content += renderExplainPanel(m.result, m.width)
 	}
 
-	// Apply scroll
+	// Apply scroll (#34: clamp scroll to valid range)
 	lines := strings.Split(content, "\n")
+	if m.scroll >= len(lines) {
+		m.scroll = len(lines) - 1
+	}
+	if m.scroll < 0 {
+		m.scroll = 0
+	}
 	if m.scroll > 0 && m.scroll < len(lines) {
 		lines = lines[m.scroll:]
 	}
@@ -640,9 +682,18 @@ func (m Model) renderStatusBar() string {
 	// Page tabs
 	var tabs []string
 	for i, name := range pageNames {
-		label := fmt.Sprintf("%d:%s", i, name)
-		if Page(i) == PageDiskGuard {
+		var label string
+		switch Page(i) {
+		case PageDiskGuard:
 			label = "D:" + name
+		case PageSecurity:
+			label = "L:" + name
+		case PageLogs:
+			label = "O:" + name
+		case PageServices:
+			label = "H:" + name
+		default:
+			label = fmt.Sprintf("%d:%s", i, name)
 		}
 		if Page(i) == m.page {
 			tabs = append(tabs, headerStyle.Render("["+label+"]"))
@@ -662,38 +713,31 @@ func (m Model) renderStatusBar() string {
 		left += "  " + okStyle.Render(m.saveMsg)
 	}
 
+	// Role indicator
+	if len(m.serverRoles) > 0 {
+		roleStr := strings.Join(m.serverRoles, " + ")
+		left += "  " + dimStyle.Render(fmt.Sprintf("[role: %s]", roleStr))
+	}
+
 	// Layout indicator on overview
 	if m.page == PageOverview {
 		left += "  " + dimStyle.Render(fmt.Sprintf("[%s]", m.layoutMode))
 	}
 
-	help := helpStyle.Render("D:disk  I:investigate  E:export  e:explain  v:layout  a:pause  S:save  ?:help  q:quit")
+	help := helpStyle.Render("D:disk L:sec O:logs H:svc  I:probe  E:export  e:explain  v:layout  a:pause  S:save  ?:help  q:quit")
 
-	gap := m.width - len(stripAnsi(left)) - len(stripAnsi(help))
+	// #32: Truncate status bar when terminal is too narrow
+	leftW := lipgloss.Width(left)
+	helpW := lipgloss.Width(help)
+	gap := m.width - leftW - helpW
 	if gap < 1 {
-		gap = 1
+		// Terminal too narrow — drop help text
+		if leftW < m.width {
+			return left
+		}
+		return left[:m.width]
 	}
 	return left + strings.Repeat(" ", gap) + help
-}
-
-// stripAnsi is a rough approximation to get display width (strip escape codes).
-func stripAnsi(s string) string {
-	var out strings.Builder
-	inEsc := false
-	for _, r := range s {
-		if r == '\033' {
-			inEsc = true
-			continue
-		}
-		if inEsc {
-			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
-				inEsc = false
-			}
-			continue
-		}
-		out.WriteRune(r)
-	}
-	return out.String()
 }
 
 // bottleneckToPage maps a bottleneck name to its detail page.
@@ -861,6 +905,10 @@ func (m Model) renderHelp() string {
 	sb.WriteString("  7         Events (detected incidents)\n")
 	sb.WriteString("  8         Probe investigation (eBPF)\n")
 	sb.WriteString("  9         Thresholds & limits reference\n")
+	sb.WriteString("  D         DiskGuard (filesystem space monitor)\n")
+	sb.WriteString("  L         Security (auth, SUID, fileless, ports)\n")
+	sb.WriteString("  O         Logs (per-service error rates)\n")
+	sb.WriteString("  H         Services (health probes, certs, DNS)\n")
 	sb.WriteString("  b / Esc   Back to overview\n")
 	sb.WriteString("\n")
 	sb.WriteString(headerStyle.Render("Controls"))
@@ -904,6 +952,9 @@ func (m Model) renderHelp() string {
 	sb.WriteString("  Probe      eBPF investigation (off-CPU/IO latency/locks/retrans)\n")
 	sb.WriteString("  Thresholds All metrics with thresholds, limits, and scoring rules\n")
 	sb.WriteString("  DiskGuard  Filesystem monitor: growth, ETA, big files, writers\n")
+	sb.WriteString("  Security   Failed auth, SUID changes, fileless, reverse shells\n")
+	sb.WriteString("  Logs       Per-service error/warn rates with sparklines\n")
+	sb.WriteString("  Services   HTTP/TCP probes, cert expiry, DNS resolution\n")
 	sb.WriteString("\n")
 	sb.WriteString(helpStyle.Render("Press any key to close"))
 	return sb.String()

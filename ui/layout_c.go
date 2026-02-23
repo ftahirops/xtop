@@ -19,7 +19,7 @@ func renderLayoutC(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 	sb.WriteString(renderHeader(snap, rates, result))
 	sb.WriteString("\n")
 	sb.WriteString(separator(width))
-	sb.WriteString("\n\n")
+	sb.WriteString("\n")
 
 	boxInnerW := width - 7
 	if boxInnerW < 40 {
@@ -29,45 +29,48 @@ func renderLayoutC(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 		boxInnerW = maxBoxInner
 	}
 
-	// Render each subsystem with consistent detail box
+	// Render each subsystem with title in box border
 	for _, s := range ss {
-		sb.WriteString(fmt.Sprintf(" %s %s  %s\n",
+		title := fmt.Sprintf(" %s %s  %s ",
 			styledPad(valueStyle.Render(s.Name), colName),
 			styledPad(s.StatusStyle.Render(s.Status), colStat),
-			dimStyle.Render(fmt.Sprintf("PSI %s", s.PressureStr))))
+			dimStyle.Render(fmt.Sprintf("PSI %s", s.PressureStr)))
 
-		sb.WriteString(renderKVBoxStyled(s.Details, boxInnerW, s.Status))
+		sb.WriteString(boxTopTitle(title, boxInnerW) + "\n")
+		for _, d := range s.Details {
+			key := d.Key
+			if len(key) > 14 {
+				key = key[:14]
+			}
+			vs := valueStyle
+			if s.Status == "RED" && d.Val != "none" && d.Val != "\u2014" && d.Val != "normal" {
+				vs = critStyle
+			} else if s.Status == "YELLOW" && d.Val != "none" && d.Val != "\u2014" && d.Val != "normal" {
+				vs = warnStyle
+			}
+			content := fmt.Sprintf("%s %s",
+				styledPad(dimStyle.Render(key+":"), colKey),
+				vs.Render(d.Val))
+			sb.WriteString(boxRow(content, boxInnerW) + "\n")
+		}
+		sb.WriteString(boxBot(boxInnerW) + "\n")
 	}
-
-	sb.WriteString("\n")
 
 	// RCA (always render with fixed format)
 	sb.WriteString(renderRCAInline(result))
-	sb.WriteString("\n")
-
 	// What Changed
 	sb.WriteString(renderChangesInline(result))
-	sb.WriteString("\n")
-
 	// Owners (top-3 per resource)
 	sb.WriteString(renderOwnersInline(result))
-	sb.WriteString("\n")
-
 	// Capacity (always render inline)
 	sb.WriteString(renderCapacityInline(result))
-	sb.WriteString("\n")
-
 	// Probe status
 	sb.WriteString(renderProbeStatusLine(pm))
-	sb.WriteString("\n")
-
 	// Exhaustion + Degradation
-	sb.WriteString(renderExhaustionBlock(result))
-	sb.WriteString(renderDegradationBlock(result))
-
+	sb.WriteString(renderExhaustionBlock(result, width))
+	sb.WriteString(renderDegradationBlock(result, width))
 	// Trend (full 16 metrics)
 	sb.WriteString(renderTrendBlock(result, history, width, true))
-	sb.WriteString("\n")
 
 	return sb.String()
 }

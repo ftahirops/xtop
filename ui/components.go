@@ -36,6 +36,20 @@ func boxTop(innerW int) string {
 	return " " + dimStyle.Render("╭"+strings.Repeat("─", innerW+2)+"╮")
 }
 
+// boxTopTitle renders a top border with a title embedded: ╭──Title──────────╮
+func boxTopTitle(title string, innerW int) string {
+	titleW := lipgloss.Width(title)
+	totalW := innerW + 2
+	leftDash := 2
+	rightDash := totalW - leftDash - titleW
+	if rightDash < 2 {
+		rightDash = 2
+	}
+	return " " + dimStyle.Render("╭"+strings.Repeat("─", leftDash)) +
+		title +
+		dimStyle.Render(strings.Repeat("─", rightDash)+"╮")
+}
+
 // boxBot renders the bottom border of a rounded box.
 func boxBot(innerW int) string {
 	return " " + dimStyle.Render("╰"+strings.Repeat("─", innerW+2)+"╯")
@@ -179,36 +193,45 @@ func fmtPct(v float64) string {
 	return fmt.Sprintf("%.1f%%", v)
 }
 
+// #22: Use rune-aware operations for proper UTF-8 handling
 func padRight(s string, width int) string {
-	if len(s) >= width {
+	runes := []rune(s)
+	if len(runes) > width {
 		if width > 3 {
-			return s[:width-3] + "..."
+			return string(runes[:width-3]) + "..."
 		}
-		return s[:width]
+		return string(runes[:width])
 	}
-	return s + strings.Repeat(" ", width-len(s))
+	return s + strings.Repeat(" ", width-len(runes))
 }
 
-// truncate shortens s to maxLen characters with ellipsis if needed.
+// truncate shortens s to maxLen runes with ellipsis if needed.
 func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
 		return s
 	}
 	if maxLen <= 3 {
-		return s[:maxLen]
+		return string(runes[:maxLen])
 	}
-	return s[:maxLen-3] + "..."
+	return string(runes[:maxLen-3]) + "..."
 }
 
 func padLeft(s string, width int) string {
-	if len(s) >= width {
-		return s[:width]
+	runes := []rune(s)
+	if len(runes) >= width {
+		return string(runes[:width])
 	}
-	return strings.Repeat(" ", width-len(s)) + s
+	return strings.Repeat(" ", width-len(runes)) + s
 }
 
 // sparkline renders a simple ASCII sparkline chart (single-line).
 func sparkline(data []float64, width int, minVal, maxVal float64) string {
+	// #31: Handle empty data gracefully
+	if len(data) == 0 {
+		return dimStyle.Render(strings.Repeat("░", width) + " no data")
+	}
+
 	blocks := []rune{'▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'}
 	if maxVal <= minVal {
 		maxVal = minVal + 1
@@ -229,7 +252,42 @@ func sparkline(data []float64, width int, minVal, maxVal float64) string {
 		}
 	}
 
+	// #41: Batch consecutive chars with same color to reduce Render calls
 	var sb strings.Builder
+	type colorBand int
+	const (
+		bandOK   colorBand = 0
+		bandWarn colorBand = 1
+		bandCrit colorBand = 2
+	)
+	getBand := func(ratio float64) colorBand {
+		if ratio > 0.8 {
+			return bandCrit
+		}
+		if ratio > 0.4 {
+			return bandWarn
+		}
+		return bandOK
+	}
+
+	var batch []rune
+	prevBand := colorBand(-1)
+	flushBatch := func() {
+		if len(batch) == 0 {
+			return
+		}
+		s := string(batch)
+		switch prevBand {
+		case bandCrit:
+			sb.WriteString(critStyle.Render(s))
+		case bandWarn:
+			sb.WriteString(warnStyle.Render(s))
+		default:
+			sb.WriteString(okStyle.Render(s))
+		}
+		batch = batch[:0]
+	}
+
 	for _, v := range resampled {
 		ratio := (v - minVal) / (maxVal - minVal)
 		if ratio < 0 {
@@ -243,15 +301,14 @@ func sparkline(data []float64, width int, minVal, maxVal float64) string {
 			idx = len(blocks) - 1
 		}
 
-		switch {
-		case ratio > 0.8:
-			sb.WriteString(critStyle.Render(string(blocks[idx])))
-		case ratio > 0.4:
-			sb.WriteString(warnStyle.Render(string(blocks[idx])))
-		default:
-			sb.WriteString(okStyle.Render(string(blocks[idx])))
+		band := getBand(ratio)
+		if band != prevBand && len(batch) > 0 {
+			flushBatch()
 		}
+		prevBand = band
+		batch = append(batch, blocks[idx])
 	}
+	flushBatch()
 
 	last := float64(0)
 	if len(resampled) > 0 {

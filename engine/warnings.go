@@ -245,6 +245,52 @@ func ComputeWarnings(snap *model.Snapshot, rates *model.RateSnapshot) []model.Wa
 		}
 	}
 
+	// Certificate expiry from health probes
+	for _, p := range snap.Global.HealthChecks.Probes {
+		if p.ProbeType != "cert" && p.CertDaysLeft < 0 {
+			continue
+		}
+		if p.CertDaysLeft >= 0 && p.CertDaysLeft < 30 {
+			sev := "warn"
+			if p.CertDaysLeft < 7 {
+				sev = "crit"
+			}
+			warns = append(warns, model.Warning{
+				Severity: sev,
+				Signal:   "cert-expiry",
+				Detail:   fmt.Sprintf("Certificate %s expiring", p.Name),
+				Value:    fmt.Sprintf("%d days left", p.CertDaysLeft),
+			})
+		}
+	}
+
+	// Security signals
+	sec := snap.Global.Security
+	if sec.BruteForce {
+		warns = append(warns, model.Warning{
+			Severity: "crit",
+			Signal:   "brute-force",
+			Detail:   "Active SSH brute force detected",
+			Value:    fmt.Sprintf("%.1f failures/s", sec.FailedAuthRate),
+		})
+	}
+	if len(sec.ReverseShells) > 0 {
+		warns = append(warns, model.Warning{
+			Severity: "crit",
+			Signal:   "reverse-shell",
+			Detail:   fmt.Sprintf("%d process(es) with stdin+stdout on sockets", len(sec.ReverseShells)),
+			Value:    fmt.Sprintf("PIDs: %d", sec.ReverseShells[0].PID),
+		})
+	}
+	if len(sec.SUIDAnomalies) > 0 {
+		warns = append(warns, model.Warning{
+			Severity: "crit",
+			Signal:   "suid-change",
+			Detail:   fmt.Sprintf("%d new SUID binary(ies) detected", len(sec.SUIDAnomalies)),
+			Value:    sec.SUIDAnomalies[0].Path,
+		})
+	}
+
 	// Fileless process detection
 	for _, fp := range snap.Global.FilelessProcs {
 		if fp.NetConns > 0 {

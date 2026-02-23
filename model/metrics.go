@@ -1,5 +1,30 @@
 package model
 
+import "time"
+
+// MaskIPsEnabled controls whether IP addresses are masked in output.
+var MaskIPsEnabled bool
+
+// MaskIP replaces an IP with x.x.x.x when masking is enabled.
+func MaskIP(ip string) string {
+	if !MaskIPsEnabled {
+		return ip
+	}
+	return "x.x.x.x"
+}
+
+// MaskIPs replaces all IPs in a slice when masking is enabled.
+func MaskIPs(ips []string) []string {
+	if !MaskIPsEnabled {
+		return ips
+	}
+	out := make([]string, len(ips))
+	for i := range ips {
+		out[i] = "x.x.x.x"
+	}
+	return out
+}
+
 // PSILine holds one line of PSI data (some or full).
 type PSILine struct {
 	Avg10  float64
@@ -329,6 +354,93 @@ type RemoteIPStats struct {
 	CloseWait   int
 }
 
+// ActiveSession represents a currently logged-in user.
+type ActiveSession struct {
+	User    string
+	TTY     string
+	From    string
+	LoginAt string
+	Idle    string
+	Command string
+}
+
+// FailedAuthSource holds a source IP and its failed authentication count.
+type FailedAuthSource struct {
+	IP    string
+	Count int
+}
+
+// NewListeningPort holds a newly detected listening port.
+type NewListeningPort struct {
+	Port  int
+	PID   int
+	Comm  string
+	Since time.Time
+}
+
+// SUIDBinary holds a SUID binary detected on the filesystem.
+type SUIDBinary struct {
+	Path    string
+	Owner   string
+	ModTime time.Time
+}
+
+// ReverseShellProc holds a candidate reverse shell process.
+type ReverseShellProc struct {
+	PID      int
+	Comm     string
+	RemoteIP string
+	FD0      string
+	FD1      string
+}
+
+// SecurityMetrics holds real-time security signal data.
+type SecurityMetrics struct {
+	FailedAuthRate  float64
+	FailedAuthTotal int
+	FailedAuthIPs   []FailedAuthSource
+	NewPorts        []NewListeningPort
+	SUIDAnomalies   []SUIDBinary
+	ReverseShells   []ReverseShellProc
+	BruteForce      bool
+	Score           string // "OK", "WARN", "CRIT"
+}
+
+// ServiceLogStats holds per-service log error/warning stats.
+type ServiceLogStats struct {
+	Name        string
+	Unit        string
+	ErrorRate   float64
+	WarnRate    float64
+	TotalErrors int
+	TotalWarns  int
+	LastError   string
+	RateHistory []float64 // ring buffer, 60 entries for sparkline
+}
+
+// LogMetrics holds log analysis data for tracked services.
+type LogMetrics struct {
+	Services []ServiceLogStats
+}
+
+// HealthProbeResult holds the result of one health probe.
+type HealthProbeResult struct {
+	Name         string
+	ProbeType    string // "http", "tcp", "dns", "cert"
+	Target       string // URL, host:port, or domain
+	Status       string // "OK", "WARN", "CRIT", "UNKNOWN"
+	LatencyMs    float64
+	StatusCode   int // HTTP only
+	Detail       string
+	LastCheck    time.Time
+	CertDaysLeft int // -1 if N/A
+}
+
+// HealthCheckMetrics holds active health probe results.
+type HealthCheckMetrics struct {
+	Probes []HealthProbeResult
+}
+
 // GlobalMetrics is the full system-wide metric snapshot.
 type GlobalMetrics struct {
 	PSI            PSIMetrics
@@ -350,6 +462,10 @@ type GlobalMetrics struct {
 	DeletedOpen    []DeletedOpenFile
 	BigFiles       []BigFile
 	FilelessProcs  []FilelessProcess
+	Security       SecurityMetrics
+	Logs           LogMetrics
+	HealthChecks   HealthCheckMetrics
+	Sessions       []ActiveSession
 }
 
 // CgroupMetrics holds metrics for a single cgroup.

@@ -47,6 +47,9 @@ func NewRegistry() *Registry {
 			&FilelessCollector{},
 			&BigFileCollector{MaxFiles: 10, MinSize: 50 * 1024 * 1024},
 			&ProcessCollector{MaxProcs: 50},
+			&SecurityCollector{},
+			&LogsCollector{},
+			&HealthCheckCollector{},
 		},
 	}
 }

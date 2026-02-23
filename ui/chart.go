@@ -54,6 +54,9 @@ func areaChart(data []float64, label string, width, height int, minVal, maxVal f
 	sb.WriteString("\n")
 
 	rangeVal := maxVal - minVal
+	if rangeVal <= 0 {
+		rangeVal = 1
+	}
 
 	// Render rows from top to bottom
 	for row := height - 1; row >= 0; row-- {

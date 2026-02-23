@@ -281,7 +281,12 @@ func filelessParseRemoteIP(remAddr string) string {
 		return fmt.Sprintf("%d.%d.%d.%d", b[3], b[2], b[1], b[0])
 	}
 	if len(b) == 16 {
-		// IPv6 — check for IPv4-mapped (::ffff:x.x.x.x)
+		// #27: /proc/net/tcp6 prints each __be32 via %X on little-endian,
+		// so each 4-byte group is byte-reversed. Fix by reversing each group.
+		for i := 0; i < 16; i += 4 {
+			b[i], b[i+1], b[i+2], b[i+3] = b[i+3], b[i+2], b[i+1], b[i]
+		}
+		// Now b is in proper network byte order — check for IPv4-mapped (::ffff:x.x.x.x)
 		allZero := true
 		for i := 0; i < 10; i++ {
 			if b[i] != 0 {

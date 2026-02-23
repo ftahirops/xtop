@@ -27,13 +27,10 @@ func renderLayoutD(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 		cellW = 30
 	}
 
-	// Build 4 cells
-	cells := make([]string, 4)
-	for i, s := range ss {
-		if i >= 4 {
-			break
-		}
-		cells[i] = renderGridCell(s, cellW)
+	// Build 4 cells (CPU, Memory, Disk IO, Network)
+	cells := [4]string{}
+	for i := 0; i < 4 && i < len(ss); i++ {
+		cells[i] = renderGridCell(ss[i], cellW)
 	}
 
 	// Row 1: CPU | Memory
@@ -57,20 +54,14 @@ func renderLayoutD(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 
 	// Trend
 	sb.WriteString(renderTrendBlock(result, history, width, true))
-	sb.WriteString("\n")
 
 	return sb.String()
 }
 
 // renderGridCell renders one subsystem cell for the grid layout.
-// Always renders the same number of lines: 1 header + bordered detail box.
+// Title is embedded in the box top border: ╭──CPU  GREEN  PSI 0.0%──╮
 func renderGridCell(s subsysInfo, cellW int) string {
 	var sb strings.Builder
-
-	sb.WriteString(fmt.Sprintf(" %s %s  %s\n",
-		styledPad(titleStyle.Render(s.Name), colName),
-		styledPad(s.StatusStyle.Render(s.Status), colStat),
-		dimStyle.Render(fmt.Sprintf("PSI %s", s.PressureStr))))
 
 	boxInnerW := cellW - 5
 	if boxInnerW < 20 {
@@ -79,7 +70,24 @@ func renderGridCell(s subsysInfo, cellW int) string {
 	if boxInnerW > maxBoxInner {
 		boxInnerW = maxBoxInner
 	}
-	sb.WriteString(renderKVBox(s.Details, boxInnerW))
+
+	title := fmt.Sprintf(" %s %s  %s ",
+		styledPad(titleStyle.Render(s.Name), colName),
+		styledPad(s.StatusStyle.Render(s.Status), colStat),
+		dimStyle.Render(fmt.Sprintf("PSI %s", s.PressureStr)))
+
+	sb.WriteString(boxTopTitle(title, boxInnerW) + "\n")
+	for _, d := range s.Details {
+		key := d.Key
+		if len(key) > 14 {
+			key = key[:14]
+		}
+		content := fmt.Sprintf("%s %s",
+			styledPad(dimStyle.Render(key+":"), colKey),
+			valueStyle.Render(d.Val))
+		sb.WriteString(boxRow(content, boxInnerW) + "\n")
+	}
+	sb.WriteString(boxBot(boxInnerW) + "\n")
 
 	return sb.String()
 }

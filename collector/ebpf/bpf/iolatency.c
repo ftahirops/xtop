@@ -105,6 +105,8 @@ int handle_block_rq_complete(struct block_rq_args *ctx)
         __sync_fetch_and_add(&val->total_ns, delta);
         __sync_fetch_and_add(&val->count, 1);
         __sync_fetch_and_add(&val->slots[slot & (HIST_SLOTS - 1)], 1);
+        // #5: max_ns is racy on SMP but only informational.
+        // BPF lacks CAS; atomic counters above ensure total/count accuracy.
         if (delta > val->max_ns)
             val->max_ns = delta;
     } else {

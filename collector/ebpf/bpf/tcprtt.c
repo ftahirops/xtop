@@ -49,6 +49,8 @@ int BPF_KPROBE(handle_tcp_rcv_established, struct sock *sk)
     if (val) {
         __sync_fetch_and_add(&val->sum_us, (__u64)srtt);
         __sync_fetch_and_add(&val->count, 1);
+        // #5: min/max/last_pid are racy on SMP but only informational.
+        // BPF lacks CAS; atomic counters above ensure sum/count accuracy.
         if (srtt < val->min_us || val->min_us == 0)
             val->min_us = srtt;
         if (srtt > val->max_us)

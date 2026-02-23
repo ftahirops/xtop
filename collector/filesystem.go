@@ -78,11 +78,19 @@ func (f *FilesystemCollector) Collect(snap *model.Snapshot) error {
 			UsedBytes:   usedBytes,
 			TotalInodes: stat.Files,
 			FreeInodes:  stat.Ffree,
-			UsedInodes:  stat.Files - stat.Ffree,
+			UsedInodes:  safeSubU64(stat.Files, stat.Ffree),
 		}
 		mounts = append(mounts, ms)
 	}
 
 	snap.Global.Mounts = mounts
 	return nil
+}
+
+// safeSubU64 returns a - b, or 0 if b > a (prevents uint64 underflow).
+func safeSubU64(a, b uint64) uint64 {
+	if b > a {
+		return 0
+	}
+	return a - b
 }
