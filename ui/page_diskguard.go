@@ -37,7 +37,7 @@ func renderDiskGuardPage(snap *model.Snapshot, rates *model.RateSnapshot, result
 
 	// RCA inline + probe status
 	sb.WriteString(renderRCAInline(result))
-	sb.WriteString(renderProbeStatusLine(pm))
+	sb.WriteString(renderProbeStatusLine(pm, snap))
 
 	// ALERT BANNER — shown when any mount is growing toward full
 	if result != nil {

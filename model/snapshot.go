@@ -205,6 +205,12 @@ type RateSnapshot struct {
 	ProcessRates []ProcessRate
 }
 
+// WatchdogState holds auto-trigger state from the watchdog.
+type WatchdogState struct {
+	Active bool
+	Domain string
+}
+
 // AnalysisResult is the full output of one analysis cycle.
 type AnalysisResult struct {
 	Health     HealthLevel
@@ -272,10 +278,16 @@ type AnalysisResult struct {
 	// Slow degradation warnings
 	Degradations []DegradationWarning
 
+	// CLOSE_WAIT leaker data (for actions access)
+	CloseWaitLeakers []CloseWaitLeaker
+
 	// DiskGuard
 	DiskGuardMounts []MountRate
 	DiskGuardWorst  string // worst state across all mounts: "OK", "WARN", "CRIT"
 	DiskGuardMode   string // "Monitor", "Contain", "Action"
+
+	// Watchdog auto-trigger state
+	Watchdog WatchdogState
 
 	// System identity
 	SysInfo *SysInfo

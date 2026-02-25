@@ -2,6 +2,8 @@ package engine
 
 import (
 	"fmt"
+	"os"
+	"sort"
 	"sync"
 	"time"
 
@@ -92,6 +94,70 @@ type TCPConnLatEntry struct {
 	Count   int
 }
 
+// RunQLatEntry holds run queue latency for one process (watchdog probe).
+type RunQLatEntry struct {
+	PID   int
+	Comm  string
+	AvgUs float64
+	MaxUs float64
+	Count int
+}
+
+// WBStallEntry holds writeback stall data for one process (watchdog probe).
+type WBStallEntry struct {
+	PID        int
+	Comm       string
+	Count      int
+	TotalPages int64
+}
+
+// PgFaultEntry holds page fault latency for one process (watchdog probe).
+type PgFaultEntry struct {
+	PID        int
+	Comm       string
+	AvgUs      float64
+	MajorCount int
+	TotalCount int
+}
+
+// SwapEvictEntry holds swap activity for one process (watchdog probe).
+type SwapEvictEntry struct {
+	PID        int
+	Comm       string
+	ReadPages  uint64
+	WritePages uint64
+}
+
+// SyscallDissectEntry holds per-PID syscall time breakdown (watchdog probe).
+type SyscallDissectEntry struct {
+	PID       int
+	Comm      string
+	Breakdown []SyscallGroupTime // sorted by TotalPct desc
+	TotalNs   uint64
+}
+
+// SyscallGroupTime holds time spent in one syscall group for a PID.
+type SyscallGroupTime struct {
+	Group    string  // "read", "write", "lock/sync", "poll", "sleep", "mmap", "open/close", "other"
+	TotalNs  uint64
+	Count    uint32
+	MaxNs    uint32
+	TotalPct float64 // % of this PID's total syscall time
+}
+
+// SockIOEntry holds per-PID per-connection TCP IO data (watchdog probe).
+type SockIOEntry struct {
+	PID       int
+	Comm      string
+	DstAddr   string  // "10.0.0.5:5432"
+	Service   string  // "postgres"
+	TxBytes   uint64
+	RxBytes   uint64
+	AvgWaitMs float64
+	MaxWaitMs float64
+	RecvCount int
+}
+
 // ProbeFindings holds the output of a probe session.
 type ProbeFindings struct {
 	StartTime     time.Time
@@ -107,6 +173,14 @@ type ProbeFindings struct {
 	NetThroughput []NetThroughputEntry
 	TCPRTT        []TCPRTTEntry
 	TCPConnLat    []TCPConnLatEntry
+
+	// Watchdog probe findings
+	RunQLat        []RunQLatEntry
+	WBStall        []WBStallEntry
+	PgFault        []PgFaultEntry
+	SwapEvict      []SwapEvictEntry
+	SyscallDissect []SyscallDissectEntry
+	SockIO         []SockIOEntry
 }
 
 // ─── ProbeManager ───────────────────────────────────────────────────────────
@@ -151,6 +225,49 @@ func (pm *ProbeManager) Start(pack string) error {
 	// Capture local copies to avoid reading pm fields without lock in goroutine
 	go pm.runProbe(start, duration, pack)
 	return nil
+}
+
+// StartDomain initiates a watchdog-triggered domain-specific probe session.
+func (pm *ProbeManager) StartDomain(domain string) error {
+	pm.mu.Lock()
+	if pm.state == ProbeRunning {
+		pm.mu.Unlock()
+		return fmt.Errorf("probe already running")
+	}
+	pm.state = ProbeRunning
+	start := time.Now()
+	duration := 30 * time.Second
+	pm.start = start
+	pm.duration = duration
+	pm.pack = "watchdog:" + domain
+	pm.findings = nil
+	pm.doneAt = time.Time{}
+	pm.mu.Unlock()
+
+	go pm.runDomainProbe(start, duration, domain)
+	return nil
+}
+
+// runDomainProbe executes domain-specific eBPF probes in a goroutine.
+func (pm *ProbeManager) runDomainProbe(start time.Time, duration time.Duration, domain string) {
+	results, err := bpf.RunProbeCtxDomain(duration, domain)
+
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	pack := "watchdog:" + domain
+	if err != nil {
+		pm.findings = &ProbeFindings{
+			StartTime: start,
+			Duration:  duration,
+			Pack:      pack,
+			Summary:   "Error: " + err.Error(),
+		}
+	} else {
+		pm.findings = convertResults(results, start, duration, pack)
+	}
+	pm.state = ProbeDone
+	pm.doneAt = time.Now()
 }
 
 // runProbe executes the eBPF probe collection in a goroutine.
@@ -280,6 +397,137 @@ func convertResults(r *bpf.ProbeResults, start time.Time, duration time.Duration
 		})
 	}
 
+	// Convert watchdog: run queue latency
+	for _, rq := range r.RunQLat {
+		if rq.Count == 0 {
+			continue
+		}
+		avgUs := float64(rq.TotalNs) / float64(rq.Count) / 1000
+		maxUs := float64(rq.MaxNs) / 1000
+		f.RunQLat = append(f.RunQLat, RunQLatEntry{
+			PID:   int(rq.PID),
+			Comm:  rq.Comm,
+			AvgUs: avgUs,
+			MaxUs: maxUs,
+			Count: int(rq.Count),
+		})
+	}
+
+	// Convert watchdog: writeback stalls
+	for _, wb := range r.WBStall {
+		f.WBStall = append(f.WBStall, WBStallEntry{
+			PID:        int(wb.PID),
+			Comm:       readCommProbe(wb.PID),
+			Count:      int(wb.Count),
+			TotalPages: int64(wb.TotalPages),
+		})
+	}
+
+	// Convert watchdog: page fault latency
+	for _, pf := range r.PgFault {
+		if pf.Count == 0 {
+			continue
+		}
+		avgUs := float64(pf.TotalNs) / float64(pf.Count) / 1000
+		f.PgFault = append(f.PgFault, PgFaultEntry{
+			PID:        int(pf.PID),
+			Comm:       readCommProbe(pf.PID),
+			AvgUs:      avgUs,
+			MajorCount: int(pf.MajorCount),
+			TotalCount: int(pf.Count),
+		})
+	}
+
+	// Convert watchdog: swap activity
+	for _, se := range r.SwapEvict {
+		f.SwapEvict = append(f.SwapEvict, SwapEvictEntry{
+			PID:        int(se.PID),
+			Comm:       readCommProbe(se.PID),
+			ReadPages:  se.ReadPages,
+			WritePages: se.WritePages,
+		})
+	}
+
+	// Convert watchdog: syscall dissection — group by PID, then by syscall group
+	if len(r.SyscallDissect) > 0 {
+		type pidAgg struct {
+			comm    string
+			totalNs uint64
+			groups  map[string]*SyscallGroupTime
+		}
+		pidMap := make(map[uint32]*pidAgg)
+		for _, sc := range r.SyscallDissect {
+			agg, ok := pidMap[sc.PID]
+			if !ok {
+				agg = &pidAgg{
+					comm:   sc.Comm,
+					groups: make(map[string]*SyscallGroupTime),
+				}
+				pidMap[sc.PID] = agg
+			}
+			_, group := bpf.ResolveSyscall(sc.SyscallNr)
+			agg.totalNs += sc.TotalNs
+			g, ok := agg.groups[group]
+			if !ok {
+				g = &SyscallGroupTime{Group: group}
+				agg.groups[group] = g
+			}
+			g.TotalNs += sc.TotalNs
+			g.Count += sc.Count
+			if sc.MaxNs > g.MaxNs {
+				g.MaxNs = sc.MaxNs
+			}
+		}
+		for pid, agg := range pidMap {
+			if agg.totalNs == 0 {
+				continue
+			}
+			entry := SyscallDissectEntry{
+				PID:     int(pid),
+				Comm:    agg.comm,
+				TotalNs: agg.totalNs,
+			}
+			for _, g := range agg.groups {
+				g.TotalPct = float64(g.TotalNs) / float64(agg.totalNs) * 100
+				if g.TotalPct < 1 {
+					continue // hide groups < 1%
+				}
+				entry.Breakdown = append(entry.Breakdown, *g)
+			}
+			sort.Slice(entry.Breakdown, func(i, j int) bool {
+				return entry.Breakdown[i].TotalPct > entry.Breakdown[j].TotalPct
+			})
+			f.SyscallDissect = append(f.SyscallDissect, entry)
+		}
+		sort.Slice(f.SyscallDissect, func(i, j int) bool {
+			return f.SyscallDissect[i].TotalNs > f.SyscallDissect[j].TotalNs
+		})
+		if len(f.SyscallDissect) > 10 {
+			f.SyscallDissect = f.SyscallDissect[:10]
+		}
+	}
+
+	// Convert watchdog: socket IO attribution
+	for _, sio := range r.SockIO {
+		var avgWaitMs, maxWaitMs float64
+		if sio.RecvCount > 0 {
+			avgWaitMs = float64(sio.RecvWaitNs) / float64(sio.RecvCount) / 1e6
+			maxWaitMs = float64(sio.MaxRecvNs) / 1e6
+		}
+		svc := bpf.WellKnownPort(sio.DstPort)
+		f.SockIO = append(f.SockIO, SockIOEntry{
+			PID:       int(sio.PID),
+			Comm:      sio.Comm,
+			DstAddr:   sio.DstStr,
+			Service:   svc,
+			TxBytes:   sio.TxBytes,
+			RxBytes:   sio.RxBytes,
+			AvgWaitMs: avgWaitMs,
+			MaxWaitMs: maxWaitMs,
+			RecvCount: int(sio.RecvCount),
+		})
+	}
+
 	// Determine dominant bottleneck from findings
 	f.Bottleneck, f.ConfBoost = classifyBottleneck(f)
 
@@ -287,6 +535,19 @@ func convertResults(r *bpf.ProbeResults, start time.Time, duration time.Duration
 	f.Summary = generateSummary(f)
 
 	return f
+}
+
+// readCommProbe reads /proc/PID/comm for a process name (best-effort).
+func readCommProbe(pid uint32) string {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid))
+	if err != nil {
+		return fmt.Sprintf("pid_%d", pid)
+	}
+	s := string(data)
+	if i := len(s) - 1; i >= 0 && s[i] == '\n' {
+		s = s[:i]
+	}
+	return s
 }
 
 // classifyBottleneck determines which bottleneck the probe findings reinforce.
@@ -310,7 +571,7 @@ func classifyBottleneck(f *ProbeFindings) (string, int) {
 		lockScore += e.WaitPct
 	}
 
-	// Network score: based on retransmits + high RTT + connect latency
+	// Network score: based on retransmits + high RTT + connect latency + socket IO wait
 	for _, e := range f.TCPRetrans {
 		netScore += float64(e.Retrans)
 	}
@@ -322,6 +583,23 @@ func classifyBottleneck(f *ProbeFindings) (string, int) {
 	for _, e := range f.TCPConnLat {
 		if e.AvgMs > 100 {
 			netScore += e.AvgMs / 100
+		}
+	}
+	for _, e := range f.SockIO {
+		if e.AvgWaitMs > 10 {
+			netScore += e.AvgWaitMs / 10
+		}
+	}
+
+	// Syscall dissect: boost lock or IO score based on dominant groups
+	for _, e := range f.SyscallDissect {
+		for _, g := range e.Breakdown {
+			if g.Group == "lock/sync" && g.TotalPct > 30 {
+				lockScore += g.TotalPct
+			}
+			if (g.Group == "read" || g.Group == "write") && g.TotalPct > 30 {
+				ioScore += g.TotalPct
+			}
 		}
 	}
 
@@ -391,6 +669,36 @@ func generateSummary(f *ProbeFindings) string {
 	if len(f.TCPConnLat) > 0 {
 		top := f.TCPConnLat[0]
 		parts = append(parts, fmt.Sprintf("ConnLat: %s avg=%.1fms", top.Comm, top.AvgMs))
+	}
+	if len(f.RunQLat) > 0 {
+		top := f.RunQLat[0]
+		parts = append(parts, fmt.Sprintf("RunQLat: %s avg=%.0fus", top.Comm, top.AvgUs))
+	}
+	if len(f.WBStall) > 0 {
+		top := f.WBStall[0]
+		parts = append(parts, fmt.Sprintf("WB: %s %d stalls", top.Comm, top.Count))
+	}
+	if len(f.PgFault) > 0 {
+		top := f.PgFault[0]
+		parts = append(parts, fmt.Sprintf("PgFault: %s avg=%.0fus (%d major)", top.Comm, top.AvgUs, top.MajorCount))
+	}
+	if len(f.SwapEvict) > 0 {
+		top := f.SwapEvict[0]
+		parts = append(parts, fmt.Sprintf("Swap: %s r=%d w=%d pages", top.Comm, top.ReadPages, top.WritePages))
+	}
+	if len(f.SyscallDissect) > 0 {
+		top := f.SyscallDissect[0]
+		if len(top.Breakdown) > 0 {
+			parts = append(parts, fmt.Sprintf("Syscall: %s %.0f%% %s", top.Comm, top.Breakdown[0].TotalPct, top.Breakdown[0].Group))
+		}
+	}
+	if len(f.SockIO) > 0 {
+		top := f.SockIO[0]
+		svc := top.DstAddr
+		if top.Service != "" {
+			svc = top.Service
+		}
+		parts = append(parts, fmt.Sprintf("SockIO: %s->%s avg=%.0fms", top.Comm, svc, top.AvgWaitMs))
 	}
 
 	if len(parts) == 0 {

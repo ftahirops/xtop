@@ -19,7 +19,7 @@ import (
 )
 
 // Version is set at build time via ldflags.
-var Version = "0.9.5"
+var Version = "0.10.4"
 
 // Config holds CLI configuration.
 type Config struct {
@@ -45,6 +45,9 @@ type Config struct {
 	AlertMode    bool
 	// Forensics mode
 	ForensicsMode bool
+	// Diagnose mode
+	DiagnoseMode   bool
+	DiagnoseTarget string
 	// Shell widget
 	ShellInit   string
 	TmuxStatus  bool
@@ -74,6 +77,7 @@ Modes:
   -doctor           Run comprehensive health check
   -discover         Interactive server discovery and tuning
   -forensics        Retroactive incident analysis from system logs
+  -diagnose [SVC]   Per-service deep diagnostics (nginx, mysql, redis, etc.)
   -version          Print version and exit
 
 Doctor Options:
@@ -124,6 +128,10 @@ Examples:
   sudo xtop -doctor -md                Health check as Markdown
   sudo xtop -doctor -cron              Cron-friendly (silent if OK, exit codes)
   sudo xtop -doctor -alert             Alert on state changes
+  sudo xtop -diagnose                   Per-service deep diagnostics
+  sudo xtop -diagnose mysql             MySQL-only deep analysis
+  sudo xtop -diagnose -json             Diagnostics as JSON
+  sudo xtop -diagnose -md               Diagnostics as Markdown
   eval "$(xtop -shell-init bash)"      Shell health widget
   xtop -tmux-status                    Tmux status segment
   xtop -cron-install                   Print crontab line
@@ -184,6 +192,7 @@ func Run() error {
 	flag.BoolVar(&cfg.DoctorMode, "doctor", false, "Run comprehensive health check")
 	flag.BoolVar(&cfg.DiscoverMode, "discover", false, "Interactive server discovery and tuning")
 	flag.BoolVar(&cfg.ForensicsMode, "forensics", false, "Retroactive incident analysis from system logs")
+	flag.BoolVar(&cfg.DiagnoseMode, "diagnose", false, "Per-service deep diagnostics (nginx, mysql, redis, etc.)")
 	flag.BoolVar(&cfg.CronMode, "cron", false, "Doctor: cron-friendly output (silent if OK)")
 	flag.BoolVar(&cfg.AlertMode, "alert", false, "Doctor: send alert on state change")
 	// Shell widget flags
@@ -298,6 +307,15 @@ func Run() error {
 	// --forensics mode
 	if cfg.ForensicsMode {
 		return runForensics(cfg)
+	}
+
+	// --diagnose mode
+	if cfg.DiagnoseMode {
+		// Target from positional args when -diagnose is set
+		if args := flag.Args(); len(args) > 0 {
+			cfg.DiagnoseTarget = args[0]
+		}
+		return runDiagnose(cfg)
 	}
 
 	// --discover mode

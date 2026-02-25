@@ -47,6 +47,7 @@ var causalRules = []causalRule{
 	{"net.conntrack", "net.drops", "conntrack→drops", 0.7},
 	{"net.tcp.state", "net.conntrack", "tcpstate→conntrack", 0.5},
 	{"net.tcp.state", "net.drops", "tcpstate→drops", 0.4},
+	{"net.closewait", "net.conntrack", "closewait→conntrack", 0.5},
 	{"net.drops", "net.tcp.retrans", "drops→retrans", 0.6},
 }
 

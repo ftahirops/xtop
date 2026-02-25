@@ -5,10 +5,11 @@ import (
 	"strings"
 
 	"github.com/ftahirops/xtop/engine"
+	"github.com/ftahirops/xtop/model"
 )
 
 // renderProbePage renders the full probe investigation page (page 8).
-func renderProbePage(pm *engine.ProbeManager, width, height int) string {
+func renderProbePage(pm *engine.ProbeManager, snap *model.Snapshot, width, height int) string {
 	var sb strings.Builder
 
 	if pm == nil {
@@ -17,6 +18,11 @@ func renderProbePage(pm *engine.ProbeManager, width, height int) string {
 		sb.WriteString(dimStyle.Render("  Probe engine not available."))
 		sb.WriteString("\n")
 		return sb.String()
+	}
+
+	// Sentinel section (always-on)
+	if snap != nil && snap.Global.Sentinel.Active {
+		sb.WriteString(renderSentinelSection(snap, width))
 	}
 
 	state := pm.State()
@@ -30,6 +36,103 @@ func renderProbePage(pm *engine.ProbeManager, width, height int) string {
 		sb.WriteString(renderProbeDone(pm, width))
 	}
 
+	return sb.String()
+}
+
+// renderSentinelSection renders the always-on sentinel probe data.
+func renderSentinelSection(snap *model.Snapshot, width int) string {
+	var sb strings.Builder
+	sent := snap.Global.Sentinel
+
+	innerW := width - 7
+	if innerW < 50 {
+		innerW = 50
+	}
+	if innerW > 90 {
+		innerW = 90
+	}
+
+	sb.WriteString(titleStyle.Render(" SENTINEL (always-on)"))
+	sb.WriteString("\n")
+	sb.WriteString(boxTop(innerW) + "\n")
+
+	// Packet drops
+	if len(sent.PktDrops) > 0 {
+		var parts []string
+		for _, d := range sent.PktDrops {
+			if len(parts) >= 4 {
+				break
+			}
+			parts = append(parts, fmt.Sprintf("%s:%.0f", d.ReasonStr, d.Rate))
+		}
+		line := fmt.Sprintf("  %s %s %s",
+			styledPad(titleStyle.Render("Pkt Drops:"), 14),
+			warnStyle.Render(fmt.Sprintf("%.0f/s", sent.PktDropRate)),
+			dimStyle.Render("("+strings.Join(parts, " ")+")"))
+		sb.WriteString(boxRow(line, innerW) + "\n")
+	} else {
+		sb.WriteString(boxRow(fmt.Sprintf("  %s %s",
+			styledPad(titleStyle.Render("Pkt Drops:"), 14),
+			dimStyle.Render("0/s")), innerW) + "\n")
+	}
+
+	// TCP resets
+	if len(sent.TCPResets) > 0 {
+		top := sent.TCPResets[0]
+		line := fmt.Sprintf("  %s %s %s",
+			styledPad(titleStyle.Render("TCP RSTs:"), 14),
+			warnStyle.Render(fmt.Sprintf("%.0f/s", sent.TCPResetRate)),
+			dimStyle.Render(fmt.Sprintf("(%s PID %d: %.0f/s)", top.Comm, top.PID, top.Rate)))
+		sb.WriteString(boxRow(line, innerW) + "\n")
+	} else {
+		sb.WriteString(boxRow(fmt.Sprintf("  %s %s",
+			styledPad(titleStyle.Render("TCP RSTs:"), 14),
+			dimStyle.Render("0/s")), innerW) + "\n")
+	}
+
+	// Retransmits
+	if len(sent.Retransmits) > 0 {
+		top := sent.Retransmits[0]
+		line := fmt.Sprintf("  %s %s %s",
+			styledPad(titleStyle.Render("Retrans:"), 14),
+			warnStyle.Render(fmt.Sprintf("%.0f/s", sent.RetransRate)),
+			dimStyle.Render(fmt.Sprintf("(%s PID %d: %.0f/s)", top.Comm, top.PID, top.Rate)))
+		sb.WriteString(boxRow(line, innerW) + "\n")
+	} else {
+		sb.WriteString(boxRow(fmt.Sprintf("  %s %s",
+			styledPad(titleStyle.Render("Retrans:"), 14),
+			dimStyle.Render("0/s")), innerW) + "\n")
+	}
+
+	// State transitions
+	if len(sent.StateChanges) > 0 {
+		top := sent.StateChanges[0]
+		line := fmt.Sprintf("  %s %s",
+			styledPad(titleStyle.Render("State:"), 14),
+			dimStyle.Render(fmt.Sprintf("%s\u2192%s: %.1f/s", top.OldStr, top.NewStr, top.Rate)))
+		sb.WriteString(boxRow(line, innerW) + "\n")
+	}
+
+	// Module loads, OOM, reclaim, throttle
+	modStr := fmt.Sprintf("%d loaded", len(sent.ModLoads))
+	oomStr := fmt.Sprintf("%d kills", len(sent.OOMKills))
+	reclaimStr := fmt.Sprintf("%.0fms", sent.ReclaimStallMs)
+	line := fmt.Sprintf("  %s %s",
+		styledPad(titleStyle.Render("Misc:"), 14),
+		dimStyle.Render(fmt.Sprintf("Modules: %s | OOM: %s | Reclaim: %s", modStr, oomStr, reclaimStr)))
+	sb.WriteString(boxRow(line, innerW) + "\n")
+
+	// Throttle
+	if len(sent.CgThrottles) > 0 {
+		top := sent.CgThrottles[0]
+		line := fmt.Sprintf("  %s %s %s",
+			styledPad(titleStyle.Render("Throttle:"), 14),
+			warnStyle.Render(fmt.Sprintf("%.0f/s", sent.ThrottleRate)),
+			dimStyle.Render(fmt.Sprintf("(%s)", top.CgPath)))
+		sb.WriteString(boxRow(line, innerW) + "\n")
+	}
+
+	sb.WriteString(boxBot(innerW) + "\n\n")
 	return sb.String()
 }
 
@@ -372,8 +475,200 @@ func renderProbeDone(pm *engine.ProbeManager, width int) string {
 				dimStyle.Render(fmt.Sprintf("%d", e.Count)))
 			sb.WriteString(boxRow(row, innerW) + "\n")
 		}
+		sb.WriteString(boxBot(innerW) + "\n\n")
+	}
+
+	// Watchdog: Run Queue Latency
+	if len(f.RunQLat) > 0 {
+		sb.WriteString(titleStyle.Render(" Run Queue Latency (watchdog)"))
+		sb.WriteString("\n")
+		sb.WriteString(boxTop(innerW) + "\n")
+		hdr := fmt.Sprintf("  %s %s %s %s %s",
+			styledPad(dimStyle.Render("PID"), 8),
+			styledPad(dimStyle.Render("CMD"), 14),
+			styledPad(dimStyle.Render("AVG"), 10),
+			styledPad(dimStyle.Render("MAX"), 10),
+			dimStyle.Render("COUNT"))
+		sb.WriteString(boxRow(hdr, innerW) + "\n")
+		sb.WriteString(boxMid(innerW) + "\n")
+		for _, e := range f.RunQLat {
+			rs := valueStyle
+			if e.AvgUs >= 1000 {
+				rs = critStyle
+			} else if e.AvgUs >= 100 {
+				rs = warnStyle
+			}
+			row := fmt.Sprintf("  %s %s %s %s %s",
+				styledPad(dimStyle.Render(fmt.Sprintf("%d", e.PID)), 8),
+				styledPad(valueStyle.Render(truncate(e.Comm, 12)), 14),
+				styledPad(rs.Render(fmt.Sprintf("%.0fus", e.AvgUs)), 10),
+				styledPad(dimStyle.Render(fmt.Sprintf("%.0fus", e.MaxUs)), 10),
+				dimStyle.Render(fmt.Sprintf("%d", e.Count)))
+			sb.WriteString(boxRow(row, innerW) + "\n")
+		}
+		sb.WriteString(boxBot(innerW) + "\n\n")
+	}
+
+	// Watchdog: Writeback Stalls
+	if len(f.WBStall) > 0 {
+		sb.WriteString(titleStyle.Render(" Writeback Stalls (watchdog)"))
+		sb.WriteString("\n")
+		sb.WriteString(boxTop(innerW) + "\n")
+		hdr := fmt.Sprintf("  %s %s %s %s",
+			styledPad(dimStyle.Render("PID"), 8),
+			styledPad(dimStyle.Render("CMD"), 14),
+			styledPad(dimStyle.Render("STALLS"), 10),
+			dimStyle.Render("PAGES"))
+		sb.WriteString(boxRow(hdr, innerW) + "\n")
+		sb.WriteString(boxMid(innerW) + "\n")
+		for _, e := range f.WBStall {
+			row := fmt.Sprintf("  %s %s %s %s",
+				styledPad(dimStyle.Render(fmt.Sprintf("%d", e.PID)), 8),
+				styledPad(valueStyle.Render(truncate(e.Comm, 12)), 14),
+				styledPad(warnStyle.Render(fmt.Sprintf("%d", e.Count)), 10),
+				dimStyle.Render(fmt.Sprintf("%d", e.TotalPages)))
+			sb.WriteString(boxRow(row, innerW) + "\n")
+		}
+		sb.WriteString(boxBot(innerW) + "\n\n")
+	}
+
+	// Watchdog: Page Fault Latency
+	if len(f.PgFault) > 0 {
+		sb.WriteString(titleStyle.Render(" Page Fault Latency (watchdog)"))
+		sb.WriteString("\n")
+		sb.WriteString(boxTop(innerW) + "\n")
+		hdr := fmt.Sprintf("  %s %s %s %s %s",
+			styledPad(dimStyle.Render("PID"), 8),
+			styledPad(dimStyle.Render("CMD"), 14),
+			styledPad(dimStyle.Render("AVG"), 10),
+			styledPad(dimStyle.Render("MAJOR"), 8),
+			dimStyle.Render("TOTAL"))
+		sb.WriteString(boxRow(hdr, innerW) + "\n")
+		sb.WriteString(boxMid(innerW) + "\n")
+		for _, e := range f.PgFault {
+			rs := valueStyle
+			if e.MajorCount > 100 {
+				rs = critStyle
+			} else if e.MajorCount > 10 {
+				rs = warnStyle
+			}
+			row := fmt.Sprintf("  %s %s %s %s %s",
+				styledPad(dimStyle.Render(fmt.Sprintf("%d", e.PID)), 8),
+				styledPad(valueStyle.Render(truncate(e.Comm, 12)), 14),
+				styledPad(dimStyle.Render(fmt.Sprintf("%.0fus", e.AvgUs)), 10),
+				styledPad(rs.Render(fmt.Sprintf("%d", e.MajorCount)), 8),
+				dimStyle.Render(fmt.Sprintf("%d", e.TotalCount)))
+			sb.WriteString(boxRow(row, innerW) + "\n")
+		}
+		sb.WriteString(boxBot(innerW) + "\n\n")
+	}
+
+	// Watchdog: Swap Activity
+	if len(f.SwapEvict) > 0 {
+		sb.WriteString(titleStyle.Render(" Swap Activity (watchdog)"))
+		sb.WriteString("\n")
+		sb.WriteString(boxTop(innerW) + "\n")
+		hdr := fmt.Sprintf("  %s %s %s %s",
+			styledPad(dimStyle.Render("PID"), 8),
+			styledPad(dimStyle.Render("CMD"), 14),
+			styledPad(dimStyle.Render("READ PG"), 10),
+			dimStyle.Render("WRITE PG"))
+		sb.WriteString(boxRow(hdr, innerW) + "\n")
+		sb.WriteString(boxMid(innerW) + "\n")
+		for _, e := range f.SwapEvict {
+			row := fmt.Sprintf("  %s %s %s %s",
+				styledPad(dimStyle.Render(fmt.Sprintf("%d", e.PID)), 8),
+				styledPad(valueStyle.Render(truncate(e.Comm, 12)), 14),
+				styledPad(warnStyle.Render(fmt.Sprintf("%d", e.ReadPages)), 10),
+				dimStyle.Render(fmt.Sprintf("%d", e.WritePages)))
+			sb.WriteString(boxRow(row, innerW) + "\n")
+		}
+		sb.WriteString(boxBot(innerW) + "\n\n")
+	}
+
+	// Watchdog: Syscall Dissection
+	if len(f.SyscallDissect) > 0 {
+		sb.WriteString(titleStyle.Render(" Syscall Dissection (watchdog)"))
+		sb.WriteString("\n")
+		sb.WriteString(boxTop(innerW) + "\n")
+		hdr := fmt.Sprintf("  %s %s %s",
+			styledPad(dimStyle.Render("PID"), 8),
+			styledPad(dimStyle.Render("CMD"), 14),
+			dimStyle.Render("BREAKDOWN"))
+		sb.WriteString(boxRow(hdr, innerW) + "\n")
+		sb.WriteString(boxMid(innerW) + "\n")
+		for _, e := range f.SyscallDissect {
+			var parts []string
+			for _, g := range e.Breakdown {
+				gs := dimStyle
+				if g.Group == "lock/sync" && g.TotalPct >= 30 {
+					gs = critStyle
+				} else if g.TotalPct >= 50 {
+					gs = warnStyle
+				}
+				parts = append(parts, gs.Render(fmt.Sprintf("%s:%.0f%%", g.Group, g.TotalPct)))
+			}
+			breakdown := strings.Join(parts, "  ")
+			row := fmt.Sprintf("  %s %s %s",
+				styledPad(dimStyle.Render(fmt.Sprintf("%d", e.PID)), 8),
+				styledPad(valueStyle.Render(truncate(e.Comm, 12)), 14),
+				breakdown)
+			sb.WriteString(boxRow(row, innerW) + "\n")
+		}
+		sb.WriteString(boxBot(innerW) + "\n\n")
+	}
+
+	// Watchdog: Socket IO Attribution
+	if len(f.SockIO) > 0 {
+		sb.WriteString(titleStyle.Render(" Socket IO Attribution (watchdog)"))
+		sb.WriteString("\n")
+		sb.WriteString(boxTop(innerW) + "\n")
+		hdr := fmt.Sprintf("  %s %s %s %s %s %s",
+			styledPad(dimStyle.Render("PID"), 8),
+			styledPad(dimStyle.Render("CMD"), 12),
+			styledPad(dimStyle.Render("DEST"), 24),
+			styledPad(dimStyle.Render("TX"), 8),
+			styledPad(dimStyle.Render("RX"), 8),
+			dimStyle.Render("WAIT"))
+		sb.WriteString(boxRow(hdr, innerW) + "\n")
+		sb.WriteString(boxMid(innerW) + "\n")
+		for _, e := range f.SockIO {
+			dest := e.DstAddr
+			if e.Service != "" {
+				dest = fmt.Sprintf("%s (%s)", e.DstAddr, e.Service)
+			}
+			ws := dimStyle
+			if e.AvgWaitMs >= 50 {
+				ws = critStyle
+			} else if e.AvgWaitMs >= 10 {
+				ws = warnStyle
+			}
+			waitStr := ws.Render(fmt.Sprintf("%.0fms", e.AvgWaitMs))
+			row := fmt.Sprintf("  %s %s %s %s %s %s",
+				styledPad(dimStyle.Render(fmt.Sprintf("%d", e.PID)), 8),
+				styledPad(valueStyle.Render(truncate(e.Comm, 10)), 12),
+				styledPad(dimStyle.Render(truncate(dest, 22)), 24),
+				styledPad(dimStyle.Render(formatProbeBytes(e.TxBytes)), 8),
+				styledPad(dimStyle.Render(formatProbeBytes(e.RxBytes)), 8),
+				waitStr)
+			sb.WriteString(boxRow(row, innerW) + "\n")
+		}
 		sb.WriteString(boxBot(innerW) + "\n")
 	}
 
 	return sb.String()
+}
+
+// formatProbeBytes formats bytes into a human-readable string (KB/MB/GB).
+func formatProbeBytes(b uint64) string {
+	switch {
+	case b >= 1<<30:
+		return fmt.Sprintf("%.1fGB", float64(b)/(1<<30))
+	case b >= 1<<20:
+		return fmt.Sprintf("%.1fMB", float64(b)/(1<<20))
+	case b >= 1<<10:
+		return fmt.Sprintf("%.1fKB", float64(b)/(1<<10))
+	default:
+		return fmt.Sprintf("%dB", b)
+	}
 }

@@ -354,6 +354,23 @@ type RemoteIPStats struct {
 	CloseWait   int
 }
 
+// CloseWaitLeaker holds per-PID CLOSE_WAIT socket attribution.
+type CloseWaitLeaker struct {
+	PID        int
+	Comm       string
+	Count      int      // CW sockets held
+	OldestAge  int      // seconds
+	NewestAge  int      // seconds
+	TopRemotes []string // up to 3 remote IPs
+}
+
+// CloseWaitTrend holds CLOSE_WAIT growth trend data.
+type CloseWaitTrend struct {
+	Current    int
+	GrowthRate float64 // sockets/sec EWMA
+	Growing    bool
+}
+
 // ActiveSession represents a currently logged-in user.
 type ActiveSession struct {
 	User    string
@@ -441,6 +458,175 @@ type HealthCheckMetrics struct {
 	Probes []HealthProbeResult
 }
 
+// DiagSeverity represents the severity of a diagnostic finding.
+type DiagSeverity string
+
+const (
+	DiagOK   DiagSeverity = "ok"
+	DiagInfo DiagSeverity = "info"
+	DiagWarn DiagSeverity = "warn"
+	DiagCrit DiagSeverity = "crit"
+)
+
+// DiagFinding holds a single diagnostic finding for a service.
+type DiagFinding struct {
+	Severity DiagSeverity
+	Category string // "config", "performance", "replication", "memory", "connections"
+	Summary  string
+	Detail   string
+	Advice   string
+}
+
+// ServiceDiag holds diagnostic results for one service.
+type ServiceDiag struct {
+	Name      string
+	Available bool
+	Findings  []DiagFinding
+	WorstSev  DiagSeverity
+	LastCheck time.Time
+	Metrics   map[string]string // key metrics for TUI display
+}
+
+// DiagMetrics holds diagnostics for all detected services.
+type DiagMetrics struct {
+	Services []ServiceDiag
+}
+
+// SentinelData holds always-on eBPF sentinel probe data.
+type SentinelData struct {
+	Active    bool
+	AttachErr string
+
+	// Network sentinels
+	PktDrops     []PktDropEntry
+	TCPResets    []TCPResetEntry
+	StateChanges []SockStateEntry
+
+	// Sentinel-promoted existing probes
+	Retransmits []SentinelRetransEntry
+	ConnLatency []SentinelConnLatEntry
+
+	// Security
+	ModLoads     []ModLoadEntry
+	ExecEvents   []ExecEventEntry
+	PtraceEvents []PtraceEventEntry
+
+	// Memory
+	OOMKills      []OOMKillEntry
+	DirectReclaim []DirectReclaimEntry
+
+	// CPU
+	CgThrottles []CgThrottleEntry
+
+	// Aggregate rates (computed from deltas)
+	PktDropRate    float64
+	TCPResetRate   float64
+	RetransRate    float64
+	ReclaimStallMs float64
+	ThrottleRate   float64
+}
+
+// PktDropEntry holds a BPF-traced packet drop reason and count.
+type PktDropEntry struct {
+	Reason    uint32
+	ReasonStr string
+	Count     uint64
+	Rate      float64
+}
+
+// TCPResetEntry holds a BPF-traced TCP RST event per PID.
+type TCPResetEntry struct {
+	PID    uint32
+	Comm   string
+	Count  uint64
+	Rate   float64
+	DstStr string
+}
+
+// SockStateEntry holds a BPF-traced TCP state transition count.
+type SockStateEntry struct {
+	OldState uint16
+	NewState uint16
+	OldStr   string
+	NewStr   string
+	Count    uint64
+	Rate     float64
+}
+
+// SentinelRetransEntry holds always-on BPF TCP retransmit data per PID.
+type SentinelRetransEntry struct {
+	PID    uint32
+	Comm   string
+	Count  uint32
+	Rate   float64
+	DstStr string
+}
+
+// SentinelConnLatEntry holds always-on BPF TCP connect latency per PID.
+type SentinelConnLatEntry struct {
+	PID    uint32
+	Comm   string
+	Count  uint32
+	AvgMs  float64
+	MaxMs  float64
+	DstStr string
+}
+
+// ModLoadEntry holds a BPF-traced kernel module load event.
+type ModLoadEntry struct {
+	Name      string
+	Timestamp int64
+	Count     uint64
+}
+
+// OOMKillEntry holds a BPF-traced OOM kill event.
+type OOMKillEntry struct {
+	VictimPID  uint32
+	VictimComm string
+	TotalVM    uint64
+	AnonRSS    uint64
+	Timestamp  int64
+}
+
+// DirectReclaimEntry holds a BPF-traced direct reclaim stall per PID.
+type DirectReclaimEntry struct {
+	PID     uint32
+	Comm    string
+	StallNs uint64
+	Count   uint32
+}
+
+// CgThrottleEntry holds a BPF-traced cgroup CPU throttle event.
+type CgThrottleEntry struct {
+	CgID   uint64
+	CgPath string
+	Count  uint64
+	Rate   float64
+}
+
+// ExecEventEntry holds a BPF-traced process execution event.
+type ExecEventEntry struct {
+	PID       uint32
+	PPID      uint32
+	UID       uint32
+	Comm      string
+	Filename  string
+	Count     uint64
+	Timestamp int64
+}
+
+// PtraceEventEntry holds a BPF-traced ptrace syscall event.
+type PtraceEventEntry struct {
+	TracerPID  uint32
+	TracerComm string
+	TargetPID  uint32
+	TargetComm string
+	Request    uint64
+	RequestStr string
+	Count      uint64
+	Timestamp  int64
+}
+
 // GlobalMetrics is the full system-wide metric snapshot.
 type GlobalMetrics struct {
 	PSI            PSIMetrics
@@ -457,8 +643,10 @@ type GlobalMetrics struct {
 	Conntrack      ConntrackStats
 	FD             FDStats
 	EphemeralPorts EphemeralPorts
-	TopRemoteIPs   []RemoteIPStats
-	Mounts         []MountStats
+	TopRemoteIPs     []RemoteIPStats
+	CloseWaitLeakers []CloseWaitLeaker
+	CloseWaitTrend   CloseWaitTrend
+	Mounts           []MountStats
 	DeletedOpen    []DeletedOpenFile
 	BigFiles       []BigFile
 	FilelessProcs  []FilelessProcess
@@ -466,6 +654,8 @@ type GlobalMetrics struct {
 	Logs           LogMetrics
 	HealthChecks   HealthCheckMetrics
 	Sessions       []ActiveSession
+	Diagnostics    DiagMetrics
+	Sentinel       SentinelData
 }
 
 // CgroupMetrics holds metrics for a single cgroup.

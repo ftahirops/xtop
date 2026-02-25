@@ -1,6 +1,10 @@
 package collector
 
-import "github.com/ftahirops/xtop/model"
+import (
+	"time"
+
+	"github.com/ftahirops/xtop/model"
+)
 
 // Collector is the interface for all metric collectors.
 type Collector interface {
@@ -50,6 +54,7 @@ func NewRegistry() *Registry {
 			&SecurityCollector{},
 			&LogsCollector{},
 			&HealthCheckCollector{},
+			&DiagCollector{interval: 15 * time.Second},
 		},
 	}
 }

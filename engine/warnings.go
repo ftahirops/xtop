@@ -360,6 +360,9 @@ func NetHealthLevel(snap *model.Snapshot, rates *model.RateSnapshot) string {
 
 	// TCP state anomalies
 	states := snap.Global.TCPStates
+	if states.CloseWait > 500 {
+		return "CRITICAL"
+	}
 	if states.CloseWait > 100 {
 		if level == "OK" {
 			level = "DEGRADED"

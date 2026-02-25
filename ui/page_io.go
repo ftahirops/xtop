@@ -15,7 +15,7 @@ func renderIOPage(snap *model.Snapshot, rates *model.RateSnapshot, result *model
 	sb.WriteString(titleStyle.Render("IO / DISK SUBSYSTEM"))
 	sb.WriteString("\n")
 	sb.WriteString(renderRCAInline(result))
-	sb.WriteString(renderProbeStatusLine(pm))
+	sb.WriteString(renderProbeStatusLine(pm, snap))
 	sb.WriteString("\n")
 
 	psi := snap.Global.PSI.IO

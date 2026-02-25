@@ -33,10 +33,11 @@ const (
 	PageSecurity
 	PageLogs
 	PageServices
+	PageDiag
 	pageCount
 )
 
-var pageNames = []string{"Overview", "CPU", "Memory", "IO", "Network", "CGroups", "Timeline", "Events", "Probe", "Thresholds", "DiskGuard", "Security", "Logs", "Services"}
+var pageNames = []string{"Overview", "CPU", "Memory", "IO", "Network", "CGroups", "Timeline", "Events", "Probe", "Thresholds", "DiskGuard", "Security", "Logs", "Services", "Diagnostics"}
 
 type tickMsg time.Time
 
@@ -448,6 +449,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "H":
 			m.page = PageServices
 			m.scroll = 0
+		case "W":
+			m.page = PageDiag
+			m.scroll = 0
 		case "ctrl+d":
 			// Set current layout as default
 			if err := saveDefaultLayout(m.layoutMode); err != nil {
@@ -588,6 +592,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.eventDetector.Process(msg.snap, msg.rates, msg.result)
 			// Check probe state transitions
 			m.probeManager.Tick()
+			// Watchdog auto-trigger: start domain probes when RCA fires
+			if msg.result != nil && msg.result.Watchdog.Active {
+				if m.probeManager.State() != engine.ProbeRunning {
+					_ = m.probeManager.StartDomain(msg.result.Watchdog.Domain)
+				}
+			}
 			// DiskGuard Contain mode: auto-freeze top writers when CRIT
 			m.diskGuardContain()
 		}
@@ -635,7 +645,7 @@ func (m Model) View() string {
 		active, completed := m.eventDetector.AllEvents()
 		content = renderEventsPage(active, completed, m.evtSelected, m.width, m.height)
 	case PageProbe:
-		content = renderProbePage(m.probeManager, m.width, m.height)
+		content = renderProbePage(m.probeManager, m.snap, m.width, m.height)
 	case PageThresholds:
 		content = renderThresholdsPage(m.snap, m.rates, m.result, m.width, m.height)
 	case PageDiskGuard:
@@ -650,12 +660,17 @@ func (m Model) View() string {
 		content = renderLogsPage(m.snap, m.rates, m.result, m.probeManager, m.width, m.height)
 	case PageServices:
 		content = renderServicesPage(m.snap, m.rates, m.result, m.probeManager, m.width, m.height)
+	case PageDiag:
+		content = renderDiagPage(m.snap, m.rates, m.result, m.probeManager, m.width, m.height)
 	}
 
 	// Explain verdict panel (appended after page content)
 	if m.showExplain && m.result != nil {
 		content += renderExplainPanel(m.result, m.width)
 	}
+
+	// Inject clock + interval into the first line (top-right)
+	content = m.injectClock(content)
 
 	// Apply scroll (#34: clamp scroll to valid range)
 	lines := strings.Split(content, "\n")
@@ -679,65 +694,150 @@ func (m Model) View() string {
 }
 
 func (m Model) renderStatusBar() string {
-	// Page tabs
-	var tabs []string
+	// Full and abbreviated page labels
+	type pageLabel struct {
+		full  string
+		short string
+	}
+	labels := make([]pageLabel, len(pageNames))
 	for i, name := range pageNames {
-		var label string
+		var key string
 		switch Page(i) {
 		case PageDiskGuard:
-			label = "D:" + name
+			key = "D"
 		case PageSecurity:
-			label = "L:" + name
+			key = "L"
 		case PageLogs:
-			label = "O:" + name
+			key = "O"
 		case PageServices:
-			label = "H:" + name
+			key = "H"
+		case PageDiag:
+			key = "W"
 		default:
-			label = fmt.Sprintf("%d:%s", i, name)
+			key = fmt.Sprintf("%d", i)
 		}
-		if Page(i) == m.page {
-			tabs = append(tabs, headerStyle.Render("["+label+"]"))
-		} else {
-			tabs = append(tabs, dimStyle.Render(" "+label+" "))
+		labels[i] = pageLabel{
+			full:  key + ":" + name,
+			short: key + ":" + shortPageName(name),
 		}
 	}
-	left := strings.Join(tabs, "")
 
-	// Paused indicator
+	// Build tabs — try full labels first, fall back to short if too wide
+	buildTabs := func(useShort bool) string {
+		var tabs []string
+		for i, lbl := range labels {
+			label := lbl.full
+			if useShort {
+				label = lbl.short
+			}
+			if Page(i) == m.page {
+				tabs = append(tabs, headerStyle.Render("["+label+"]"))
+			} else {
+				tabs = append(tabs, dimStyle.Render(" "+label+" "))
+			}
+		}
+		return strings.Join(tabs, "")
+	}
+
+	left := buildTabs(false)
+
+	// Indicators (paused, save msg, layout)
+	var indicators string
 	if m.paused {
-		left += "  " + critStyle.Render("[PAUSED]")
+		indicators += "  " + critStyle.Render("[PAUSED]")
 	}
-
-	// Save message (show for 5 seconds)
 	if m.saveMsg != "" && time.Since(m.saveMsgTime) < 5*time.Second {
-		left += "  " + okStyle.Render(m.saveMsg)
+		indicators += "  " + okStyle.Render(m.saveMsg)
 	}
-
-	// Role indicator
-	if len(m.serverRoles) > 0 {
-		roleStr := strings.Join(m.serverRoles, " + ")
-		left += "  " + dimStyle.Render(fmt.Sprintf("[role: %s]", roleStr))
-	}
-
-	// Layout indicator on overview
 	if m.page == PageOverview {
-		left += "  " + dimStyle.Render(fmt.Sprintf("[%s]", m.layoutMode))
+		indicators += "  " + dimStyle.Render(fmt.Sprintf("[%s]", m.layoutMode))
 	}
 
-	help := helpStyle.Render("D:disk L:sec O:logs H:svc  I:probe  E:export  e:explain  v:layout  a:pause  S:save  ?:help  q:quit")
+	help := helpStyle.Render("I:probe  E:export  e:explain  v:layout  a:pause  S:save  ?:help  q:quit")
 
-	// #32: Truncate status bar when terminal is too narrow
-	leftW := lipgloss.Width(left)
+	// Try full tabs + indicators + help
+	leftFull := left + indicators
+	leftW := lipgloss.Width(leftFull)
 	helpW := lipgloss.Width(help)
-	gap := m.width - leftW - helpW
-	if gap < 1 {
-		// Terminal too narrow — drop help text
-		if leftW < m.width {
-			return left
-		}
-		return left[:m.width]
+
+	if leftW+helpW+1 <= m.width {
+		gap := m.width - leftW - helpW
+		return leftFull + strings.Repeat(" ", gap) + help
 	}
-	return left + strings.Repeat(" ", gap) + help
+
+	// Try full tabs + indicators (drop help)
+	if leftW <= m.width {
+		return leftFull
+	}
+
+	// Try short tabs + indicators + help
+	left = buildTabs(true)
+	leftShort := left + indicators
+	leftW = lipgloss.Width(leftShort)
+	if leftW+helpW+1 <= m.width {
+		gap := m.width - leftW - helpW
+		return leftShort + strings.Repeat(" ", gap) + help
+	}
+
+	// Short tabs + indicators only
+	if leftW <= m.width {
+		return leftShort
+	}
+
+	// Last resort: short tabs only, ANSI-aware truncation
+	leftW = lipgloss.Width(left)
+	if leftW <= m.width {
+		return left
+	}
+	// Byte-safe truncation: rebuild only tabs that fit
+	var fitted string
+	for i, lbl := range labels {
+		var tab string
+		if Page(i) == m.page {
+			tab = headerStyle.Render("[" + lbl.short + "]")
+		} else {
+			tab = dimStyle.Render(" " + lbl.short + " ")
+		}
+		if lipgloss.Width(fitted+tab) > m.width {
+			break
+		}
+		fitted += tab
+	}
+	return fitted
+}
+
+// shortPageName returns an abbreviated page name for narrow terminals.
+func shortPageName(name string) string {
+	switch name {
+	case "Overview":
+		return "Ovr"
+	case "Memory":
+		return "Mem"
+	case "Network":
+		return "Net"
+	case "CGroups":
+		return "CG"
+	case "Timeline":
+		return "Tmln"
+	case "Events":
+		return "Evt"
+	case "Probe":
+		return "Prb"
+	case "Thresholds":
+		return "Thr"
+	case "DiskGuard":
+		return "Disk"
+	case "Security":
+		return "Sec"
+	case "Logs":
+		return "Log"
+	case "Services":
+		return "Svc"
+	case "Diagnostics":
+		return "Diag"
+	default:
+		return name
+	}
 }
 
 // bottleneckToPage maps a bottleneck name to its detail page.
@@ -909,6 +1009,7 @@ func (m Model) renderHelp() string {
 	sb.WriteString("  L         Security (auth, SUID, fileless, ports)\n")
 	sb.WriteString("  O         Logs (per-service error rates)\n")
 	sb.WriteString("  H         Services (health probes, certs, DNS)\n")
+	sb.WriteString("  W         Diagnostics (per-service deep analysis)\n")
 	sb.WriteString("  b / Esc   Back to overview\n")
 	sb.WriteString("\n")
 	sb.WriteString(headerStyle.Render("Controls"))
@@ -1073,4 +1174,31 @@ func (m *Model) diskGuardContain() {
 			delete(m.frozenPIDs, pid)
 		}
 	}
+}
+
+// injectClock overlays "HH:MM:SS  every Ns" on the top-right of the first content line.
+func (m Model) injectClock(content string) string {
+	if m.width < 40 {
+		return content
+	}
+
+	now := time.Now().Format("15:04:05")
+	intervalStr := fmt.Sprintf("%.0fs", m.interval.Seconds())
+	clock := dimStyle.Render(now+"  every "+intervalStr)
+	clockW := lipgloss.Width(clock)
+
+	lines := strings.Split(content, "\n")
+	if len(lines) == 0 {
+		return content
+	}
+
+	firstLine := lines[0]
+	lineW := lipgloss.Width(firstLine)
+	gap := m.width - lineW - clockW
+	if gap < 2 {
+		// Not enough room — place on its own line
+		return strings.Repeat(" ", m.width-clockW) + clock + "\n" + content
+	}
+	lines[0] = firstLine + strings.Repeat(" ", gap) + clock
+	return strings.Join(lines, "\n")
 }

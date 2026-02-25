@@ -65,7 +65,7 @@ func renderLayoutC(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 	// Capacity (always render inline)
 	sb.WriteString(renderCapacityInline(result))
 	// Probe status
-	sb.WriteString(renderProbeStatusLine(pm))
+	sb.WriteString(renderProbeStatusLine(pm, snap))
 	// Exhaustion + Degradation
 	sb.WriteString(renderExhaustionBlock(result, width))
 	sb.WriteString(renderDegradationBlock(result, width))

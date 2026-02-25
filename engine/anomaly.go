@@ -222,6 +222,10 @@ func trackBiggestChange(result *model.AnalysisResult, hist *History) {
 		}
 		addChange("net drops", oldDrops, curDrops, "/s", 1)
 
+		// CLOSE_WAIT count change
+		addChange("CLOSE_WAIT", float64(old.Global.TCPStates.CloseWait),
+			float64(curr.Global.TCPStates.CloseWait), " sockets", 10)
+
 		// Per-process IO changes: find biggest IO movers
 		oldIO := make(map[string]float64) // comm -> total IO MB/s
 		for _, p := range oldRates.ProcessRates {
@@ -488,6 +492,27 @@ func trackExhaustion(result *model.AnalysisResult, hist *History) {
 						Resource:   "Ephemeral ports",
 						CurrentPct: curPct,
 						TrendPerS:  trendPerSec,
+						EstMinutes: minutesLeft,
+					})
+				}
+			}
+		}
+	}
+
+	// CLOSE_WAIT exhaustion prediction
+	cwCur := curr.Global.TCPStates.CloseWait
+	cwOld := old.Global.TCPStates.CloseWait
+	if cwCur > 50 && cwCur > cwOld {
+		cwGrowthPerSec := float64(cwCur-cwOld) / elapsed
+		if cwGrowthPerSec > 0.01 {
+			remaining := float64(10000 - cwCur) // predict time to 10K sockets
+			if remaining > 0 {
+				minutesLeft := remaining / cwGrowthPerSec / 60
+				if minutesLeft < 120 && minutesLeft > 0 {
+					result.Exhaustions = append(result.Exhaustions, model.ExhaustionPrediction{
+						Resource:   "CLOSE_WAIT sockets",
+						CurrentPct: float64(cwCur),
+						TrendPerS:  cwGrowthPerSec,
 						EstMinutes: minutesLeft,
 					})
 				}

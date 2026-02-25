@@ -116,7 +116,7 @@ func renderLayoutB(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 	sb.WriteString(renderRCAInline(result))
 	sb.WriteString(renderChangesInline(result))
 	sb.WriteString(renderOwnersInline(result))
-	sb.WriteString(renderProbeStatusLine(pm))
+	sb.WriteString(renderProbeStatusLine(pm, snap))
 
 	// Trend (one line per resource)
 	sb.WriteString(renderTrendBlock(result, history, width, true))

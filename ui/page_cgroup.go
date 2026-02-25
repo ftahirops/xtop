@@ -32,7 +32,7 @@ func renderCgroupPage(snap *model.Snapshot, rates *model.RateSnapshot, result *m
 	sb.WriteString(titleStyle.Render(fmt.Sprintf("CGROUPS  (sort: %s, %d total)", sortName, len(snap.Cgroups))))
 	sb.WriteString("\n")
 	sb.WriteString(renderRCAInline(result))
-	sb.WriteString(renderProbeStatusLine(pm))
+	sb.WriteString(renderProbeStatusLine(pm, snap))
 	sb.WriteString("\n")
 
 	// Build merged view: cgroup metrics + rates

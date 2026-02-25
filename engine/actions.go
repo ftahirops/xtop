@@ -2,13 +2,13 @@ package engine
 
 import (
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	"github.com/ftahirops/xtop/model"
 )
 
-// SuggestActions recommends actions based on the primary bottleneck and evidence.
+// SuggestActions generates actionable recommendations using data xtop already has.
+// No shell commands — xtop IS the diagnostic tool.
 func SuggestActions(result *model.AnalysisResult) []model.Action {
 	if result.PrimaryScore < 20 {
 		return nil
@@ -16,7 +16,7 @@ func SuggestActions(result *model.AnalysisResult) []model.Action {
 
 	var actions []model.Action
 
-	// Find the primary RCA entry for detailed checks
+	// Find the primary RCA entry
 	var primary *model.RCAEntry
 	for i := range result.RCA {
 		if result.RCA[i].Bottleneck == result.PrimaryBottleneck {
@@ -25,166 +25,350 @@ func SuggestActions(result *model.AnalysisResult) []model.Action {
 		}
 	}
 
-	switch result.PrimaryBottleneck {
-	case BottleneckIO:
-		actions = append(actions,
-			model.Action{Summary: "Identify IO-heavy processes", Command: "iotop -oP -d 2"},
-			model.Action{Summary: "Check disk queue depth and latency", Command: "iostat -xz 1 5"},
-		)
-		// Context-specific actions
-		if primary != nil {
-			for _, c := range primary.Checks {
-				if !c.Passed {
-					continue
-				}
-				switch c.Group {
-				case "io.fsfull":
-					actions = append(actions,
-						model.Action{Summary: "Check filesystem usage", Command: "df -h"},
-						model.Action{Summary: "Find large files", Command: "find / -xdev -type f -size +100M -exec ls -lh {} \\; 2>/dev/null | head -20"},
-						model.Action{Summary: "Check deleted-open files", Command: "lsof +L1 2>/dev/null | head -20"},
-						model.Action{Summary: "Rotate logs", Command: "journalctl --vacuum-size=100M"},
-					)
-				case "io.writeback":
-					actions = append(actions,
-						model.Action{Summary: "Check for large write bursts or backup jobs", Command: "grep -r . /proc/sys/vm/dirty_*"},
-						model.Action{Summary: "Reduce dirty page pressure", Command: "sysctl vm.dirty_ratio=10 vm.dirty_background_ratio=5"},
-					)
-				}
-			}
-		}
-		if result.PrimaryCulprit != "" && !strings.Contains(result.PrimaryCulprit, "..") {
-			actions = append(actions,
-				model.Action{Summary: fmt.Sprintf("Inspect IO limits for %s", cleanCgroupName(result.PrimaryCulprit)),
-					Command: "cat " + filepath.Join("/sys/fs/cgroup", result.PrimaryCulprit, "io.max")},
-			)
-		}
-		if result.PrimaryProcess != "" && result.PrimaryPID > 1 {
-			actions = append(actions,
-				model.Action{Summary: fmt.Sprintf("Check what %s is writing", result.PrimaryProcess),
-					Command: fmt.Sprintf("ls -la /proc/%d/fd/ 2>/dev/null | head -30", result.PrimaryPID)},
-			)
-		}
+	// ── Culprit identification (always first if known) ──
+	if result.PrimaryProcess != "" && result.PrimaryPID > 0 {
+		actions = append(actions, model.Action{
+			Summary: fmt.Sprintf("Top culprit: %s (PID %d) — consuming most %s resources",
+				result.PrimaryProcess, result.PrimaryPID, result.PrimaryBottleneck),
+		})
+	}
+	if result.PrimaryCulprit != "" {
+		actions = append(actions, model.Action{
+			Summary: fmt.Sprintf("Owning cgroup: %s", cleanCgroupName(result.PrimaryCulprit)),
+		})
+	}
 
-	case BottleneckMemory:
-		actions = append(actions,
-			model.Action{Summary: "Check top memory consumers", Command: "ps aux --sort=-rss | head -20"},
-		)
-		if primary != nil {
-			for _, c := range primary.Checks {
-				if !c.Passed {
-					continue
-				}
-				switch c.Group {
-				case "mem.swap.activity":
-					actions = append(actions,
-						model.Action{Summary: "Check swap IO pressure", Command: "vmstat 1 5"},
-						model.Action{Summary: "Find swapped-out processes", Command: "awk '/VmSwap/{if($2>0)print FILENAME,$2}' /proc/*/status 2>/dev/null | sort -k2 -rn | head -10"},
-					)
-				case "mem.reclaim.direct":
-					actions = append(actions,
-						model.Action{Summary: "Check reclaim activity", Command: "grep -E 'pgsteal|pgscan|pgmajfault' /proc/vmstat"},
-					)
-				case "mem.oom.kills":
-					actions = append(actions,
-						model.Action{Summary: "Check OOM kills", Command: "dmesg -T | grep -i 'out of memory' | tail -5"},
-					)
-				}
-			}
-		}
-		if result.PrimaryCulprit != "" && !strings.Contains(result.PrimaryCulprit, "..") {
-			actions = append(actions,
-				model.Action{Summary: fmt.Sprintf("Check memory limit for %s", cleanCgroupName(result.PrimaryCulprit)),
-					Command: "cat " + filepath.Join("/sys/fs/cgroup", result.PrimaryCulprit, "memory.max")},
-			)
-		}
-
-	case BottleneckCPU:
-		actions = append(actions,
-			model.Action{Summary: "Check top CPU consumers", Command: "ps -eo pid,comm,stat,ni,%cpu --sort=-%cpu | head -20"},
-		)
-		if primary != nil {
-			for _, c := range primary.Checks {
-				if !c.Passed {
-					continue
-				}
-				switch c.Group {
-				case "cpu.runqueue":
-					actions = append(actions,
-						model.Action{Summary: "Check run queue depth", Command: "sar -q 1 5 2>/dev/null || vmstat 1 5"},
-					)
-				case "cpu.cgroup.throttle":
-					actions = append(actions,
-						model.Action{Summary: "Check cgroup CPU throttling", Command: "find /sys/fs/cgroup -name cpu.stat -exec grep -l throttled {} \\; | head -5"},
-					)
-				case "cpu.steal":
-					actions = append(actions,
-						model.Action{Summary: "Check hypervisor CPU steal (VM contention)", Command: "mpstat -P ALL 1 3"},
-					)
-				}
-			}
-		}
-		if result.PrimaryCulprit != "" && !strings.Contains(result.PrimaryCulprit, "..") {
-			actions = append(actions,
-				model.Action{Summary: fmt.Sprintf("Check CPU quota for %s", cleanCgroupName(result.PrimaryCulprit)),
-					Command: "cat " + filepath.Join("/sys/fs/cgroup", result.PrimaryCulprit, "cpu.max")},
-			)
-		}
-
-	case BottleneckNetwork:
-		actions = append(actions,
-			model.Action{Summary: "Check connection state summary", Command: "ss -s"},
-			model.Action{Summary: "Check for drops and retransmits", Command: "nstat -az | grep -iE 'drop|retrans|overflow'"},
-		)
-		if primary != nil {
-			for _, c := range primary.Checks {
-				if !c.Passed {
-					continue
-				}
-				switch c.Group {
-				case "net.drops":
-					actions = append(actions,
-						model.Action{Summary: "Check interface ring buffer (increase if drops)", Command: "ethtool -g eth0 2>/dev/null"},
-					)
-				case "net.conntrack":
-					actions = append(actions,
-						model.Action{Summary: "Increase conntrack table size", Command: "sysctl net.nf_conntrack_max"},
-					)
-				case "net.tcp.state":
-					actions = append(actions,
-						model.Action{Summary: "Check TIME_WAIT and ephemeral port pressure", Command: "ss -tan state time-wait | wc -l"},
-						model.Action{Summary: "Enable TIME_WAIT reuse if needed", Command: "sysctl net.ipv4.tcp_tw_reuse=1"},
-					)
-				}
-			}
+	// ── Point to deep diagnostics for known services ──
+	if result.PrimaryProcess != "" {
+		if svc := knownService(result.PrimaryProcess); svc != "" {
+			actions = append(actions, model.Action{
+				Summary: fmt.Sprintf("Press W for %s deep diagnostics (connections, queries, config) — press O for error rate logs", svc),
+			})
 		}
 	}
 
-	// Exhaustion-specific actions
+	// ── Deployment correlation ──
+	if result.RecentDeploy != "" {
+		actions = append(actions, model.Action{
+			Summary: fmt.Sprintf("Recent deploy detected: %s (PID %d, started %ds ago) — likely trigger",
+				result.RecentDeploy, result.RecentDeployPID, result.RecentDeployAge),
+		})
+	}
+
+	switch result.PrimaryBottleneck {
+	case BottleneckCPU:
+		actions = append(actions, cpuActions(result, primary)...)
+	case BottleneckMemory:
+		actions = append(actions, memActions(result, primary)...)
+	case BottleneckIO:
+		actions = append(actions, ioActions(result, primary)...)
+	case BottleneckNetwork:
+		actions = append(actions, netActions(result, primary)...)
+	}
+
+	// ── Exhaustion predictions (with actual data) ──
 	for _, ex := range result.Exhaustions {
-		switch ex.Resource {
-		case "Memory":
-			actions = append(actions,
-				model.Action{Summary: fmt.Sprintf("Memory exhaustion in ~%.0fm — identify leak or increase RAM", ex.EstMinutes)})
-		case "Swap":
-			actions = append(actions,
-				model.Action{Summary: fmt.Sprintf("Swap exhaustion in ~%.0fm — reduce memory pressure", ex.EstMinutes)})
-		case "Ephemeral ports":
-			actions = append(actions,
-				model.Action{Summary: fmt.Sprintf("Port exhaustion in ~%.0fm — check connection churn", ex.EstMinutes),
-					Command: "ss -tan state time-wait | wc -l"})
-		case "File descriptors":
-			actions = append(actions,
-				model.Action{Summary: fmt.Sprintf("FD exhaustion in ~%.0fm — check for FD leaks", ex.EstMinutes),
-					Command: "ls /proc/*/fd 2>/dev/null | wc -l"})
-		default:
-			if strings.HasPrefix(ex.Resource, "Disk ") {
-				actions = append(actions,
-					model.Action{Summary: fmt.Sprintf("Disk %s exhaustion in ~%.0fm — free space urgently", strings.TrimPrefix(ex.Resource, "Disk "), ex.EstMinutes),
-						Command: "df -h"})
+		actions = append(actions, exhaustionAction(ex))
+	}
+
+	return actions
+}
+
+func cpuActions(result *model.AnalysisResult, primary *model.RCAEntry) []model.Action {
+	var actions []model.Action
+
+	// Show top CPU owners from xtop's own data
+	if len(result.CPUOwners) > 0 {
+		var top []string
+		for i, o := range result.CPUOwners {
+			if i >= 3 {
+				break
 			}
+			if o.PID > 0 {
+				top = append(top, fmt.Sprintf("%s(PID %d) %.1f%%", o.Name, o.PID, o.Pct))
+			} else {
+				top = append(top, fmt.Sprintf("%s %.1f%%", o.Name, o.Pct))
+			}
+		}
+		actions = append(actions, model.Action{
+			Summary: fmt.Sprintf("Top CPU consumers: %s", strings.Join(top, ", ")),
+		})
+	}
+
+	if primary == nil {
+		return actions
+	}
+
+	for _, c := range primary.Checks {
+		if !c.Passed {
+			continue
+		}
+		switch c.Group {
+		case "cpu.cgroup.throttle":
+			actions = append(actions, model.Action{
+				Summary: fmt.Sprintf("Cgroup CPU throttling detected: %s — increase cpu.max quota or reduce load", c.Value),
+			})
+		case "cpu.steal":
+			actions = append(actions, model.Action{
+				Summary: fmt.Sprintf("CPU steal: %s — VM is overcommitted on hypervisor, migrate or resize", c.Value),
+			})
+		case "cpu.runqueue":
+			actions = append(actions, model.Action{
+				Summary: fmt.Sprintf("Run queue saturated: %s — more threads than CPUs, reduce parallelism or scale out", c.Value),
+			})
+		case "cpu.softirq":
+			actions = append(actions, model.Action{
+				Summary: fmt.Sprintf("High softirq CPU: %s — network interrupt storm or packet flood", c.Value),
+			})
 		}
 	}
 
 	return actions
+}
+
+func memActions(result *model.AnalysisResult, primary *model.RCAEntry) []model.Action {
+	var actions []model.Action
+
+	// Show top memory owners
+	if len(result.MemOwners) > 0 {
+		var top []string
+		for i, o := range result.MemOwners {
+			if i >= 3 {
+				break
+			}
+			if o.PID > 0 {
+				top = append(top, fmt.Sprintf("%s(PID %d) %s", o.Name, o.PID, o.Value))
+			} else {
+				top = append(top, fmt.Sprintf("%s %s", o.Name, o.Value))
+			}
+		}
+		actions = append(actions, model.Action{
+			Summary: fmt.Sprintf("Top memory consumers: %s", strings.Join(top, ", ")),
+		})
+	}
+
+	if primary == nil {
+		return actions
+	}
+
+	for _, c := range primary.Checks {
+		if !c.Passed {
+			continue
+		}
+		switch c.Group {
+		case "mem.swap.activity":
+			actions = append(actions, model.Action{
+				Summary: fmt.Sprintf("Active swapping: %s — system is thrashing, reduce memory usage or add RAM", c.Value),
+			})
+		case "mem.reclaim.direct":
+			actions = append(actions, model.Action{
+				Summary: fmt.Sprintf("Direct reclaim active: %s — kernel stalling to free memory", c.Value),
+			})
+		case "mem.oom.kills":
+			actions = append(actions, model.Action{
+				Summary: fmt.Sprintf("OOM kills occurred: %s — processes being killed by kernel", c.Value),
+			})
+		case "mem.available.low":
+			actions = append(actions, model.Action{
+				Summary: fmt.Sprintf("Available memory critically low: %s — risk of OOM", c.Value),
+			})
+		}
+	}
+
+	return actions
+}
+
+func ioActions(result *model.AnalysisResult, primary *model.RCAEntry) []model.Action {
+	var actions []model.Action
+
+	// Show top IO owners
+	if len(result.IOOwners) > 0 {
+		var top []string
+		for i, o := range result.IOOwners {
+			if i >= 3 {
+				break
+			}
+			if o.PID > 0 {
+				top = append(top, fmt.Sprintf("%s(PID %d) %s", o.Name, o.PID, o.Value))
+			} else {
+				top = append(top, fmt.Sprintf("%s %s", o.Name, o.Value))
+			}
+		}
+		actions = append(actions, model.Action{
+			Summary: fmt.Sprintf("Top IO consumers: %s", strings.Join(top, ", ")),
+		})
+	}
+
+	if primary == nil {
+		return actions
+	}
+
+	for _, c := range primary.Checks {
+		if !c.Passed {
+			continue
+		}
+		switch c.Group {
+		case "io.fsfull":
+			// Show actual filesystem data from DiskGuard
+			if len(result.DiskGuardMounts) > 0 {
+				for _, m := range result.DiskGuardMounts {
+					if m.State == "CRIT" || m.State == "WARN" {
+						eta := "stable"
+						if m.ETASeconds > 0 {
+							eta = fmt.Sprintf("~%.0fm to full", m.ETASeconds/60)
+						}
+						actions = append(actions, model.Action{
+							Summary: fmt.Sprintf("Filesystem %s at %.1f%% used (%s) — %s",
+								m.MountPoint, m.UsedPct, m.Device, eta),
+						})
+					}
+				}
+			} else {
+				actions = append(actions, model.Action{
+					Summary: fmt.Sprintf("Filesystem pressure: %s — check DiskGuard page (D)", c.Value),
+				})
+			}
+		case "io.writeback":
+			actions = append(actions, model.Action{
+				Summary: fmt.Sprintf("Heavy dirty page writeback: %s — large write burst or flushing backlog", c.Value),
+			})
+		case "io.latency":
+			actions = append(actions, model.Action{
+				Summary: fmt.Sprintf("High disk latency: %s — storage overloaded, check IOPS limits", c.Value),
+			})
+		case "io.dstate":
+			actions = append(actions, model.Action{
+				Summary: fmt.Sprintf("Processes stuck in D-state (uninterruptible IO): %s", c.Value),
+			})
+		}
+	}
+
+	return actions
+}
+
+func netActions(result *model.AnalysisResult, primary *model.RCAEntry) []model.Action {
+	var actions []model.Action
+
+	// Show top net owners
+	if len(result.NetOwners) > 0 {
+		var top []string
+		for i, o := range result.NetOwners {
+			if i >= 3 {
+				break
+			}
+			top = append(top, fmt.Sprintf("%s %s", o.Name, o.Value))
+		}
+		actions = append(actions, model.Action{
+			Summary: fmt.Sprintf("Top network consumers: %s", strings.Join(top, ", ")),
+		})
+	}
+
+	if primary == nil {
+		return actions
+	}
+
+	for _, c := range primary.Checks {
+		if !c.Passed {
+			continue
+		}
+		switch c.Group {
+		case "net.drops":
+			actions = append(actions, model.Action{
+				Summary: fmt.Sprintf("Packet drops detected: %s — NIC ring buffer overflow or backpressure", c.Value),
+			})
+		case "net.retrans":
+			actions = append(actions, model.Action{
+				Summary: fmt.Sprintf("TCP retransmissions: %s — network congestion or remote host issues", c.Value),
+			})
+		case "net.conntrack":
+			actions = append(actions, model.Action{
+				Summary: fmt.Sprintf("Conntrack table pressure: %s — nf_conntrack_max may need increase", c.Value),
+			})
+		case "net.tcp.state":
+			actions = append(actions, model.Action{
+				Summary: fmt.Sprintf("TCP state anomaly: %s — TIME_WAIT accumulation or SYN backlog", c.Value),
+			})
+		case "net.closewait":
+			cwSummary := fmt.Sprintf("CLOSE_WAIT leak: %s", c.Value)
+			if len(result.CloseWaitLeakers) > 0 {
+				top := result.CloseWaitLeakers[0]
+				cwSummary = fmt.Sprintf("CLOSE_WAIT leak: %s (PID %d) holding %d stale sockets, oldest %s — app not calling close()",
+					top.Comm, top.PID, top.Count, fmtAge(top.OldestAge))
+			}
+			actions = append(actions, model.Action{
+				Summary: cwSummary,
+			})
+		case "net.errors":
+			actions = append(actions, model.Action{
+				Summary: fmt.Sprintf("Interface errors: %s — check cable/NIC health", c.Value),
+			})
+		}
+	}
+
+	return actions
+}
+
+func exhaustionAction(ex model.ExhaustionPrediction) model.Action {
+	switch ex.Resource {
+	case "Memory":
+		return model.Action{
+			Summary: fmt.Sprintf("Memory exhaustion in ~%.0fm (%.1f%% used, growing %.2f%%/s) — identify growing process or add RAM",
+				ex.EstMinutes, ex.CurrentPct, ex.TrendPerS),
+		}
+	case "Swap":
+		return model.Action{
+			Summary: fmt.Sprintf("Swap exhaustion in ~%.0fm (%.1f%% used) — reduce memory pressure to stop swapping",
+				ex.EstMinutes, ex.CurrentPct),
+		}
+	case "Ephemeral ports":
+		return model.Action{
+			Summary: fmt.Sprintf("Port exhaustion in ~%.0fm (%.1f%% used) — connection churn too high, check TIME_WAIT accumulation",
+				ex.EstMinutes, ex.CurrentPct),
+		}
+	case "File descriptors":
+		return model.Action{
+			Summary: fmt.Sprintf("FD exhaustion in ~%.0fm (%.1f%% used) — file descriptor leak in progress",
+				ex.EstMinutes, ex.CurrentPct),
+		}
+	case "CLOSE_WAIT sockets":
+		return model.Action{
+			Summary: fmt.Sprintf("CLOSE_WAIT growing — %.0f sockets at +%.1f/s, will exhaust FDs. Check Network page (4)",
+				ex.CurrentPct, ex.TrendPerS),
+		}
+	default:
+		if strings.HasPrefix(ex.Resource, "Disk ") {
+			mount := strings.TrimPrefix(ex.Resource, "Disk ")
+			return model.Action{
+				Summary: fmt.Sprintf("Disk %s exhaustion in ~%.0fm (%.1f%% full) — see DiskGuard page (D) for top writers and big files",
+					mount, ex.EstMinutes, ex.CurrentPct),
+			}
+		}
+		return model.Action{
+			Summary: fmt.Sprintf("%s exhaustion in ~%.0fm (%.1f%% used)", ex.Resource, ex.EstMinutes, ex.CurrentPct),
+		}
+	}
+}
+
+// knownService maps a process comm name to a known diagnosable service name.
+// Returns "" if the process is not a recognized service.
+func knownService(comm string) string {
+	comm = strings.ToLower(comm)
+	switch {
+	case comm == "nginx" || comm == "nginx:" || strings.HasPrefix(comm, "nginx"):
+		return "Nginx"
+	case comm == "apache2" || comm == "httpd" || strings.HasPrefix(comm, "apache"):
+		return "Apache"
+	case comm == "mysqld" || comm == "mariadbd" || comm == "mysql":
+		return "MySQL"
+	case comm == "postgres" || strings.HasPrefix(comm, "postgres"):
+		return "PostgreSQL"
+	case comm == "redis-server" || comm == "redis" || strings.HasPrefix(comm, "redis"):
+		return "Redis"
+	case comm == "haproxy":
+		return "HAProxy"
+	case comm == "dockerd" || comm == "containerd" || comm == "docker":
+		return "Docker"
+	default:
+		return ""
+	}
 }

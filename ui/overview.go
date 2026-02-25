@@ -1251,18 +1251,50 @@ func renderRCAInline(result *model.AnalysisResult) string {
 	return sb.String()
 }
 
-// renderProbeStatusLine renders the probe status. Always produces exactly 1 line.
+// renderProbeStatusLine renders the sentinel + probe status. Always produces exactly 1 line.
 // Pass nil for idle state (no probe engine available yet).
-func renderProbeStatusLine(pm probeQuerier) string {
+func renderProbeStatusLine(pm probeQuerier, snap *model.Snapshot) string {
 	var sb strings.Builder
 	sb.WriteString(" ")
+
+	// Sentinel status
+	if snap != nil && snap.Global.Sentinel.Active {
+		sb.WriteString(titleStyle.Render("Sentinel:"))
+		sb.WriteString(" ")
+		sent := snap.Global.Sentinel
+		// Show key rates inline
+		var parts []string
+		if sent.PktDropRate > 0 {
+			parts = append(parts, fmt.Sprintf("Drops:%.0f/s", sent.PktDropRate))
+		}
+		if sent.TCPResetRate > 0 {
+			parts = append(parts, fmt.Sprintf("RSTs:%.0f/s", sent.TCPResetRate))
+		}
+		if sent.RetransRate > 0 {
+			parts = append(parts, fmt.Sprintf("Retrans:%.0f/s", sent.RetransRate))
+		}
+		if sent.ThrottleRate > 0 {
+			parts = append(parts, fmt.Sprintf("Throttle:%.0f/s", sent.ThrottleRate))
+		}
+		if len(sent.OOMKills) > 0 {
+			parts = append(parts, fmt.Sprintf("OOM:%d", len(sent.OOMKills)))
+		}
+		if len(parts) == 0 {
+			sb.WriteString(okStyle.Render("ok"))
+		} else {
+			sb.WriteString(warnStyle.Render(strings.Join(parts, " ")))
+		}
+		sb.WriteString(dimStyle.Render(" | "))
+	}
+
+	// Probe status
 	sb.WriteString(titleStyle.Render("Probe:"))
 	sb.WriteString(" ")
 
 	if pm == nil || pm.ProbeState() == 0 {
 		sb.WriteString(dimStyle.Render("idle"))
 		sb.WriteString(dimStyle.Render(
-			" | Press I to run 10s probe (off-CPU / IO latency / lock waits / retrans)"))
+			" | Press I to run 10s deep dive"))
 		sb.WriteString("\n")
 		return sb.String()
 	}

@@ -34,6 +34,14 @@ var evidenceWeightCategory = map[string]string{
 	"net.conntrack":        "queue",
 	"net.softirq":          "secondary",
 	"net.tcp.state":        "secondary",
+	"net.closewait":        "queue",
+
+	// Sentinel evidence
+	"net.sentinel.drops":    "latency",
+	"net.sentinel.resets":   "latency",
+	"mem.sentinel.oom":      "psi",
+	"mem.sentinel.reclaim":  "queue",
+	"cpu.sentinel.throttle": "latency",
 }
 
 // emitEvidence creates a v2 Evidence object with smooth normalization.

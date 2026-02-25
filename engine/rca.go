@@ -99,6 +99,9 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History) 
 	// Propagate system identity
 	result.SysInfo = curr.SysInfo
 
+	// Copy CLOSE_WAIT leakers for actions access
+	result.CloseWaitLeakers = curr.Global.CloseWaitLeakers
+
 	// DiskGuard state
 	if rates != nil && len(rates.MountRates) > 0 {
 		result.DiskGuardMounts = rates.MountRates
@@ -353,6 +356,22 @@ func analyzeMemory(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEnt
 			nil, nil),
 	)
 
+	// Sentinel: BPF-measured OOM kills and direct reclaim stalls
+	if sent := curr.Global.Sentinel; sent.Active {
+		if len(sent.OOMKills) > 0 {
+			r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("mem.sentinel.oom", model.DomainMemory,
+				float64(len(sent.OOMKills)), 1, 1, true, 1.0,
+				fmt.Sprintf("BPF OOM kills=%d (PID %d %s)", len(sent.OOMKills), sent.OOMKills[0].VictimPID, sent.OOMKills[0].VictimComm), "1s",
+				nil, nil))
+		}
+		if sent.ReclaimStallMs > 0 {
+			r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("mem.sentinel.reclaim", model.DomainMemory,
+				sent.ReclaimStallMs, 1, 100, true, 0.95,
+				fmt.Sprintf("BPF reclaim stall=%.0fms", sent.ReclaimStallMs), "1s",
+				nil, nil))
+		}
+	}
+
 	// v2 scoring
 	v2Score := weightedDomainScore(r.EvidenceV2)
 	if !v2TrustGate(r.EvidenceV2) {
@@ -502,6 +521,20 @@ func analyzeCPU(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEntry 
 			nil, map[string]string{"cgroup": maxThrottleCg}),
 	)
 
+	// Sentinel: BPF-measured cgroup throttle events
+	if sent := curr.Global.Sentinel; sent.Active {
+		if sent.ThrottleRate > 0 {
+			topCg := ""
+			if len(sent.CgThrottles) > 0 {
+				topCg = sent.CgThrottles[0].CgPath
+			}
+			r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("cpu.sentinel.throttle", model.DomainCPU,
+				sent.ThrottleRate, 1, 50, true, 0.95,
+				fmt.Sprintf("BPF throttle=%.0f/s (%s)", sent.ThrottleRate, topCg), "1s",
+				nil, nil))
+		}
+	}
+
 	// v2 scoring
 	v2Score := weightedDomainScore(r.EvidenceV2)
 	if !v2TrustGate(r.EvidenceV2) {
@@ -608,11 +641,8 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEn
 	if rates.OutSegRate > 0 {
 		retransRatio = retransRate / rates.OutSegRate * 100
 	}
-	// Composite TCP state: use whichever is worst, scaled to TIME_WAIT range
+	// Composite TCP state: TIME_WAIT + SYN_SENT (CLOSE_WAIT split to net.closewait)
 	tcpStateVal := float64(st.TimeWait)
-	if cwScaled := float64(st.CloseWait) * 100; cwScaled > tcpStateVal {
-		tcpStateVal = cwScaled
-	}
 	if synScaled := float64(st.SynSent) * 200; synScaled > tcpStateVal {
 		tcpStateVal = synScaled
 	}
@@ -640,7 +670,38 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEn
 			nil, nil),
 		emitEvidence("net.tcp.state", model.DomainNetwork,
 			tcpStateVal, w5, c5, false, 0.6,
-			fmt.Sprintf("TW=%d CW=%d SYN=%d", st.TimeWait, st.CloseWait, st.SynSent), "1s",
+			fmt.Sprintf("TW=%d SYN=%d", st.TimeWait, st.SynSent), "1s",
+			nil, nil),
+	)
+
+	// Sentinel: BPF-measured packet drops and TCP resets
+	if sent := curr.Global.Sentinel; sent.Active {
+		if sent.PktDropRate > 0 {
+			r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("net.sentinel.drops", model.DomainNetwork,
+				sent.PktDropRate, 1, 100, true, 0.95,
+				fmt.Sprintf("BPF pkt drops=%.0f/s", sent.PktDropRate), "1s",
+				nil, nil))
+		}
+		if sent.TCPResetRate > 0 {
+			r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("net.sentinel.resets", model.DomainNetwork,
+				sent.TCPResetRate, 1, 50, true, 0.95,
+				fmt.Sprintf("BPF TCP RSTs=%.0f/s", sent.TCPResetRate), "1s",
+				nil, nil))
+		}
+	}
+
+	// Dedicated CLOSE_WAIT evidence with per-PID attribution
+	w6, c6 := threshold("net.closewait", 50, 500)
+	cwMsg := fmt.Sprintf("CLOSE_WAIT=%d", st.CloseWait)
+	if len(curr.Global.CloseWaitLeakers) > 0 {
+		top := curr.Global.CloseWaitLeakers[0]
+		cwMsg = fmt.Sprintf("CLOSE_WAIT=%d — %s(PID %d) holds %d, oldest %s",
+			st.CloseWait, top.Comm, top.PID, top.Count, fmtAge(top.OldestAge))
+	}
+	r.EvidenceV2 = append(r.EvidenceV2,
+		emitEvidence("net.closewait", model.DomainNetwork,
+			float64(st.CloseWait), w6, c6, true, 0.8,
+			cwMsg, "1s",
 			nil, nil),
 	)
 
@@ -681,8 +742,14 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEn
 	if st.TimeWait > 5000 {
 		r.Evidence = append(r.Evidence, fmt.Sprintf("TIME_WAIT=%d (port exhaustion risk)", st.TimeWait))
 	}
-	if st.CloseWait > 100 {
-		r.Evidence = append(r.Evidence, fmt.Sprintf("CLOSE_WAIT=%d (app not closing)", st.CloseWait))
+	if st.CloseWait > 20 {
+		cwEvStr := fmt.Sprintf("CLOSE_WAIT=%d (app not closing)", st.CloseWait)
+		if len(curr.Global.CloseWaitLeakers) > 0 {
+			top := curr.Global.CloseWaitLeakers[0]
+			cwEvStr = fmt.Sprintf("CLOSE_WAIT=%d — %s(PID %d) holds %d, oldest %s",
+				st.CloseWait, top.Comm, top.PID, top.Count, fmtAge(top.OldestAge))
+		}
+		r.Evidence = append(r.Evidence, cwEvStr)
 	}
 	if totalErrors > 1 {
 		r.Evidence = append(r.Evidence, fmt.Sprintf("Network errors=%.0f/s", totalErrors))
@@ -920,5 +987,21 @@ func cap100(score *int) {
 	if *score > 100 {
 		*score = 100
 	}
+}
+
+// fmtAge formats seconds as a human-readable duration (e.g. "23m", "1h12m", "45s").
+func fmtAge(seconds int) string {
+	if seconds < 60 {
+		return fmt.Sprintf("%ds", seconds)
+	}
+	if seconds < 3600 {
+		return fmt.Sprintf("%dm", seconds/60)
+	}
+	h := seconds / 3600
+	m := (seconds % 3600) / 60
+	if m == 0 {
+		return fmt.Sprintf("%dh", h)
+	}
+	return fmt.Sprintf("%dh%dm", h, m)
 }
 

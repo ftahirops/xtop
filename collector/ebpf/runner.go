@@ -21,7 +21,16 @@ type ProbeResults struct {
 	NetThroughput []NetThroughputResult
 	TCPRTT        []TCPRTTResult
 	TCPConnLat    []TCPConnLatResult
-	Errors        []string
+
+	// Watchdog probe results
+	RunQLat        []RunQLatResult
+	WBStall        []WBStallResult
+	PgFault        []PgFaultResult
+	SwapEvict      []SwapEvictResult
+	SyscallDissect []SyscallDissectResult
+	SockIO         []SockIOResult
+
+	Errors []string
 }
 
 // RunProbe attaches all available eBPF probes, collects data for the given
@@ -252,6 +261,63 @@ func RunProbeCtx(ctx context.Context, duration time.Duration) (*ProbeResults, er
 		})
 	}
 
+	// Attach syscall dissect
+	sd, err := attachSyscallDissect()
+	if err != nil {
+		results.Errors = append(results.Errors, "syscalldissect: "+err.Error())
+	} else {
+		packs = append(packs, packEntry{
+			name: "syscalldissect",
+			reader: func() error {
+				r, err := sd.read()
+				if err != nil {
+					return err
+				}
+				filtered := r[:0]
+				for _, e := range r {
+					if e.PID != selfPID && e.PID > 100 {
+						filtered = append(filtered, e)
+					}
+				}
+				sort.Slice(filtered, func(i, j int) bool { return filtered[i].TotalNs > filtered[j].TotalNs })
+				results.SyscallDissect = filtered
+				return nil
+			},
+			closer: sd.close,
+		})
+	}
+
+	// Attach socket IO attribution
+	sio, err := attachSockIO()
+	if err != nil {
+		results.Errors = append(results.Errors, "sockio: "+err.Error())
+	} else {
+		packs = append(packs, packEntry{
+			name: "sockio",
+			reader: func() error {
+				r, err := sio.read()
+				if err != nil {
+					return err
+				}
+				filtered := r[:0]
+				for _, e := range r {
+					if e.PID != selfPID {
+						filtered = append(filtered, e)
+					}
+				}
+				sort.Slice(filtered, func(i, j int) bool {
+					return (filtered[i].TxBytes + filtered[i].RxBytes) > (filtered[j].TxBytes + filtered[j].RxBytes)
+				})
+				if len(filtered) > 20 {
+					filtered = filtered[:20]
+				}
+				results.SockIO = filtered
+				return nil
+			},
+			closer: sio.close,
+		})
+	}
+
 	if len(packs) == 0 {
 		return nil, fmt.Errorf("no probes attached: %v", results.Errors)
 	}
@@ -346,6 +412,368 @@ func filterLockWait(raw []LockWaitResult, selfPID uint32, durationNs uint64) []L
 		out = append(out, r)
 	}
 	return out
+}
+
+// domainPacks maps RCA bottleneck names to probe pack names.
+var domainPacks = map[string][]string{
+	"CPU Contention":   {"offcpu", "runqlat", "syscalldissect"},
+	"IO Starvation":    {"iolatency", "wbstall"},
+	"Network Overload": {"tcprtt", "netthroughput", "sockio"},
+	"Memory Pressure":  {"pgfault", "swapevict"},
+}
+
+// RunProbeCtxDomain runs only the probes relevant to a specific domain.
+func RunProbeCtxDomain(duration time.Duration, domain string) (*ProbeResults, error) {
+	packs, ok := domainPacks[domain]
+	if !ok {
+		return nil, fmt.Errorf("unknown domain: %s", domain)
+	}
+
+	cap := Detect()
+	if !cap.Available {
+		return nil, fmt.Errorf("eBPF not available: %s", cap.Reason)
+	}
+
+	selfPID := uint32(os.Getpid())
+	durationNs := uint64(duration.Nanoseconds())
+	results := &ProbeResults{Duration: duration}
+
+	type packEntry struct {
+		name   string
+		reader func() error
+		closer func()
+	}
+	var attached []packEntry
+
+	packSet := make(map[string]bool)
+	for _, p := range packs {
+		packSet[p] = true
+	}
+
+	// Attach offcpu if needed
+	if packSet["offcpu"] {
+		oc, err := attachOffCPU()
+		if err != nil {
+			results.Errors = append(results.Errors, "offcpu: "+err.Error())
+		} else {
+			attached = append(attached, packEntry{
+				name: "offcpu",
+				reader: func() error {
+					r, err := oc.read()
+					if err != nil {
+						return err
+					}
+					r = filterOffCPU(r, selfPID, durationNs)
+					sort.Slice(r, func(i, j int) bool { return r[i].TotalNs > r[j].TotalNs })
+					if len(r) > 10 {
+						r = r[:10]
+					}
+					results.OffCPU = r
+					return nil
+				},
+				closer: oc.close,
+			})
+		}
+	}
+
+	// Attach runqlat if needed
+	if packSet["runqlat"] {
+		rq, err := attachRunQLat()
+		if err != nil {
+			results.Errors = append(results.Errors, "runqlat: "+err.Error())
+		} else {
+			attached = append(attached, packEntry{
+				name: "runqlat",
+				reader: func() error {
+					r, err := rq.read()
+					if err != nil {
+						return err
+					}
+					filtered := r[:0]
+					for _, e := range r {
+						if e.PID != selfPID && e.PID > 100 {
+							filtered = append(filtered, e)
+						}
+					}
+					sort.Slice(filtered, func(i, j int) bool { return filtered[i].TotalNs > filtered[j].TotalNs })
+					if len(filtered) > 10 {
+						filtered = filtered[:10]
+					}
+					results.RunQLat = filtered
+					return nil
+				},
+				closer: rq.close,
+			})
+		}
+	}
+
+	// Attach iolatency if needed
+	if packSet["iolatency"] {
+		io, err := attachIOLatency()
+		if err != nil {
+			results.Errors = append(results.Errors, "iolatency: "+err.Error())
+		} else {
+			attached = append(attached, packEntry{
+				name: "iolatency",
+				reader: func() error {
+					perPID, err := io.read()
+					if err != nil {
+						return err
+					}
+					filtered := perPID[:0]
+					for _, r := range perPID {
+						if r.PID != selfPID {
+							filtered = append(filtered, r)
+						}
+					}
+					devResults := aggregateByDevice(filtered)
+					sort.Slice(devResults, func(i, j int) bool { return devResults[i].P95Ns > devResults[j].P95Ns })
+					results.IOLatency = devResults
+					return nil
+				},
+				closer: io.close,
+			})
+		}
+	}
+
+	// Attach wbstall if needed
+	if packSet["wbstall"] {
+		wb, err := attachWBStall()
+		if err != nil {
+			results.Errors = append(results.Errors, "wbstall: "+err.Error())
+		} else {
+			attached = append(attached, packEntry{
+				name: "wbstall",
+				reader: func() error {
+					r, err := wb.read()
+					if err != nil {
+						return err
+					}
+					filtered := r[:0]
+					for _, e := range r {
+						if e.PID != selfPID && e.PID > 100 {
+							filtered = append(filtered, e)
+						}
+					}
+					sort.Slice(filtered, func(i, j int) bool { return filtered[i].Count > filtered[j].Count })
+					if len(filtered) > 10 {
+						filtered = filtered[:10]
+					}
+					results.WBStall = filtered
+					return nil
+				},
+				closer: wb.close,
+			})
+		}
+	}
+
+	// Attach tcprtt if needed
+	if packSet["tcprtt"] {
+		rtt, err := attachTCPRTT()
+		if err != nil {
+			results.Errors = append(results.Errors, "tcprtt: "+err.Error())
+		} else {
+			attached = append(attached, packEntry{
+				name: "tcprtt",
+				reader: func() error {
+					r, err := rtt.read()
+					if err != nil {
+						return err
+					}
+					sort.Slice(r, func(i, j int) bool {
+						avgI := float64(r[i].SumUs) / float64(r[i].Count)
+						avgJ := float64(r[j].SumUs) / float64(r[j].Count)
+						return avgI > avgJ
+					})
+					if len(r) > 10 {
+						r = r[:10]
+					}
+					results.TCPRTT = r
+					return nil
+				},
+				closer: rtt.close,
+			})
+		}
+	}
+
+	// Attach netthroughput if needed
+	if packSet["netthroughput"] {
+		nt, err := attachNetThroughput()
+		if err != nil {
+			results.Errors = append(results.Errors, "netthroughput: "+err.Error())
+		} else {
+			attached = append(attached, packEntry{
+				name: "netthroughput",
+				reader: func() error {
+					r, err := nt.read()
+					if err != nil {
+						return err
+					}
+					filtered := r[:0]
+					for _, e := range r {
+						if e.PID != selfPID {
+							filtered = append(filtered, e)
+						}
+					}
+					sort.Slice(filtered, func(i, j int) bool {
+						return (filtered[i].TxBytes + filtered[i].RxBytes) > (filtered[j].TxBytes + filtered[j].RxBytes)
+					})
+					if len(filtered) > 10 {
+						filtered = filtered[:10]
+					}
+					results.NetThroughput = filtered
+					return nil
+				},
+				closer: nt.close,
+			})
+		}
+	}
+
+	// Attach pgfault if needed
+	if packSet["pgfault"] {
+		pf, err := attachPgFault()
+		if err != nil {
+			results.Errors = append(results.Errors, "pgfault: "+err.Error())
+		} else {
+			attached = append(attached, packEntry{
+				name: "pgfault",
+				reader: func() error {
+					r, err := pf.read()
+					if err != nil {
+						return err
+					}
+					filtered := r[:0]
+					for _, e := range r {
+						if e.PID != selfPID && e.PID > 100 {
+							filtered = append(filtered, e)
+						}
+					}
+					sort.Slice(filtered, func(i, j int) bool { return filtered[i].TotalNs > filtered[j].TotalNs })
+					if len(filtered) > 10 {
+						filtered = filtered[:10]
+					}
+					results.PgFault = filtered
+					return nil
+				},
+				closer: pf.close,
+			})
+		}
+	}
+
+	// Attach swapevict if needed
+	if packSet["swapevict"] {
+		se, err := attachSwapEvict()
+		if err != nil {
+			results.Errors = append(results.Errors, "swapevict: "+err.Error())
+		} else {
+			attached = append(attached, packEntry{
+				name: "swapevict",
+				reader: func() error {
+					r, err := se.read()
+					if err != nil {
+						return err
+					}
+					filtered := r[:0]
+					for _, e := range r {
+						if e.PID != selfPID && e.PID > 100 {
+							filtered = append(filtered, e)
+						}
+					}
+					sort.Slice(filtered, func(i, j int) bool {
+						return (filtered[i].ReadPages + filtered[i].WritePages) > (filtered[j].ReadPages + filtered[j].WritePages)
+					})
+					if len(filtered) > 10 {
+						filtered = filtered[:10]
+					}
+					results.SwapEvict = filtered
+					return nil
+				},
+				closer: se.close,
+			})
+		}
+	}
+
+	// Attach syscall dissect if needed
+	if packSet["syscalldissect"] {
+		sd, err := attachSyscallDissect()
+		if err != nil {
+			results.Errors = append(results.Errors, "syscalldissect: "+err.Error())
+		} else {
+			attached = append(attached, packEntry{
+				name: "syscalldissect",
+				reader: func() error {
+					r, err := sd.read()
+					if err != nil {
+						return err
+					}
+					filtered := r[:0]
+					for _, e := range r {
+						if e.PID != selfPID && e.PID > 100 {
+							filtered = append(filtered, e)
+						}
+					}
+					sort.Slice(filtered, func(i, j int) bool { return filtered[i].TotalNs > filtered[j].TotalNs })
+					results.SyscallDissect = filtered
+					return nil
+				},
+				closer: sd.close,
+			})
+		}
+	}
+
+	// Attach socket IO attribution if needed
+	if packSet["sockio"] {
+		sio, err := attachSockIO()
+		if err != nil {
+			results.Errors = append(results.Errors, "sockio: "+err.Error())
+		} else {
+			attached = append(attached, packEntry{
+				name: "sockio",
+				reader: func() error {
+					r, err := sio.read()
+					if err != nil {
+						return err
+					}
+					filtered := r[:0]
+					for _, e := range r {
+						if e.PID != selfPID {
+							filtered = append(filtered, e)
+						}
+					}
+					sort.Slice(filtered, func(i, j int) bool {
+						return (filtered[i].TxBytes + filtered[i].RxBytes) > (filtered[j].TxBytes + filtered[j].RxBytes)
+					})
+					if len(filtered) > 20 {
+						filtered = filtered[:20]
+					}
+					results.SockIO = filtered
+					return nil
+				},
+				closer: sio.close,
+			})
+		}
+	}
+
+	if len(attached) == 0 {
+		return nil, fmt.Errorf("no domain probes attached: %v", results.Errors)
+	}
+
+	// Collect for duration
+	time.Sleep(duration)
+
+	// Read all maps
+	for _, p := range attached {
+		if err := p.reader(); err != nil {
+			results.Errors = append(results.Errors, p.name+" read: "+err.Error())
+		}
+	}
+
+	// Close all probes
+	for _, p := range attached {
+		p.closer()
+	}
+
+	return results, nil
 }
 
 // isKernelWorker returns true for known kernel thread names that aren't useful.

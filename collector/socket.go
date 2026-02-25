@@ -13,13 +13,27 @@ import (
 	"github.com/ftahirops/xtop/util"
 )
 
+// cwSocketInfo holds parsed info about a CLOSE_WAIT socket for PID resolution.
+type cwSocketInfo struct {
+	remoteAddr string    // "ip:port"
+	firstSeen  time.Time // when this socket was first observed in CLOSE_WAIT
+}
+
 // SocketCollector reads /proc/net/sockstat and /proc/net/tcp for connection states.
 type SocketCollector struct {
 	portUsersCache    []model.PortUser
-	portUsersCacheAt  time.Time
+	cwLeakersCache    []model.CloseWaitLeaker
+	cacheAt           time.Time
+
+	// CLOSE_WAIT age tracking: key = "local_hex->remote_hex", value = first seen time
+	cwFirstSeen  map[string]time.Time
+
+	// Growth trend tracking
+	cwPrevCount  int
+	cwGrowthEWMA float64
 }
 
-const portUsersCacheTTL = 5 * time.Second
+const socketCacheTTL = 5 * time.Second
 
 func (s *SocketCollector) Name() string { return "socket" }
 
@@ -113,6 +127,15 @@ func (s *SocketCollector) collectTCPStates(snap *model.Snapshot) {
 	// inode -> state (only for non-TIME_WAIT ephemeral connections, since TIME_WAIT inode=0)
 	ephInodes := make(map[uint64]int)
 
+	// Track CLOSE_WAIT inodes for per-PID attribution
+	cwInodes := make(map[uint64]cwSocketInfo)
+	cwSeenKeys := make(map[string]bool) // keys seen this tick, for pruning cwFirstSeen
+
+	now := time.Now()
+	if s.cwFirstSeen == nil {
+		s.cwFirstSeen = make(map[string]time.Time)
+	}
+
 	for _, path := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
 		lines, err := util.ReadFileLines(path)
 		if err != nil {
@@ -154,6 +177,22 @@ func (s *SocketCollector) collectTCPStates(snap *model.Snapshot) {
 				st.Listen++
 			case 0x0B:
 				st.Closing++
+			}
+
+			// CLOSE_WAIT tracking: build socket key, track first-seen time, collect inode
+			if state == 0x08 {
+				socketKey := fields[1] + "->" + fields[2]
+				cwSeenKeys[socketKey] = true
+				if _, ok := s.cwFirstSeen[socketKey]; !ok {
+					s.cwFirstSeen[socketKey] = now
+				}
+				inode := util.ParseUint64(fields[9])
+				if inode > 0 {
+					cwInodes[inode] = cwSocketInfo{
+						remoteAddr: parseFullAddr(fields[2]),
+						firstSeen:  s.cwFirstSeen[socketKey],
+					}
+				}
 			}
 
 			// Ephemeral port tracking (local_address is fields[1])
@@ -203,6 +242,13 @@ func (s *SocketCollector) collectTCPStates(snap *model.Snapshot) {
 		}
 	}
 
+	// Prune cwFirstSeen of sockets no longer in CLOSE_WAIT
+	for key := range s.cwFirstSeen {
+		if !cwSeenKeys[key] {
+			delete(s.cwFirstSeen, key)
+		}
+	}
+
 	// Sort remote IPs by total connections, keep top 10
 	type ipEntry struct {
 		ip  string
@@ -228,45 +274,72 @@ func (s *SocketCollector) collectTCPStates(snap *model.Snapshot) {
 		})
 	}
 
-	// Resolve top ephemeral port users by PID (time-gated: expensive /proc/*/fd scan)
-	if len(ephInodes) > 0 {
-		if time.Since(s.portUsersCacheAt) >= portUsersCacheTTL {
-			s.portUsersCache = resolvePortUsers(ephInodes)
-			s.portUsersCacheAt = time.Now()
+	// Unified PID resolution: ephemeral port users + CLOSE_WAIT leakers (time-gated)
+	if len(ephInodes) > 0 || len(cwInodes) > 0 {
+		if time.Since(s.cacheAt) >= socketCacheTTL {
+			s.portUsersCache, s.cwLeakersCache = resolveSocketOwners(ephInodes, cwInodes, now)
+			s.cacheAt = now
 		}
 		eph.TopUsers = s.portUsersCache
+		snap.Global.CloseWaitLeakers = s.cwLeakersCache
+	}
+
+	// CLOSE_WAIT growth EWMA
+	delta := st.CloseWait - s.cwPrevCount
+	s.cwPrevCount = st.CloseWait
+	s.cwGrowthEWMA = 0.3*float64(delta) + 0.7*s.cwGrowthEWMA
+	snap.Global.CloseWaitTrend = model.CloseWaitTrend{
+		Current:    st.CloseWait,
+		GrowthRate: s.cwGrowthEWMA,
+		Growing:    s.cwGrowthEWMA > 0.5,
 	}
 }
 
-// resolvePortUsers maps socket inodes to PIDs by scanning /proc/*/fd/.
-// Returns top 10 processes by ephemeral port count.
-func resolvePortUsers(ephInodes map[uint64]int) []model.PortUser {
-	type pidAgg struct {
+// resolveSocketOwners maps socket inodes to PIDs by scanning /proc/*/fd/.
+// Resolves both ephemeral port users and CLOSE_WAIT leakers in a single walk.
+// Returns (top 10 port users, top 15 CW leakers sorted by count desc).
+func resolveSocketOwners(ephInodes map[uint64]int, cwInodes map[uint64]cwSocketInfo, now time.Time) ([]model.PortUser, []model.CloseWaitLeaker) {
+	type ephPidAgg struct {
 		comm        string
 		ports       int
 		established int
 		closeWait   int
 	}
-	pidMap := make(map[int]*pidAgg)
+	type cwPidAgg struct {
+		comm       string
+		count      int
+		oldestAge  int
+		newestAge  int
+		remoteIPs  map[string]bool
+	}
+	ephPidMap := make(map[int]*ephPidAgg)
+	cwPidMap := make(map[int]*cwPidAgg)
 
-	// Build target set: "socket:[inode]" strings for fast lookup
-	inodeStrs := make(map[string]int, len(ephInodes))
+	// Build target sets: "socket:[inode]" strings for fast lookup
+	// ephLookup: socket string -> state
+	// cwLookup: socket string -> cwSocketInfo
+	ephLookup := make(map[string]int, len(ephInodes))
 	for inode, state := range ephInodes {
-		inodeStrs[fmt.Sprintf("socket:[%d]", inode)] = state
+		ephLookup[fmt.Sprintf("socket:[%d]", inode)] = state
+	}
+	cwLookup := make(map[string]cwSocketInfo, len(cwInodes))
+	for inode, info := range cwInodes {
+		cwLookup[fmt.Sprintf("socket:[%d]", inode)] = info
 	}
 
-	// Scan /proc/*/fd/ — only readlink entries to find socket owners
+	totalTargets := len(ephInodes) + len(cwInodes)
+
+	// Scan /proc/*/fd/ — single walk for both ephemeral and CW inodes
 	procEntries, err := os.ReadDir("/proc")
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 
 	matched := 0
-	total := len(ephInodes)
 
 	for _, pe := range procEntries {
-		if matched >= total {
-			break // all inodes resolved
+		if matched >= totalTargets {
+			break
 		}
 		if !pe.IsDir() {
 			continue
@@ -282,7 +355,6 @@ func resolvePortUsers(ephInodes map[uint64]int) []model.PortUser {
 			continue
 		}
 
-		// Skip processes with very few FDs (unlikely to be port abusers)
 		if len(fdEntries) < 3 {
 			continue
 		}
@@ -293,48 +365,80 @@ func resolvePortUsers(ephInodes map[uint64]int) []model.PortUser {
 			if err != nil {
 				continue
 			}
-			state, ok := inodeStrs[target]
-			if !ok {
-				continue
+
+			// Check ephemeral inodes
+			if state, ok := ephLookup[target]; ok {
+				if comm == "" {
+					comm = readCommForPID(pid)
+				}
+				agg := ephPidMap[pid]
+				if agg == nil {
+					agg = &ephPidAgg{comm: comm}
+					ephPidMap[pid] = agg
+				}
+				agg.ports++
+				switch state {
+				case 0x01:
+					agg.established++
+				case 0x08:
+					agg.closeWait++
+				}
+				matched++
 			}
-			// Matched — this PID owns this ephemeral port socket
-			if comm == "" {
-				comm = readCommForPID(pid)
+
+			// Check CW inodes
+			if info, ok := cwLookup[target]; ok {
+				if comm == "" {
+					comm = readCommForPID(pid)
+				}
+				agg := cwPidMap[pid]
+				if agg == nil {
+					agg = &cwPidAgg{
+						comm:      comm,
+						oldestAge: 0,
+						newestAge: 999999,
+						remoteIPs: make(map[string]bool),
+					}
+					cwPidMap[pid] = agg
+				}
+				agg.count++
+				ageSec := int(now.Sub(info.firstSeen).Seconds())
+				if ageSec > agg.oldestAge {
+					agg.oldestAge = ageSec
+				}
+				if ageSec < agg.newestAge {
+					agg.newestAge = ageSec
+				}
+				if info.remoteAddr != "" && len(agg.remoteIPs) < 3 {
+					// Extract just the IP (strip port)
+					ip := info.remoteAddr
+					if idx := strings.LastIndex(ip, ":"); idx > 0 {
+						ip = ip[:idx]
+					}
+					agg.remoteIPs[ip] = true
+				}
+				matched++
 			}
-			agg := pidMap[pid]
-			if agg == nil {
-				agg = &pidAgg{comm: comm}
-				pidMap[pid] = agg
-			}
-			agg.ports++
-			switch state {
-			case 0x01:
-				agg.established++
-			case 0x08:
-				agg.closeWait++
-			}
-			matched++
 		}
 	}
 
-	// Sort by port count, keep top 10
-	type pidEntry struct {
+	// Build ephemeral port users result (top 10)
+	type ephEntry struct {
 		pid int
-		agg *pidAgg
+		agg *ephPidAgg
 	}
-	var result []pidEntry
-	for pid, agg := range pidMap {
-		result = append(result, pidEntry{pid, agg})
+	var ephResult []ephEntry
+	for pid, agg := range ephPidMap {
+		ephResult = append(ephResult, ephEntry{pid, agg})
 	}
-	sort.Slice(result, func(i, j int) bool {
-		return result[i].agg.ports > result[j].agg.ports
+	sort.Slice(ephResult, func(i, j int) bool {
+		return ephResult[i].agg.ports > ephResult[j].agg.ports
 	})
-	if len(result) > 10 {
-		result = result[:10]
+	if len(ephResult) > 10 {
+		ephResult = ephResult[:10]
 	}
-
 	var users []model.PortUser
-	for _, r := range result {
+	for _, r := range ephResult {
 		users = append(users, model.PortUser{
 			PID:         r.pid,
 			Comm:        r.agg.comm,
@@ -343,7 +447,43 @@ func resolvePortUsers(ephInodes map[uint64]int) []model.PortUser {
 			CloseWait:   r.agg.closeWait,
 		})
 	}
-	return users
+
+	// Build CLOSE_WAIT leakers result (top 15)
+	type cwEntry struct {
+		pid int
+		agg *cwPidAgg
+	}
+	var cwResult []cwEntry
+	for pid, agg := range cwPidMap {
+		cwResult = append(cwResult, cwEntry{pid, agg})
+	}
+	sort.Slice(cwResult, func(i, j int) bool {
+		return cwResult[i].agg.count > cwResult[j].agg.count
+	})
+	if len(cwResult) > 15 {
+		cwResult = cwResult[:15]
+	}
+	var leakers []model.CloseWaitLeaker
+	for _, r := range cwResult {
+		var remotes []string
+		for ip := range r.agg.remoteIPs {
+			remotes = append(remotes, ip)
+		}
+		newest := r.agg.newestAge
+		if newest == 999999 {
+			newest = 0
+		}
+		leakers = append(leakers, model.CloseWaitLeaker{
+			PID:        r.pid,
+			Comm:       r.agg.comm,
+			Count:      r.agg.count,
+			OldestAge:  r.agg.oldestAge,
+			NewestAge:  newest,
+			TopRemotes: remotes,
+		})
+	}
+
+	return users, leakers
 }
 
 // readCommForPID reads the process command name from /proc/PID/comm.
@@ -380,6 +520,17 @@ func ParseLocalPort(localAddr string) int {
 		return 0
 	}
 	return int(b[0])<<8 | int(b[1])
+}
+
+// parseFullAddr extracts "ip:port" from a /proc/net/tcp address field (hex encoded).
+// Returns empty string on error.
+func parseFullAddr(addr string) string {
+	ip := parseRemoteIP(addr)
+	if ip == "" {
+		return ""
+	}
+	port := ParseLocalPort(addr) // same hex port parsing works for remote too
+	return fmt.Sprintf("%s:%d", ip, port)
 }
 
 // parseRemoteIP extracts the remote IP from a /proc/net/tcp rem_address field.

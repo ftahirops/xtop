@@ -5,6 +5,7 @@ import (
 
 	"github.com/ftahirops/xtop/collector"
 	cgcollector "github.com/ftahirops/xtop/collector/cgroup"
+	bpf "github.com/ftahirops/xtop/collector/ebpf"
 	"github.com/ftahirops/xtop/model"
 )
 
@@ -15,6 +16,8 @@ type Engine struct {
 	History       *History
 	Smart         *collector.SMARTCollector
 	growthTracker *MountGrowthTracker
+	Sentinel      *bpf.SentinelManager
+	Watchdog      *WatchdogTrigger
 }
 
 // NewEngine creates a new engine with all collectors registered.
@@ -23,12 +26,17 @@ func NewEngine(historySize int) *Engine {
 	cgc := cgcollector.NewCollector()
 	reg.Add(cgc)
 
+	sentinel := bpf.NewSentinelManager()
+	reg.Add(sentinel)
+
 	return &Engine{
 		registry:      reg,
 		cgCollect:     cgc,
 		History:       NewHistory(historySize),
 		Smart:         collector.NewSMARTCollector(5 * time.Minute),
 		growthTracker: NewMountGrowthTracker(),
+		Sentinel:      sentinel,
+		Watchdog:      NewWatchdogTrigger(),
 	}
 }
 
@@ -64,6 +72,11 @@ func (e *Engine) Tick() (*model.Snapshot, *model.RateSnapshot, *model.AnalysisRe
 		rates = &r
 		e.History.PushRate(r)
 		result = AnalyzeRCA(snap, rates, e.History)
+
+		// Watchdog auto-trigger: check if RCA warrants domain-specific probes
+		if domain := e.Watchdog.Check(result); domain != "" {
+			result.Watchdog = model.WatchdogState{Active: true, Domain: domain}
+		}
 
 		// Trigger disk scanners when filesystem pressure detected
 		worst := WorstDiskGuardState(r.MountRates)

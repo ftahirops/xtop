@@ -14,7 +14,7 @@ func renderServicesPage(snap *model.Snapshot, rates *model.RateSnapshot, result 
 	sb.WriteString(titleStyle.Render("SERVICE HEALTH & CERTIFICATES"))
 	sb.WriteString("\n")
 	sb.WriteString(renderRCAInline(result))
-	sb.WriteString(renderProbeStatusLine(pm))
+	sb.WriteString(renderProbeStatusLine(pm, snap))
 	sb.WriteString("\n")
 
 	probes := snap.Global.HealthChecks.Probes

@@ -62,7 +62,7 @@ func renderLayoutF(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 
 	// ─── RCA + Probe inline ─────────────────────────────────────────────
 	sb.WriteString(renderRCAInline(result))
-	sb.WriteString(renderProbeStatusLine(pm))
+	sb.WriteString(renderProbeStatusLine(pm, snap))
 	usedLines += 2
 
 	sb.WriteString(separator(width))

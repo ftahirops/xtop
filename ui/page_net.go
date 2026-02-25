@@ -18,7 +18,7 @@ func renderNetPage(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 	sb.WriteString(titleStyle.Render("NETWORK SUBSYSTEM"))
 	sb.WriteString("\n")
 	sb.WriteString(renderRCAInline(result))
-	sb.WriteString(renderProbeStatusLine(pm))
+	sb.WriteString(renderProbeStatusLine(pm, snap))
 	sb.WriteString("\n")
 
 	tcp := snap.Global.TCP
@@ -201,9 +201,18 @@ func renderNetPage(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 				twEphPct, eph.TimeWaitIn, ephRange)))
 		}
 	}
-	if st.CloseWait > 100 {
-		connLines = append(connLines, warnStyle.Render(fmt.Sprintf(
-			"  -> %d CLOSE_WAIT \u2014 app not closing connections (FD leak)", st.CloseWait)))
+	if st.CloseWait > 20 {
+		cwWarn := fmt.Sprintf("  -> %d CLOSE_WAIT \u2014 app not closing connections (FD leak)", st.CloseWait)
+		if len(snap.Global.CloseWaitLeakers) > 0 {
+			top := snap.Global.CloseWaitLeakers[0]
+			cwWarn = fmt.Sprintf("  -> %d CLOSE_WAIT \u2014 %s (PID %d) holds %d, oldest %s",
+				st.CloseWait, top.Comm, top.PID, top.Count, fmtAgeSec(top.OldestAge))
+		}
+		if st.CloseWait > 500 {
+			connLines = append(connLines, critStyle.Render(cwWarn))
+		} else {
+			connLines = append(connLines, warnStyle.Render(cwWarn))
+		}
 	}
 	if st.SynSent > 50 {
 		connLines = append(connLines, warnStyle.Render(fmt.Sprintf(
@@ -216,6 +225,42 @@ func renderNetPage(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 		connLines = append(connLines, warnStyle.Render(fmt.Sprintf("  -> %d orphaned TCP sockets", sock.TCPOrphan)))
 	}
 	sb.WriteString(boxSection("CONNECTIONS", connLines, iw))
+
+	// === CLOSE_WAIT Leakers ===
+	if st.CloseWait > 10 && len(snap.Global.CloseWaitLeakers) > 0 {
+		var cwLines []string
+		trend := snap.Global.CloseWaitTrend
+		trendStr := "stable"
+		if trend.Growing {
+			trendStr = fmt.Sprintf("+%.1f/s growing", trend.GrowthRate)
+		} else if trend.GrowthRate < -0.5 {
+			trendStr = fmt.Sprintf("%.1f/s draining", trend.GrowthRate)
+		}
+		cwLines = append(cwLines, fmt.Sprintf("Total: %d CLOSE_WAIT  (%s)", st.CloseWait, trendStr))
+		cwLines = append(cwLines, dimStyle.Render(fmt.Sprintf("  %-16s %6s %6s  %8s  %8s",
+			"PROCESS", "PID", "COUNT", "OLDEST", "NEWEST")))
+		for _, lk := range snap.Global.CloseWaitLeakers {
+			name := lk.Comm
+			if len(name) > 16 {
+				name = name[:13] + "..."
+			}
+			row := fmt.Sprintf("  %-16s %6d %6d  %8s  %8s",
+				name, lk.PID, lk.Count, fmtAgeSec(lk.OldestAge), fmtAgeSec(lk.NewestAge))
+			if lk.OldestAge > 300 { // > 5 minutes
+				cwLines = append(cwLines, critStyle.Render(row))
+			} else if lk.Count > 10 {
+				cwLines = append(cwLines, warnStyle.Render(row))
+			} else {
+				cwLines = append(cwLines, row)
+			}
+		}
+		if len(snap.Global.CloseWaitLeakers) > 0 {
+			top := snap.Global.CloseWaitLeakers[0]
+			cwLines = append(cwLines, warnStyle.Render(fmt.Sprintf(
+				"  -> %s (PID %d) not closing connections", top.Comm, top.PID)))
+		}
+		sb.WriteString(boxSection("CLOSE_WAIT LEAKERS", cwLines, iw))
+	}
 
 	// === Ephemeral Ports ===
 	if eph.RangeHi > 0 {
@@ -543,6 +588,50 @@ func renderNetPage(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 	}
 	sb.WriteString(boxSection("TOP CONSUMERS (by process IO)", consLines, iw))
 
+	// === BPF Sentinel Network ===
+	sent := snap.Global.Sentinel
+	if sent.Active && (sent.PktDropRate > 0 || sent.TCPResetRate > 0 || sent.RetransRate > 0) {
+		var bpfLines []string
+
+		// Packet drops by reason
+		if sent.PktDropRate > 0 {
+			bpfLines = append(bpfLines, warnStyle.Render(fmt.Sprintf("Packet drops: %.0f/s (BPF kfree_skb)", sent.PktDropRate)))
+			for _, d := range sent.PktDrops {
+				if d.Rate > 0 {
+					bpfLines = append(bpfLines, fmt.Sprintf("  %-24s %6.0f/s", d.ReasonStr, d.Rate))
+				}
+			}
+		}
+
+		// TCP resets by PID
+		if sent.TCPResetRate > 0 {
+			bpfLines = append(bpfLines, warnStyle.Render(fmt.Sprintf("TCP RSTs: %.0f/s (BPF tcp_send_reset)", sent.TCPResetRate)))
+			shown := 0
+			for _, r := range sent.TCPResets {
+				if shown >= 5 || r.Rate <= 0 {
+					break
+				}
+				bpfLines = append(bpfLines, fmt.Sprintf("  %-16s PID %-6d %6.0f/s  dst=%s", r.Comm, r.PID, r.Rate, r.DstStr))
+				shown++
+			}
+		}
+
+		// Always-on retransmit tracking
+		if sent.RetransRate > 0 {
+			bpfLines = append(bpfLines, warnStyle.Render(fmt.Sprintf("Retransmits: %.0f/s (BPF sentinel)", sent.RetransRate)))
+			shown := 0
+			for _, r := range sent.Retransmits {
+				if shown >= 5 || r.Rate <= 0 {
+					break
+				}
+				bpfLines = append(bpfLines, fmt.Sprintf("  %-16s PID %-6d %6.1f/s  dst=%s", r.Comm, r.PID, r.Rate, r.DstStr))
+				shown++
+			}
+		}
+
+		sb.WriteString(boxSection("BPF SENTINEL NETWORK", bpfLines, iw))
+	}
+
 	// === Kernel SoftIRQ ===
 	var kernLines []string
 	kernLines = append(kernLines, fmt.Sprintf("SoftIRQ totals:  NET_RX=%s  NET_TX=%s  BLOCK=%s",
@@ -603,9 +692,24 @@ func analyzeNetHealth(snap *model.Snapshot, rates *model.RateSnapshot) (string, 
 	}
 
 	// CLOSE_WAIT leak
-	if st.CloseWait > 100 {
+	if st.CloseWait > 500 {
+		health = "CRITICAL"
+		cwIssue := fmt.Sprintf("!! CLOSE_WAIT: %d — application connection leak", st.CloseWait)
+		if len(snap.Global.CloseWaitLeakers) > 0 {
+			top := snap.Global.CloseWaitLeakers[0]
+			cwIssue = fmt.Sprintf("!! CLOSE_WAIT: %d — %s (PID %d) holds %d, oldest %s",
+				st.CloseWait, top.Comm, top.PID, top.Count, fmtAgeSec(top.OldestAge))
+		}
+		issues = append(issues, critStyle.Render(cwIssue))
+	} else if st.CloseWait > 100 {
 		health = setWorst(health, "DEGRADED")
-		issues = append(issues, warnStyle.Render(fmt.Sprintf("!  CLOSE_WAIT: %d — application connection leak", st.CloseWait)))
+		cwIssue := fmt.Sprintf("!  CLOSE_WAIT: %d — application connection leak", st.CloseWait)
+		if len(snap.Global.CloseWaitLeakers) > 0 {
+			top := snap.Global.CloseWaitLeakers[0]
+			cwIssue = fmt.Sprintf("!  CLOSE_WAIT: %d — %s (PID %d) holds %d, oldest %s",
+				st.CloseWait, top.Comm, top.PID, top.Count, fmtAgeSec(top.OldestAge))
+		}
+		issues = append(issues, warnStyle.Render(cwIssue))
 	}
 
 	// Conntrack table pressure
@@ -630,6 +734,25 @@ func analyzeNetHealth(snap *model.Snapshot, rates *model.RateSnapshot) (string, 
 	if sock.TCPOrphan > 200 {
 		health = setWorst(health, "DEGRADED")
 		issues = append(issues, warnStyle.Render(fmt.Sprintf("!  Orphaned TCP sockets: %d", sock.TCPOrphan)))
+	}
+
+	// BPF sentinel network signals
+	sentData := snap.Global.Sentinel
+	if sentData.Active {
+		if sentData.PktDropRate > 100 {
+			health = "CRITICAL"
+			issues = append(issues, critStyle.Render(fmt.Sprintf("!! BPF packet drops: %.0f/s (kfree_skb)", sentData.PktDropRate)))
+		} else if sentData.PktDropRate > 10 {
+			health = setWorst(health, "DEGRADED")
+			issues = append(issues, warnStyle.Render(fmt.Sprintf("!  BPF packet drops: %.0f/s", sentData.PktDropRate)))
+		}
+		if sentData.TCPResetRate > 50 {
+			health = "CRITICAL"
+			issues = append(issues, critStyle.Render(fmt.Sprintf("!! BPF TCP RSTs: %.0f/s", sentData.TCPResetRate)))
+		} else if sentData.TCPResetRate > 5 {
+			health = setWorst(health, "DEGRADED")
+			issues = append(issues, warnStyle.Render(fmt.Sprintf("!  BPF TCP RSTs: %.0f/s", sentData.TCPResetRate)))
+		}
 	}
 
 	// SoftIRQ overhead
@@ -677,6 +800,22 @@ func fmtPPS(pps float64) string {
 		return fmt.Sprintf("%.1fK", pps/1000)
 	}
 	return fmt.Sprintf("%.0f", pps)
+}
+
+// fmtAgeSec formats seconds as a human-readable duration (e.g. "23m", "1h12m", "45s").
+func fmtAgeSec(seconds int) string {
+	if seconds < 60 {
+		return fmt.Sprintf("%ds", seconds)
+	}
+	if seconds < 3600 {
+		return fmt.Sprintf("%dm", seconds/60)
+	}
+	h := seconds / 3600
+	m := (seconds % 3600) / 60
+	if m == 0 {
+		return fmt.Sprintf("%dh", h)
+	}
+	return fmt.Sprintf("%dh%dm", h, m)
 }
 
 // fmtLargeNum formats large cumulative counters for display.

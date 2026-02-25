@@ -2,10 +2,69 @@ package ui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/ftahirops/xtop/model"
 )
+
+// classifyExecSeverity returns "crit", "warn", or "ok" for a process execution.
+func classifyExecSeverity(comm, filename string) string {
+	fnLower := strings.ToLower(filename)
+	commLower := strings.ToLower(comm)
+
+	// === CRIT: clearly suspicious ===
+
+	// Execution from writable/temp directories
+	for _, prefix := range []string{"/tmp/", "/dev/shm/", "/var/tmp/", "/run/shm/"} {
+		if strings.HasPrefix(fnLower, prefix) {
+			return "crit"
+		}
+	}
+	// Hidden dotfile execution (e.g. /tmp/.xmrig)
+	if strings.Contains(filename, "/.") {
+		return "crit"
+	}
+	// Execution from /proc/self/fd/ (process self-exec trick)
+	if strings.HasPrefix(filename, "/proc/") {
+		return "crit"
+	}
+	// Known malware/exploit tool names
+	for _, kw := range []string{"xmrig", "miner", "payload", "exploit", "reverse",
+		"beacon", "mimikatz", "lazagne", "chisel", "ligolo", "sliver", "cobalt"} {
+		if strings.Contains(fnLower, kw) || strings.Contains(commLower, kw) {
+			return "crit"
+		}
+	}
+
+	// === WARN: potentially suspicious ===
+
+	warnComms := map[string]bool{
+		// Network recon / C2
+		"curl": true, "wget": true, "nc": true, "ncat": true, "netcat": true,
+		"socat": true, "nmap": true, "masscan": true, "nikto": true,
+		// Debuggers / injectors
+		"strace": true, "gdb": true, "ltrace": true, "ptrace": true,
+		// Credential / key tools
+		"ssh-keygen": true, "ssh-agent": true, "ssh-add": true,
+		// Encoding / obfuscation
+		"base64": true, "xxd": true, "openssl": true,
+		// Scripting (unusual as direct exec)
+		"python3": true, "python": true, "perl": true, "ruby": true,
+		"php": true, "lua": true, "node": true,
+		// Recon
+		"whoami": true, "id": true, "nslookup": true, "dig": true, "host": true,
+		// Priv esc
+		"pkexec": true, "su": true,
+		// Data exfil
+		"scp": true, "rsync": true,
+	}
+	if warnComms[commLower] {
+		return "warn"
+	}
+
+	return "ok"
+}
 
 func renderSecurityPage(snap *model.Snapshot, rates *model.RateSnapshot, result *model.AnalysisResult, pm probeQuerier, width, height int) string {
 	var sb strings.Builder
@@ -14,7 +73,7 @@ func renderSecurityPage(snap *model.Snapshot, rates *model.RateSnapshot, result 
 	sb.WriteString(titleStyle.Render("SECURITY MONITOR"))
 	sb.WriteString("\n")
 	sb.WriteString(renderRCAInline(result))
-	sb.WriteString(renderProbeStatusLine(pm))
+	sb.WriteString(renderProbeStatusLine(pm, snap))
 	sb.WriteString("\n")
 
 	sec := snap.Global.Security
@@ -117,6 +176,121 @@ func renderSecurityPage(snap *model.Snapshot, rates *model.RateSnapshot, result 
 		}
 	}
 	sb.WriteString(boxSection("SUID ANOMALIES", suidLines, iw))
+
+	// === KERNEL MODULE LOADS (BPF Sentinel) ===
+	sent := snap.Global.Sentinel
+	if sent.Active {
+		var modLines []string
+		if len(sent.ModLoads) == 0 {
+			modLines = append(modLines, okStyle.Render("  No module loads detected"))
+		} else {
+			modLines = append(modLines, dimStyle.Render("  MODULE                         COUNT"))
+			modLines = append(modLines, dimStyle.Render("  "+strings.Repeat("─", 42)))
+			for _, m := range sent.ModLoads {
+				name := m.Name
+				if len(name) > 30 {
+					name = name[:27] + "..."
+				}
+				modLines = append(modLines, fmt.Sprintf("  %s %s",
+					warnStyle.Render(padRight(name, 30)),
+					valueStyle.Render(fmt.Sprintf("%d", m.Count))))
+			}
+		}
+		sb.WriteString(boxSection("KERNEL MODULE LOADS (BPF)", modLines, iw))
+
+		// === PROCESS EXECUTIONS (BPF Sentinel) ===
+		var execLines []string
+		if len(sent.ExecEvents) == 0 {
+			execLines = append(execLines, okStyle.Render("  No process executions detected"))
+		} else {
+			// Classify severity and sort: CRIT first, then WARN, skip OK
+			type execRow struct {
+				entry model.ExecEventEntry
+				sev   string // "crit", "warn", "ok"
+				tag   string // display tag
+			}
+			var rows []execRow
+			var okCount int
+			for _, e := range sent.ExecEvents {
+				sev := classifyExecSeverity(e.Comm, e.Filename)
+				if sev == "ok" {
+					okCount++
+					continue
+				}
+				tag := "WARN"
+				if sev == "crit" {
+					tag = "CRIT"
+				}
+				rows = append(rows, execRow{entry: e, sev: sev, tag: tag})
+			}
+			// Sort: crit first, then warn, then by timestamp desc
+			sort.SliceStable(rows, func(i, j int) bool {
+				if rows[i].sev != rows[j].sev {
+					if rows[i].sev == "crit" {
+						return true
+					}
+					if rows[j].sev == "crit" {
+						return false
+					}
+				}
+				return rows[i].entry.Timestamp > rows[j].entry.Timestamp
+			})
+			if len(rows) == 0 {
+				msg := fmt.Sprintf("  No suspicious executions (%d normal events filtered)", okCount)
+				execLines = append(execLines, okStyle.Render(msg))
+			} else {
+				execLines = append(execLines, dimStyle.Render("  SEV   PID      PPID     UID    COMM             FILENAME                           COUNT"))
+				execLines = append(execLines, dimStyle.Render("  "+strings.Repeat("─", iw-4)))
+				limit := 20
+				if len(rows) < limit {
+					limit = len(rows)
+				}
+				for _, r := range rows[:limit] {
+					e := r.entry
+					style := warnStyle
+					if r.sev == "crit" {
+						style = critStyle
+					}
+					fn := e.Filename
+					if len(fn) > 34 {
+						fn = fn[:31] + "..."
+					}
+					execLines = append(execLines, fmt.Sprintf("  %s %s %s %s %s %s %s",
+						styledPad(style.Render(r.tag), 5),
+						styledPad(style.Render(fmt.Sprintf("%d", e.PID)), 8),
+						styledPad(valueStyle.Render(fmt.Sprintf("%d", e.PPID)), 8),
+						styledPad(valueStyle.Render(fmt.Sprintf("%d", e.UID)), 6),
+						styledPad(valueStyle.Render(padRight(e.Comm, 16)), 16),
+						styledPad(dimStyle.Render(padRight(fn, 34)), 34),
+						valueStyle.Render(fmt.Sprintf("%d", e.Count))))
+				}
+				if okCount > 0 {
+					execLines = append(execLines, dimStyle.Render(
+						fmt.Sprintf("  + %d normal executions filtered", okCount)))
+				}
+			}
+		}
+		sb.WriteString(boxSection("PROCESS EXECUTIONS (BPF)", execLines, iw))
+
+		// === PTRACE DETECTION (BPF Sentinel) ===
+		var ptraceLines []string
+		if len(sent.PtraceEvents) == 0 {
+			ptraceLines = append(ptraceLines, okStyle.Render("  No ptrace activity detected"))
+		} else {
+			ptraceLines = append(ptraceLines, dimStyle.Render("  TRACER PID  TRACER           TARGET PID  TARGET           REQUEST          COUNT"))
+			ptraceLines = append(ptraceLines, dimStyle.Render("  "+strings.Repeat("─", iw-4)))
+			for _, p := range sent.PtraceEvents {
+				ptraceLines = append(ptraceLines, fmt.Sprintf("  %s %s %s %s %s %s",
+					critStyle.Render(padRight(fmt.Sprintf("%d", p.TracerPID), 11)),
+					styledPad(critStyle.Render(padRight(p.TracerComm, 16)), 16),
+					styledPad(critStyle.Render(padRight(fmt.Sprintf("%d", p.TargetPID), 11)), 11),
+					styledPad(valueStyle.Render(padRight(p.TargetComm, 16)), 16),
+					styledPad(critStyle.Render(padRight(p.RequestStr, 16)), 16),
+					valueStyle.Render(fmt.Sprintf("%d", p.Count))))
+			}
+		}
+		sb.WriteString(boxSection("PTRACE DETECTION (BPF)", ptraceLines, iw))
+	}
 
 	// === REVERSE SHELLS ===
 	var rsLines []string

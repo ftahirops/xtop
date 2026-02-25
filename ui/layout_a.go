@@ -72,7 +72,7 @@ func renderLayoutA(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 	right.WriteString(renderActionsBlock(result, rightW))
 	right.WriteString(renderOwnersBlock(result, rightW))
 	right.WriteString(renderCapacityBlock(result, true, 16, rightW))
-	right.WriteString(renderProbeStatusLine(pm))
+	right.WriteString(renderProbeStatusLine(pm, snap))
 	right.WriteString(renderExhaustionBlock(result, rightW))
 	right.WriteString(renderDegradationBlock(result, rightW))
 	right.WriteString(renderTrendBlock(result, history, rightW, true))

@@ -15,7 +15,7 @@ func renderMemPage(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 	sb.WriteString(titleStyle.Render("MEMORY SUBSYSTEM"))
 	sb.WriteString("\n")
 	sb.WriteString(renderRCAInline(result))
-	sb.WriteString(renderProbeStatusLine(pm))
+	sb.WriteString(renderProbeStatusLine(pm, snap))
 	sb.WriteString("\n")
 
 	mem := snap.Global.Memory

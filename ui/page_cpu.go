@@ -15,7 +15,7 @@ func renderCPUPage(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 	sb.WriteString(titleStyle.Render("CPU SUBSYSTEM"))
 	sb.WriteString("\n")
 	sb.WriteString(renderRCAInline(result))
-	sb.WriteString(renderProbeStatusLine(pm))
+	sb.WriteString(renderProbeStatusLine(pm, snap))
 	sb.WriteString("\n")
 
 	// === Summary ===
