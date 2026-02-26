@@ -645,7 +645,7 @@ func watchMem(snap *model.Snapshot, rates *model.RateSnapshot) {
 	fmt.Println(titleLine("VMSTAT"))
 	vm := snap.Global.VMStat
 	oomColor := D
-	if vm.OOMKill > 0 {
+	if rates != nil && rates.OOMKillDelta > 0 {
 		oomColor = B + FBRed
 	}
 	fmt.Printf(" %-14s %s%-10d%s  %-14s %s%-10d%s  %-14s %s%d%s\n",

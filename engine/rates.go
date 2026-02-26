@@ -73,6 +73,7 @@ func computeMemRates(prev, curr *model.Snapshot, dt time.Duration, r *model.Rate
 	r.MajFaultRate = util.Rate(pv.PgMajFault, cv.PgMajFault, dt)
 	r.DirectReclaimRate = util.Rate(pv.PgScanDirect, cv.PgScanDirect, dt)
 	r.KswapdRate = util.Rate(pv.PgScanKswapd, cv.PgScanKswapd, dt)
+	r.OOMKillDelta = util.Delta(pv.OOMKill, cv.OOMKill)
 }
 
 func computeDiskRates(prev, curr *model.Snapshot, dt time.Duration, r *model.RateSnapshot) {
@@ -253,13 +254,14 @@ func computeCgroupRates(prev, curr *model.Snapshot, dt time.Duration, r *model.R
 		}
 
 		cr := model.CgroupRate{
-			Path:        cg.Path,
-			Name:        cg.Name,
-			CPUPct:      cpuPct,
-			ThrottlePct: throttlePct,
-			MemPct:      float64(cg.MemCurrent) / float64(totalMem) * 100,
-			IORateMBs:   util.Rate(pcg.IORBytes, cg.IORBytes, dt) / (1024 * 1024),
-			IOWRateMBs:  util.Rate(pcg.IOWBytes, cg.IOWBytes, dt) / (1024 * 1024),
+			Path:         cg.Path,
+			Name:         cg.Name,
+			CPUPct:       cpuPct,
+			ThrottlePct:  throttlePct,
+			MemPct:       float64(cg.MemCurrent) / float64(totalMem) * 100,
+			IORateMBs:    util.Rate(pcg.IORBytes, cg.IORBytes, dt) / (1024 * 1024),
+			IOWRateMBs:   util.Rate(pcg.IOWBytes, cg.IOWBytes, dt) / (1024 * 1024),
+			OOMKillDelta: util.Delta(pcg.OOMKills, cg.OOMKills),
 		}
 		r.CgroupRates = append(r.CgroupRates, cr)
 	}

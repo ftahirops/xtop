@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"sync"
 	"time"
 
 	"github.com/ftahirops/xtop/collector"
@@ -18,6 +19,7 @@ type Engine struct {
 	growthTracker *MountGrowthTracker
 	Sentinel      *bpf.SentinelManager
 	Watchdog      *WatchdogTrigger
+	tickMu        sync.Mutex // serializes Tick() calls to prevent concurrent collection
 }
 
 // NewEngine creates a new engine with all collectors registered.
@@ -42,7 +44,11 @@ func NewEngine(historySize int) *Engine {
 
 // Tick performs one collection + analysis cycle.
 // Returns the snapshot, computed rates, and full analysis result.
+// Serialized via tickMu to prevent concurrent collection when ticks overlap.
 func (e *Engine) Tick() (*model.Snapshot, *model.RateSnapshot, *model.AnalysisResult) {
+	e.tickMu.Lock()
+	defer e.tickMu.Unlock()
+
 	snap := &model.Snapshot{
 		Timestamp: time.Now(),
 	}

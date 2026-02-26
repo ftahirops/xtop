@@ -248,7 +248,8 @@ func renderThresholdsPage(snap *model.Snapshot, rates *model.RateSnapshot, resul
 	rcaLines = append(rcaLines, rcaLine("Swap IO rate", 20, "50 MB/s", ">0.1 MB/s", swapIn+swapOut > 0.1))
 	rcaLines = append(rcaLines, rcaLine("Direct reclaim ratio", 15, "60%", ">0", directR > 0))
 	rcaLines = append(rcaLines, rcaLine("Major faults", 10, "500/s", ">10/s", majFaultR > 10))
-	rcaLines = append(rcaLines, rcaLine("OOM kills", 0, "—", ">0", snap.Global.VMStat.OOMKill > 0))
+	oomDelta := rates != nil && rates.OOMKillDelta > 0
+	rcaLines = append(rcaLines, rcaLine("OOM kills", 0, "—", ">0/s", oomDelta))
 
 	rcaLines = append(rcaLines, "")
 	rcaLines = append(rcaLines, titleStyle.Render("CPU Score (5 evidence groups, need 2+):"))

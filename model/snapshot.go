@@ -127,6 +127,7 @@ type CgroupRate struct {
 	MemPct       float64
 	IORateMBs    float64
 	IOWRateMBs   float64
+	OOMKillDelta uint64 // OOM kills since last tick (delta, not cumulative)
 }
 
 // ProcessRate holds computed per-process rates.
@@ -176,6 +177,7 @@ type RateSnapshot struct {
 	MajFaultRate    float64
 	DirectReclaimRate float64 // pages/s
 	KswapdRate      float64
+	OOMKillDelta    uint64  // OOM kills since last tick (delta, not cumulative)
 
 	// Disks
 	DiskRates  []DiskRate

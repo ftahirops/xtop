@@ -120,10 +120,11 @@ func renderTimelinePage(history *engine.History, width, height int) string {
 		}, startTime, endTime))
 	sb.WriteString("\n")
 
-	// OOM event notice
-	if latest != nil && latest.Global.VMStat.OOMKill > 0 {
+	// OOM event notice — only show if BPF sentinel detected OOM kills this tick
+	if latest != nil && latest.Global.Sentinel.Active && len(latest.Global.Sentinel.OOMKills) > 0 {
 		sb.WriteString("\n")
-		sb.WriteString(critStyle.Render(fmt.Sprintf("  OOM kills detected (cumulative: %d)", latest.Global.VMStat.OOMKill)))
+		victim := latest.Global.Sentinel.OOMKills[0]
+		sb.WriteString(critStyle.Render(fmt.Sprintf("  OOM kill detected: %s (PID %d) killed this tick", victim.VictimComm, victim.VictimPID)))
 		sb.WriteString("\n")
 	}
 

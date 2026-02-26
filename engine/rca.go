@@ -79,7 +79,7 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History) 
 		hasCritEvidence := false
 		if len(result.RCA) > 0 {
 			for _, e := range result.RCA[0].EvidenceV2 {
-				if e.ID == "mem.oom.kills" && e.Strength >= 0.35 {
+				if e.ID == "mem.oom.kills" && e.Strength >= 0.35 && e.Value > 0 {
 					hasCritEvidence = true
 					break
 				}
@@ -318,11 +318,15 @@ func analyzeMemory(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEnt
 
 	// --- v2 evidence ---
 	usedPct := 100 - availPct
-	oomDetected := curr.Global.VMStat.OOMKill > 0
-	oomVal := float64(0)
-	if oomDetected {
-		oomVal = 1
+
+	// Use delta-based OOM detection: only fire if OOM kills happened since last tick
+	var oomDelta uint64
+	if rates != nil {
+		oomDelta = rates.OOMKillDelta
 	}
+	oomDetected := oomDelta > 0
+	oomVal := float64(oomDelta)
+
 	w, c := threshold("mem.psi", 5, 20)
 	w2, c2 := threshold("mem.available.low", 85, 95)
 	w3, c3 := threshold("mem.reclaim.direct", 10, 500)
@@ -352,7 +356,7 @@ func analyzeMemory(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEnt
 			nil, nil),
 		emitEvidence("mem.oom.kills", model.DomainMemory,
 			oomVal, w6, c6, true, 1.0,
-			fmt.Sprintf("OOM kills=%d", curr.Global.VMStat.OOMKill), "cumulative",
+			fmt.Sprintf("OOM kills=%d in last 1s", oomDelta), "1s",
 			nil, nil),
 	)
 
@@ -413,7 +417,7 @@ func analyzeMemory(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEnt
 		r.Evidence = append(r.Evidence, fmt.Sprintf("Major faults=%.0f/s", majFaultRate))
 	}
 	if oomDetected {
-		r.Evidence = append(r.Evidence, fmt.Sprintf("OOM kill counter=%d", curr.Global.VMStat.OOMKill))
+		r.Evidence = append(r.Evidence, fmt.Sprintf("OOM kills=%d in last 1s", oomDelta))
 	}
 
 	// Chain
@@ -428,31 +432,65 @@ func analyzeMemory(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEnt
 		r.Chain = append(r.Chain, "Allocation stall risk")
 	}
 
-	// Top offender: cgroup closest to limit (skip root)
-	var bestRatio float64
-	for _, cg := range curr.Cgroups {
-		if cg.Path == "/" || cg.Path == "" {
-			continue
-		}
-		if cg.MemLimit > 0 && cg.MemCurrent > 0 {
-			ratio := float64(cg.MemCurrent) / float64(cg.MemLimit)
-			if ratio > bestRatio {
-				bestRatio = ratio
-				r.TopCgroup = cg.Path
+	// --- Culprit identification (priority order) ---
+
+	// 1st priority: BPF sentinel OOM victims — if the sentinel saw an OOM kill
+	// this tick, use the victim's cgroup as culprit (most precise attribution).
+	if sent := curr.Global.Sentinel; sent.Active && len(sent.OOMKills) > 0 {
+		victim := sent.OOMKills[0]
+		r.TopProcess = victim.VictimComm
+		r.TopPID = int(victim.VictimPID)
+		// Find the victim's cgroup path from process list
+		for _, p := range curr.Processes {
+			if p.PID == int(victim.VictimPID) && p.CgroupPath != "" {
+				r.TopCgroup = p.CgroupPath
+				break
 			}
 		}
 	}
 
-	// Top process by RSS (skip kernel threads)
-	var maxRSS uint64
-	for _, p := range curr.Processes {
-		if isKernelThread(p.Comm) {
-			continue
+	// 2nd priority: cgroup with OOM delta > 0 (from cgroup memory.events)
+	if r.TopCgroup == "" && rates != nil {
+		for _, cr := range rates.CgroupRates {
+			if cr.Path == "/" || cr.Path == "" {
+				continue
+			}
+			if cr.OOMKillDelta > 0 {
+				r.TopCgroup = cr.Path
+				break
+			}
 		}
-		if p.RSS > maxRSS {
-			maxRSS = p.RSS
-			r.TopProcess = p.Comm
-			r.TopPID = p.PID
+	}
+
+	// 3rd priority: cgroup closest to memory limit (existing logic for non-OOM pressure)
+	if r.TopCgroup == "" {
+		var bestRatio float64
+		for _, cg := range curr.Cgroups {
+			if cg.Path == "/" || cg.Path == "" {
+				continue
+			}
+			if cg.MemLimit > 0 && cg.MemCurrent > 0 {
+				ratio := float64(cg.MemCurrent) / float64(cg.MemLimit)
+				if ratio > bestRatio {
+					bestRatio = ratio
+					r.TopCgroup = cg.Path
+				}
+			}
+		}
+	}
+
+	// 4th priority (process fallback): top process by RSS (skip kernel threads)
+	if r.TopProcess == "" {
+		var maxRSS uint64
+		for _, p := range curr.Processes {
+			if isKernelThread(p.Comm) {
+				continue
+			}
+			if p.RSS > maxRSS {
+				maxRSS = p.RSS
+				r.TopProcess = p.Comm
+				r.TopPID = p.PID
+			}
 		}
 	}
 

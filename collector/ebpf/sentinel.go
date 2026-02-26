@@ -118,6 +118,9 @@ func (s *SentinelManager) Collect(snap *model.Snapshot) error {
 			sort.Slice(sent.PktDrops, func(i, j int) bool {
 				return sent.PktDrops[i].Rate > sent.PktDrops[j].Rate
 			})
+			if len(sent.PktDrops) > 20 {
+				sent.PktDrops = sent.PktDrops[:20]
+			}
 		}
 	}
 
@@ -176,6 +179,9 @@ func (s *SentinelManager) Collect(snap *model.Snapshot) error {
 			sort.Slice(sent.StateChanges, func(i, j int) bool {
 				return sent.StateChanges[i].Rate > sent.StateChanges[j].Rate
 			})
+			if len(sent.StateChanges) > 20 {
+				sent.StateChanges = sent.StateChanges[:20]
+			}
 		}
 	}
 
@@ -247,6 +253,9 @@ func (s *SentinelManager) Collect(snap *model.Snapshot) error {
 				Count:     r.Count,
 			})
 		}
+		if len(sent.ModLoads) > 20 {
+			sent.ModLoads = sent.ModLoads[:20]
+		}
 	}
 
 	// Read OOM kills (event-like: read and clear)
@@ -264,6 +273,9 @@ func (s *SentinelManager) Collect(snap *model.Snapshot) error {
 				AnonRSS:    r.AnonRSS,
 				Timestamp:  int64(r.Ts),
 			})
+		}
+		if len(sent.OOMKills) > 20 {
+			sent.OOMKills = sent.OOMKills[:20]
 		}
 	}
 
