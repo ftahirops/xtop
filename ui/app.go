@@ -694,41 +694,52 @@ func (m Model) View() string {
 }
 
 func (m Model) renderStatusBar() string {
+	// Page keys
+	pageKey := func(i int) string {
+		switch Page(i) {
+		case PageDiskGuard:
+			return "D"
+		case PageSecurity:
+			return "L"
+		case PageLogs:
+			return "O"
+		case PageServices:
+			return "H"
+		case PageDiag:
+			return "W"
+		default:
+			return fmt.Sprintf("%d", i)
+		}
+	}
+
 	// Full and abbreviated page labels
 	type pageLabel struct {
 		full  string
 		short string
+		tiny  string // key only
 	}
 	labels := make([]pageLabel, len(pageNames))
 	for i, name := range pageNames {
-		var key string
-		switch Page(i) {
-		case PageDiskGuard:
-			key = "D"
-		case PageSecurity:
-			key = "L"
-		case PageLogs:
-			key = "O"
-		case PageServices:
-			key = "H"
-		case PageDiag:
-			key = "W"
-		default:
-			key = fmt.Sprintf("%d", i)
-		}
+		key := pageKey(i)
 		labels[i] = pageLabel{
 			full:  key + ":" + name,
 			short: key + ":" + shortPageName(name),
+			tiny:  key,
 		}
 	}
 
-	// Build tabs — try full labels first, fall back to short if too wide
-	buildTabs := func(useShort bool) string {
+	// Build tabs at a given label tier: 0=full, 1=short, 2=tiny
+	buildTabs := func(tier int) string {
 		var tabs []string
 		for i, lbl := range labels {
-			label := lbl.full
-			if useShort {
+			var label string
+			switch tier {
+			case 0:
+				label = lbl.full
+			case 1:
 				label = lbl.short
+			default:
+				label = lbl.tiny
 			}
 			if Page(i) == m.page {
 				tabs = append(tabs, headerStyle.Render("["+label+"]"))
@@ -739,7 +750,85 @@ func (m Model) renderStatusBar() string {
 		return strings.Join(tabs, "")
 	}
 
-	left := buildTabs(false)
+	// Build a sliding window of tabs centered on current page
+	buildSlidingTabs := func(tier int) string {
+		// Pre-render all tabs
+		rendered := make([]string, len(labels))
+		widths := make([]int, len(labels))
+		for i, lbl := range labels {
+			var label string
+			switch tier {
+			case 0:
+				label = lbl.full
+			case 1:
+				label = lbl.short
+			default:
+				label = lbl.tiny
+			}
+			if Page(i) == m.page {
+				rendered[i] = headerStyle.Render("[" + label + "]")
+			} else {
+				rendered[i] = dimStyle.Render(" " + label + " ")
+			}
+			widths[i] = lipgloss.Width(rendered[i])
+		}
+
+		ellipsis := dimStyle.Render("..")
+		ellipsisW := lipgloss.Width(ellipsis)
+		cur := int(m.page)
+		n := len(labels)
+
+		// Start with current page, expand outward
+		lo, hi := cur, cur
+		usedW := widths[cur]
+
+		for {
+			expanded := false
+			// Try expanding left
+			if lo > 0 {
+				needW := widths[lo-1]
+				extra := 0
+				if lo-1 > 0 {
+					extra = ellipsisW // will need left ellipsis
+				}
+				if usedW+needW+extra <= m.width {
+					lo--
+					usedW += needW
+					expanded = true
+				}
+			}
+			// Try expanding right
+			if hi < n-1 {
+				needW := widths[hi+1]
+				extra := 0
+				if hi+1 < n-1 {
+					extra = ellipsisW // will need right ellipsis
+				}
+				if usedW+needW+extra <= m.width {
+					hi++
+					usedW += needW
+					expanded = true
+				}
+			}
+			if !expanded {
+				break
+			}
+		}
+
+		var result string
+		if lo > 0 {
+			result += ellipsis
+		}
+		for i := lo; i <= hi; i++ {
+			result += rendered[i]
+		}
+		if hi < n-1 {
+			result += ellipsis
+		}
+		return result
+	}
+
+	left := buildTabs(0) // full labels
 
 	// Indicators (paused, save msg, layout)
 	var indicators string
@@ -771,7 +860,7 @@ func (m Model) renderStatusBar() string {
 	}
 
 	// Try short tabs + indicators + help
-	left = buildTabs(true)
+	left = buildTabs(1) // short labels
 	leftShort := left + indicators
 	leftW = lipgloss.Width(leftShort)
 	if leftW+helpW+1 <= m.width {
@@ -784,26 +873,28 @@ func (m Model) renderStatusBar() string {
 		return leftShort
 	}
 
-	// Last resort: short tabs only, ANSI-aware truncation
+	// Try short tabs only (no indicators)
 	leftW = lipgloss.Width(left)
 	if leftW <= m.width {
 		return left
 	}
-	// Byte-safe truncation: rebuild only tabs that fit
-	var fitted string
-	for i, lbl := range labels {
-		var tab string
-		if Page(i) == m.page {
-			tab = headerStyle.Render("[" + lbl.short + "]")
-		} else {
-			tab = dimStyle.Render(" " + lbl.short + " ")
-		}
-		if lipgloss.Width(fitted+tab) > m.width {
-			break
-		}
-		fitted += tab
+
+	// Try tiny (key-only) tabs + indicators
+	left = buildTabs(2) // tiny labels
+	leftTiny := left + indicators
+	leftW = lipgloss.Width(leftTiny)
+	if leftW <= m.width {
+		return leftTiny
 	}
-	return fitted
+
+	// Tiny tabs only
+	leftW = lipgloss.Width(left)
+	if leftW <= m.width {
+		return left
+	}
+
+	// Last resort: sliding window of tiny tabs centered on current page
+	return buildSlidingTabs(2)
 }
 
 // shortPageName returns an abbreviated page name for narrow terminals.
