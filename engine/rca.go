@@ -147,6 +147,19 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History) 
 	// Actions
 	result.Actions = SuggestActions(result)
 
+	// Narrative engine: build human-readable root cause explanation
+	result.Narrative = BuildNarrative(result, curr, rates)
+
+	// Temporal causality: update signal onsets and build chain
+	UpdateSignalOnsets(hist, result)
+	result.TemporalChain = BuildTemporalChain(result, hist)
+	if result.Narrative != nil && result.TemporalChain != nil {
+		result.Narrative.Temporal = result.TemporalChain.Summary
+	}
+
+	// Blame attribution: identify top offenders
+	result.Blame = ComputeBlame(result, curr, rates)
+
 	return result
 }
 

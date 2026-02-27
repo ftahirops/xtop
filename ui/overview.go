@@ -860,31 +860,56 @@ func renderRCABox(result *model.AnalysisResult, width int) string {
 	title := fmt.Sprintf(" %s ", titleStyle.Render("Root Cause Analysis"))
 	sb.WriteString(boxTopTitle(title, innerW) + "\n")
 
-	// Always 3 lines for stable layout
-	lines := [3]string{" ", " ", " "}
+	// Dynamic line count: 3 for healthy/inconclusive, 5-6 for degraded/critical
+	var lines []string
 
 	if result == nil {
-		lines[0] = dimStyle.Render("collecting...")
+		lines = []string{dimStyle.Render("collecting..."), " ", " "}
 	} else {
 		switch result.Health {
 		case model.HealthOK:
-			lines[0] = okStyle.Render("RCA: No bottleneck detected")
+			line0 := okStyle.Render("RCA: No bottleneck detected")
+			line1 := " "
 			if result.StableSince > 60 {
-				lines[1] = dimStyle.Render(fmt.Sprintf("Stable for %s", fmtDuration(result.StableSince)))
+				line1 = dimStyle.Render(fmt.Sprintf("Stable for %s", fmtDuration(result.StableSince)))
 			}
+			lines = []string{line0, line1, " "}
 
 		case model.HealthInconclusive:
-			lines[0] = orangeStyle.Render("RCA: Inconclusive") +
-				dimStyle.Render(" \u2014 evidence insufficient")
-			lines[1] = dimStyle.Render("Press I to investigate (10s kernel probe)")
+			lines = []string{
+				orangeStyle.Render("RCA: Inconclusive") + dimStyle.Render(" \u2014 evidence insufficient"),
+				dimStyle.Render("Press I to investigate (10s kernel probe)"),
+				" ",
+			}
 
 		case model.HealthDegraded, model.HealthCritical:
 			style := warnStyle
 			if result.Health == model.HealthCritical {
 				style = critStyle
 			}
-			lines[0] = style.Render("RCA: " + result.PrimaryBottleneck)
 
+			// Line 1: ROOT CAUSE from narrative (or fall back to PrimaryBottleneck)
+			rootCause := result.PrimaryBottleneck
+			if result.Narrative != nil && result.Narrative.RootCause != "" {
+				rootCause = result.Narrative.RootCause
+			}
+			lines = append(lines, style.Render("ROOT CAUSE: ")+valueStyle.Render(truncate(rootCause, innerW-16)))
+
+			// Lines 2-3: Top 2 evidence lines from narrative
+			if result.Narrative != nil {
+				for i, ev := range result.Narrative.Evidence {
+					if i >= 2 {
+						break
+					}
+					lines = append(lines, dimStyle.Render(ev))
+				}
+			}
+			// Pad to at least 3 lines
+			for len(lines) < 3 {
+				lines = append(lines, " ")
+			}
+
+			// Line 4: Impact + Culprit + Confidence + Active
 			culprit := "\u2014"
 			if result.PrimaryProcess != "" {
 				culprit = result.PrimaryProcess
@@ -896,22 +921,21 @@ func renderRCABox(result *model.AnalysisResult, width int) string {
 			}
 			culprit = truncate(culprit, 24)
 
-			parts := []string{
-				fmt.Sprintf("Culprit: %s", valueStyle.Render(culprit)),
-				fmt.Sprintf("Confidence: %s", style.Render(fmt.Sprintf("%d%%", result.Confidence))),
+			var parts []string
+			if result.Narrative != nil && result.Narrative.Impact != "" {
+				parts = append(parts, fmt.Sprintf("Impact: %s", warnStyle.Render(truncate(result.Narrative.Impact, 30))))
 			}
+			parts = append(parts, fmt.Sprintf("Culprit: %s", valueStyle.Render(culprit)))
+			parts = append(parts, fmt.Sprintf("Confidence: %s", style.Render(fmt.Sprintf("%d%%", result.Confidence))))
 			if result.AnomalyStartedAgo > 0 {
 				parts = append(parts,
 					fmt.Sprintf("Active: %s", critStyle.Render(fmtDuration(result.AnomalyStartedAgo))))
 			}
-			lines[1] = strings.Join(parts, dimStyle.Render(" | "))
+			lines = append(lines, strings.Join(parts, dimStyle.Render(" | ")))
 
-			if result.CausalChain != "" {
-				chain := result.CausalChain
-				if len(chain) > 70 {
-					chain = chain[:67] + "..."
-				}
-				lines[2] = dimStyle.Render("Chain: ") + valueStyle.Render(chain)
+			// Line 5: Pattern name if matched
+			if result.Narrative != nil && result.Narrative.Pattern != "" {
+				lines = append(lines, dimStyle.Render("Pattern: ")+valueStyle.Render(result.Narrative.Pattern))
 			}
 		}
 	}
@@ -1229,7 +1253,13 @@ func renderRCAInline(result *model.AnalysisResult) string {
 		if result.Health == model.HealthCritical {
 			style = critStyle
 		}
-		sb.WriteString(style.Render(result.PrimaryBottleneck))
+
+		// Use narrative root cause if available, otherwise fall back to PrimaryBottleneck
+		rootCause := result.PrimaryBottleneck
+		if result.Narrative != nil && result.Narrative.RootCause != "" {
+			rootCause = truncate(result.Narrative.RootCause, 60)
+		}
+		sb.WriteString(style.Render(rootCause))
 
 		culprit := "\u2014"
 		if result.PrimaryProcess != "" {
@@ -1459,6 +1489,80 @@ func renderExplainPanel(result *model.AnalysisResult, width int) string {
 		sb.WriteString(boxRow(dimStyle.Render("No analysis data available"), innerW) + "\n")
 		sb.WriteString(boxBot(innerW) + "\n")
 		return sb.String()
+	}
+
+	// Narrative summary box (if available)
+	if n := result.Narrative; n != nil {
+		sb.WriteString(boxTopTitle(dimStyle.Render(" ROOT CAUSE "), innerW) + "\n")
+
+		rcStyle := warnStyle
+		if result.Health == model.HealthCritical {
+			rcStyle = critStyle
+		}
+		sb.WriteString(boxRow(" "+rcStyle.Render(n.RootCause), innerW) + "\n")
+
+		if len(n.Evidence) > 0 {
+			sb.WriteString(boxMid(innerW) + "\n")
+			sb.WriteString(boxRow(" "+titleStyle.Render("EVIDENCE"), innerW) + "\n")
+			for _, ev := range n.Evidence {
+				sb.WriteString(boxRow(" "+dimStyle.Render(ev), innerW) + "\n")
+			}
+		}
+
+		if n.Impact != "" {
+			sb.WriteString(boxMid(innerW) + "\n")
+			sb.WriteString(boxRow(" "+titleStyle.Render("IMPACT"), innerW) + "\n")
+			sb.WriteString(boxRow(" "+warnStyle.Render(n.Impact), innerW) + "\n")
+		}
+
+		sb.WriteString(boxBot(innerW) + "\n")
+		sb.WriteString("\n")
+	}
+
+	// Temporal causality box (if available)
+	if tc := result.TemporalChain; tc != nil && len(tc.Events) > 1 {
+		sb.WriteString(boxTopTitle(dimStyle.Render(" TEMPORAL CAUSALITY "), innerW) + "\n")
+
+		earliest := tc.Events[0].FirstSeen
+		for _, ev := range tc.Events {
+			if len(ev.Label) == 0 {
+				continue
+			}
+			offset := ev.FirstSeen.Sub(earliest)
+			marker := ""
+			if ev.Sequence == 0 {
+				marker = "  <-- first signal"
+			}
+			line := fmt.Sprintf(" T+%ds:  %s%s",
+				int(offset.Seconds()),
+				truncate(ev.Label, innerW-20),
+				marker)
+			sb.WriteString(boxRow(dimStyle.Render(line), innerW) + "\n")
+		}
+
+		sb.WriteString(boxBot(innerW) + "\n")
+		sb.WriteString("\n")
+	}
+
+	// Blame / Top Offenders box (if available)
+	if len(result.Blame) > 0 {
+		sb.WriteString(boxTopTitle(dimStyle.Render(" TOP OFFENDERS "), innerW) + "\n")
+
+		for i, b := range result.Blame {
+			var metricParts []string
+			for k, v := range b.Metrics {
+				metricParts = append(metricParts, k+":"+v)
+			}
+			line := fmt.Sprintf(" %d. %s(%d) — %s",
+				i+1,
+				truncate(b.Comm, 16),
+				b.PID,
+				strings.Join(metricParts, ", "))
+			sb.WriteString(boxRow(dimStyle.Render(line), innerW) + "\n")
+		}
+
+		sb.WriteString(boxBot(innerW) + "\n")
+		sb.WriteString("\n")
 	}
 
 	for _, rca := range result.RCA {

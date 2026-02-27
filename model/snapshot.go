@@ -293,6 +293,15 @@ type AnalysisResult struct {
 
 	// System identity
 	SysInfo *SysInfo
+
+	// Narrative engine output
+	Narrative *Narrative
+
+	// Temporal causality chain
+	TemporalChain *TemporalChain
+
+	// Blame attribution
+	Blame []BlameEntry
 }
 
 // MetricChange represents a notable metric delta for the "what changed?" engine.
@@ -430,4 +439,38 @@ type CausalDAG struct {
 	Nodes       []CausalNode
 	Edges       []CausalEdge
 	LinearChain string // human-readable "→"-joined string
+}
+
+// Narrative is the human-readable root cause explanation produced by the narrative engine.
+type Narrative struct {
+	RootCause  string   // e.g. "CPU throttle cascade — cgroup limits saturating run queue"
+	Evidence   []string // top 3-4 evidence lines with values
+	Impact     string   // e.g. "CPU stall 42%; disk latency +120ms"
+	Confidence int
+	Pattern    string // matched pattern name (empty if none)
+	Temporal   string // temporal chain summary
+}
+
+// TemporalChain tracks the order in which signals fired to establish causality.
+type TemporalChain struct {
+	Events     []TemporalEvent
+	Summary    string // e.g. "retransmits (T+0s) → drops (T+3s) → threads blocked (T+12s)"
+	FirstMover string // evidence ID that fired first
+}
+
+// TemporalEvent is a single signal onset in the temporal chain.
+type TemporalEvent struct {
+	EvidenceID string
+	Label      string
+	FirstSeen  time.Time
+	Sequence   int
+}
+
+// BlameEntry identifies a top offending process or cgroup for the current bottleneck.
+type BlameEntry struct {
+	Comm       string
+	PID        int
+	CgroupPath string
+	Metrics    map[string]string // "cpu" → "45.2%", "io" → "12 MB/s"
+	ImpactPct  float64
 }

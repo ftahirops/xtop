@@ -2,30 +2,33 @@ package engine
 
 import (
 	"sync"
+	"time"
 
 	"github.com/ftahirops/xtop/model"
 )
 
 // History is a ring buffer of snapshots and rates for trend detection.
 type History struct {
-	buf     []model.Snapshot
-	rateBuf []model.RateSnapshot
-	head    int
-	size    int
-	cap     int
-	anomaly *AnomalyState
-	alert   *AlertState
-	mu      sync.RWMutex
+	buf          []model.Snapshot
+	rateBuf      []model.RateSnapshot
+	head         int
+	size         int
+	cap          int
+	anomaly      *AnomalyState
+	alert        *AlertState
+	signalOnsets map[string]time.Time // evidence ID → first-seen time
+	mu           sync.RWMutex
 }
 
 // NewHistory creates a ring buffer with the given capacity.
 func NewHistory(capacity int) *History {
 	return &History{
-		buf:     make([]model.Snapshot, capacity),
-		rateBuf: make([]model.RateSnapshot, capacity),
-		cap:     capacity,
-		anomaly: &AnomalyState{},
-		alert:   &AlertState{},
+		buf:          make([]model.Snapshot, capacity),
+		rateBuf:      make([]model.RateSnapshot, capacity),
+		cap:          capacity,
+		anomaly:      &AnomalyState{},
+		alert:        &AlertState{},
+		signalOnsets: make(map[string]time.Time),
 	}
 }
 
