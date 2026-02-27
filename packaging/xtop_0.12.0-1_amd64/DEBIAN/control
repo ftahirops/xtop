@@ -1,0 +1,37 @@
+Package: xtop
+Version: 0.12.0-1
+Section: admin
+Priority: optional
+Architecture: amd64
+Depends: libc6
+Installed-Size: 11140
+Maintainer: Farhan Tahir <farhan.003@gmail.com>
+Homepage: https://github.com/ftahirops/xtop
+Description: Incident-first root-cause analysis console for Linux
+ xtop is a terminal-based system monitor that goes beyond traditional
+ tools like htop by correlating signals across CPU, memory, IO, network,
+ and cgroups to produce ranked root-cause hypotheses with evidence and
+ confidence scores.
+ .
+ Instead of showing raw metrics, xtop answers: What is the bottleneck?
+ Who is causing it? How confident are we? What should I do?
+ .
+ Key features:
+  - PSI (Pressure Stall Information) pressure tracking
+  - Cgroup-aware throttling and limit detection
+  - Evidence-based RCA with confidence scoring
+  - eBPF probes: off-CPU, IO latency, lock contention, TCP retransmits
+  - Sentinel probes: always-on BPF monitoring (drops, resets, OOM, throttle)
+  - Watchdog: auto-triggered deep probes on RCA bottleneck detection
+  - Per-PID syscall dissection and socket IO attribution (watchdog)
+  - DiskGuard: filesystem space monitor with auto-contain (SIGSTOP/SIGCONT)
+  - Causal chain reconstruction
+  - Anomaly onset tracking
+  - Incident recording and replay
+  - Markdown incident reports for tickets
+  - Doctor: comprehensive health checks with alert dispatch and watch mode
+  - Shell widget: system health in bash/zsh prompt
+  - Server identity discovery with confidence-based role classification
+  - Interactive discover mode: service criticality, role tuning, threshold profiles
+  - Beginner mode: plain-English health summary for non-ops users
+  - Explain side panel: per-page metric glossary with thresholds

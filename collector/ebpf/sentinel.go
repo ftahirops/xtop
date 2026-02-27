@@ -111,7 +111,12 @@ func (s *SentinelManager) Collect(snap *model.Snapshot) error {
 						Count:     r.Count,
 						Rate:      rate,
 					})
-					totalDropRate += rate
+					// Only count concerning drop reasons in the headline total.
+					// Benign reasons (normal TCP lifecycle, flow control, socket filters)
+					// are still tracked per-reason but excluded from the alarm rate.
+					if !isBenignDropReason(r.Reason) {
+						totalDropRate += rate
+					}
 				}
 			}
 			sent.PktDropRate = totalDropRate

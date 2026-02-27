@@ -21,6 +21,7 @@ type Config struct {
 	ServerIdentity   *model.ServerIdentity `json:"server_identity,omitempty"`
 	CriticalServices []string              `json:"critical_services,omitempty"`
 	ThresholdProfile string                `json:"threshold_profile,omitempty"`
+	ExperienceLevel  string                `json:"experience_level,omitempty"` // "beginner", "advanced", or "" (first run)
 }
 
 type PrometheusConfig struct {

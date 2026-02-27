@@ -62,6 +62,34 @@ func (p *kfreeskbProbe) close() {
 	p.objs.Close()
 }
 
+// isBenignDropReason returns true for SKB_DROP_REASON codes that are normal
+// TCP/IP lifecycle events, not actual network problems. These are excluded
+// from the headline drop rate to avoid false alarms on busy servers.
+func isBenignDropReason(reason uint32) bool {
+	switch reason {
+	case 2:  // NOT_SPECIFIED — generic, no diagnostic value
+		return true
+	case 3:  // NO_SOCKET — packets for recently closed connections (normal on proxies)
+		return true
+	case 6:  // SOCKET_FILTER — BPF socket filters (tcpdump, iptables match)
+		return true
+	case 27: // TCP_FLAGS — normal FIN/RST handling in TCP lifecycle
+		return true
+	case 28: // TCP_ZEROWINDOW — flow control, expected under load
+		return true
+	case 29: // TCP_OLD_DATA — retransmit arriving after ACK (normal)
+		return true
+	case 33: // TCP_OVERWINDOW — flow control
+		return true
+	case 37: // TCP_OFOMERGE — out-of-order segment merged
+		return true
+	case 82: // SKB_CONSUMED — packet consumed normally
+		return true
+	default:
+		return false
+	}
+}
+
 // dropReasonString maps kernel SKB_DROP_REASON enum values to human-readable strings.
 func dropReasonString(reason uint32) string {
 	switch reason {
@@ -87,6 +115,12 @@ func dropReasonString(reason uint32) string {
 		return "TCP_FLAGS"
 	case 28:
 		return "TCP_ZEROWINDOW"
+	case 29:
+		return "TCP_OLD_DATA"
+	case 33:
+		return "TCP_OVERWINDOW"
+	case 37:
+		return "TCP_OFOMERGE"
 	case 44:
 		return "IP_OUTNOROUTES"
 	case 52:
@@ -95,6 +129,8 @@ func dropReasonString(reason uint32) string {
 		return "FULL_RING"
 	case 63:
 		return "NOMEM"
+	case 82:
+		return "SKB_CONSUMED"
 	default:
 		return fmt.Sprintf("REASON_%d", reason)
 	}

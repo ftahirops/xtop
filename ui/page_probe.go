@@ -302,11 +302,17 @@ func renderProbeDone(pm *engine.ProbeManager, width int) string {
 			} else if e.P95Ms >= 20 {
 				p95s = warnStyle
 			}
+			p99s := valueStyle
+			if e.P99Ms >= 100 {
+				p99s = critStyle
+			} else if e.P99Ms >= 20 {
+				p99s = warnStyle
+			}
 			row := fmt.Sprintf("  %s %s %s %s %s %s",
 				styledPad(valueStyle.Render(truncate(e.Device, 10)), 12),
 				styledPad(dimStyle.Render(fmt.Sprintf("%.1fms", e.P50Ms)), 10),
 				styledPad(p95s.Render(fmt.Sprintf("%.1fms", e.P95Ms)), 10),
-				styledPad(critStyle.Render(fmt.Sprintf("%.1fms", e.P99Ms)), 10),
+				styledPad(p99s.Render(fmt.Sprintf("%.1fms", e.P99Ms)), 10),
 				styledPad(dimStyle.Render(fmt.Sprintf("%.0f%%", e.UtilPct)), 8),
 				dimStyle.Render("[H]"))
 			sb.WriteString(boxRow(row, innerW) + "\n")
@@ -329,10 +335,24 @@ func renderProbeDone(pm *engine.ProbeManager, width int) string {
 		sb.WriteString(boxMid(innerW) + "\n")
 		for _, e := range f.LockWaiters {
 			ws := valueStyle
-			if e.WaitPct >= 50 {
-				ws = critStyle
-			} else if e.WaitPct >= 30 {
-				ws = warnStyle
+			// Only color high if off-CPU wait is also significant.
+			// Idle daemons (rsyslogd, filebeat) show 90%+ futex wait
+			// but 0% off-CPU — they're just sleeping, not contending.
+			isIdle := true
+			for _, oc := range f.OffCPUWaiters {
+				if oc.PID == e.PID && oc.WaitPct >= 5 {
+					isIdle = false
+					break
+				}
+			}
+			if !isIdle {
+				if e.WaitPct >= 50 {
+					ws = critStyle
+				} else if e.WaitPct >= 30 {
+					ws = warnStyle
+				}
+			} else {
+				ws = dimStyle // idle daemon — dim instead of red
 			}
 			row := fmt.Sprintf("  %s %s %s %s %s",
 				styledPad(dimStyle.Render(fmt.Sprintf("%d", e.PID)), 8),

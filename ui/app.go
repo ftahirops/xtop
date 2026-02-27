@@ -145,6 +145,15 @@ type Model struct {
 	lastActionTime      time.Time          // cooldown: last auto-action time
 	incidentActionCount int                // max actions per incident
 	stableStart         time.Time          // tracks when disk became stable OK
+
+	// Beginner mode / onboarding
+	showOnboarding bool // true when ExperienceLevel == "" (first run)
+	beginnerMode   bool // true when level is "beginner"
+
+	// Explain side panel
+	explainPanelOpen bool // 'E' toggles side panel
+	explainScroll    int  // scroll offset within explain panel
+	explainFocused   bool // Tab toggles focus to panel for scrolling
 }
 
 // NewModel creates a new TUI model.
@@ -167,17 +176,23 @@ func NewModel(ticker engine.Ticker, interval time.Duration, dataDir string) Mode
 	}
 	roles := cfg.Roles
 
+	// Determine beginner/onboarding state
+	showOnboarding := cfg.ExperienceLevel == ""
+	beginnerMode := cfg.ExperienceLevel == "beginner"
+
 	base := ticker.Base()
 	return Model{
-		ticker:        ticker,
-		engine:        base,
-		interval:      interval,
-		eventDetector: detector,
-		layoutMode:    layout,
-		serverRoles:   roles,
-		probeManager:  engine.NewProbeManager(),
-		diskGuardMode: "Monitor",
-		frozenPIDs:    make(map[int]frozenProc),
+		ticker:         ticker,
+		engine:         base,
+		interval:       interval,
+		eventDetector:  detector,
+		layoutMode:     layout,
+		serverRoles:    roles,
+		probeManager:   engine.NewProbeManager(),
+		diskGuardMode:  "Monitor",
+		frozenPIDs:     make(map[int]frozenProc),
+		showOnboarding: showOnboarding,
+		beginnerMode:   beginnerMode,
 	}
 }
 
@@ -228,8 +243,51 @@ func saveRCA(snap *model.Snapshot, rates *model.RateSnapshot, result *model.Anal
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// Onboarding: only accept 1, 2, or quit
+		if m.showOnboarding {
+			switch msg.String() {
+			case "q", "ctrl+c":
+				return m, tea.Quit
+			case "1":
+				m.showOnboarding = false
+				m.beginnerMode = true
+				_ = saveExperienceLevel("beginner")
+			case "2":
+				m.showOnboarding = false
+				m.beginnerMode = false
+				_ = saveExperienceLevel("advanced")
+			}
+			return m, nil
+		}
 		if m.showHelp {
 			m.showHelp = false
+			return m, nil
+		}
+		// Explain panel focused: capture scroll keys
+		if m.explainPanelOpen && m.explainFocused {
+			switch msg.String() {
+			case "q", "ctrl+c":
+				return m, tea.Quit
+			case "j", "down":
+				m.explainScroll++ // clamped in renderExplainSidePanel
+				if m.explainScroll > 200 {
+					m.explainScroll = 200 // safety cap
+				}
+				return m, nil
+			case "k", "up":
+				if m.explainScroll > 0 {
+					m.explainScroll--
+				}
+				return m, nil
+			case "tab":
+				m.explainFocused = false
+				return m, nil
+			case "E":
+				m.explainPanelOpen = false
+				m.explainFocused = false
+				m.explainScroll = 0
+				return m, nil
+			}
 			return m, nil
 		}
 		switch msg.String() {
@@ -328,43 +386,55 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "0":
 			m.page = PageOverview
 			m.scroll = 0
+			m.explainScroll = 0
 		case "1":
 			m.page = PageCPU
 			m.scroll = 0
+			m.explainScroll = 0
 		case "2":
 			m.page = PageMemory
 			m.scroll = 0
+			m.explainScroll = 0
 		case "3":
 			m.page = PageIO
 			m.scroll = 0
+			m.explainScroll = 0
 		case "4":
 			m.page = PageNetwork
 			m.scroll = 0
+			m.explainScroll = 0
 		case "5":
 			m.page = PageCgroups
 			m.scroll = 0
+			m.explainScroll = 0
 		case "6":
 			m.page = PageTimeline
 			m.scroll = 0
+			m.explainScroll = 0
 		case "7":
 			m.page = PageEvents
 			m.scroll = 0
+			m.explainScroll = 0
 			m.evtSelected = 0
 		case "8":
 			m.page = PageProbe
 			m.scroll = 0
+			m.explainScroll = 0
 		case "9":
 			m.page = PageThresholds
 			m.scroll = 0
+			m.explainScroll = 0
 		case "I":
 			if m.probeManager.State() != engine.ProbeRunning {
 				_ = m.probeManager.Start("auto")
 				m.page = PageProbe
 				m.scroll = 0
+				m.explainScroll = 0
 			}
 		case "b", "esc":
 			m.page = PageOverview
 			m.scroll = 0
+			m.explainScroll = 0
 		case "j", "down":
 			if m.page == PageCgroups {
 				maxIdx := 0
@@ -425,33 +495,52 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.page == PageOverview && m.result != nil && m.result.PrimaryBottleneck != "" {
 				m.page = bottleneckToPage(m.result.PrimaryBottleneck)
 				m.scroll = 0
+				m.explainScroll = 0
 			} else if m.page == PageEvents {
 				_, completed := m.eventDetector.AllEvents()
 				if m.evtSelected < len(completed) {
 					evt := completed[m.evtSelected]
 					m.page = bottleneckToPage(evt.Bottleneck)
 					m.scroll = 0
+					m.explainScroll = 0
 				}
 			}
 		case "E":
-			// Export incident report as markdown
+			// Toggle explain side panel
+			m.explainPanelOpen = !m.explainPanelOpen
+			if !m.explainPanelOpen {
+				m.explainFocused = false
+				m.explainScroll = 0
+			}
+		case "tab":
+			// Focus/unfocus explain panel for scrolling
+			if m.explainPanelOpen {
+				m.explainFocused = !m.explainFocused
+			}
+		case "P":
+			// Export incident report as markdown (was E, moved for explain panel)
 			active, completed := m.eventDetector.AllEvents()
 			return m, exportIncidentMarkdown(m.snap, m.rates, m.result, active, completed)
 		case "D":
 			m.page = PageDiskGuard
 			m.scroll = 0
+			m.explainScroll = 0
 		case "L":
 			m.page = PageSecurity
 			m.scroll = 0
+			m.explainScroll = 0
 		case "O":
 			m.page = PageLogs
 			m.scroll = 0
+			m.explainScroll = 0
 		case "H":
 			m.page = PageServices
 			m.scroll = 0
+			m.explainScroll = 0
 		case "W":
 			m.page = PageDiag
 			m.scroll = 0
+			m.explainScroll = 0
 		case "ctrl+d":
 			// Set current layout as default
 			if err := saveDefaultLayout(m.layoutMode); err != nil {
@@ -464,6 +553,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Toggle explain verdict panel
 			if m.result != nil {
 				m.showExplain = !m.showExplain
+			}
+		case "A":
+			// Switch to advanced mode (from beginner)
+			if m.beginnerMode {
+				m.beginnerMode = false
+				_ = saveExperienceLevel("advanced")
+				m.saveMsg = "Switched to Advanced mode"
+				m.saveMsgTime = time.Now()
+			}
+		case "B":
+			// Switch to beginner mode (from advanced)
+			if !m.beginnerMode {
+				m.beginnerMode = true
+				_ = saveExperienceLevel("beginner")
+				m.saveMsg = "Switched to Simple mode"
+				m.saveMsgTime = time.Now()
 			}
 		case "m", "M":
 			// Cycle DiskGuard mode (only on DiskGuard page)
@@ -613,6 +718,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) View() string {
+	if m.showOnboarding {
+		if m.width == 0 {
+			return "Loading..."
+		}
+		return renderOnboarding(m.width, m.height)
+	}
 	if m.showHelp {
 		return m.renderHelp()
 	}
@@ -623,50 +734,78 @@ func (m Model) View() string {
 		return "Collecting first sample..."
 	}
 
+	// Determine rendering width (narrower when explain panel is open)
+	renderW := m.width
+	var explainW int
+	if m.explainPanelOpen {
+		renderW = m.width * 65 / 100
+		explainW = m.width - renderW - 1
+		if explainW < 20 {
+			explainW = 20
+			renderW = m.width - explainW - 1
+		}
+		if renderW < 40 {
+			// Terminal too narrow for side panel — disable it
+			renderW = m.width
+			explainW = 0
+		}
+	}
+
 	smartDisks := m.engine.Smart.Get()
 
 	var content string
-	switch m.page {
-	case PageOverview:
-		content = renderOverview(m.snap, m.rates, m.result, m.engine.History, smartDisks, m.probeManager, m.layoutMode, m.width, m.height)
-	case PageCPU:
-		content = renderCPUPage(m.snap, m.rates, m.result, m.probeManager, m.width, m.height)
-	case PageMemory:
-		content = renderMemPage(m.snap, m.rates, m.result, m.probeManager, m.width, m.height)
-	case PageIO:
-		content = renderIOPage(m.snap, m.rates, m.result, smartDisks, m.probeManager, m.width, m.height)
-	case PageNetwork:
-		content = renderNetPage(m.snap, m.rates, m.result, m.probeManager, m.width, m.height)
-	case PageCgroups:
-		content = renderCgroupPage(m.snap, m.rates, m.result, m.probeManager, m.cgSortCol, m.cgSelected, m.width, m.height)
-	case PageTimeline:
-		content = renderTimelinePage(m.engine.History, m.width, m.height)
-	case PageEvents:
-		active, completed := m.eventDetector.AllEvents()
-		content = renderEventsPage(active, completed, m.evtSelected, m.width, m.height)
-	case PageProbe:
-		content = renderProbePage(m.probeManager, m.snap, m.width, m.height)
-	case PageThresholds:
-		content = renderThresholdsPage(m.snap, m.rates, m.result, m.width, m.height)
-	case PageDiskGuard:
-		dgMsg := ""
-		if time.Since(m.diskGuardMsgT) < 10*time.Second {
-			dgMsg = m.diskGuardMsg
+	// Beginner mode: render simplified page on overview
+	if m.beginnerMode && m.page == PageOverview {
+		content = renderBeginnerPage(m.snap, m.rates, m.result, renderW, m.height)
+	} else {
+		switch m.page {
+		case PageOverview:
+			content = renderOverview(m.snap, m.rates, m.result, m.engine.History, smartDisks, m.probeManager, m.layoutMode, renderW, m.height)
+		case PageCPU:
+			content = renderCPUPage(m.snap, m.rates, m.result, m.probeManager, renderW, m.height)
+		case PageMemory:
+			content = renderMemPage(m.snap, m.rates, m.result, m.probeManager, renderW, m.height)
+		case PageIO:
+			content = renderIOPage(m.snap, m.rates, m.result, smartDisks, m.probeManager, renderW, m.height)
+		case PageNetwork:
+			content = renderNetPage(m.snap, m.rates, m.result, m.probeManager, renderW, m.height)
+		case PageCgroups:
+			content = renderCgroupPage(m.snap, m.rates, m.result, m.probeManager, m.cgSortCol, m.cgSelected, renderW, m.height)
+		case PageTimeline:
+			content = renderTimelinePage(m.engine.History, renderW, m.height)
+		case PageEvents:
+			active, completed := m.eventDetector.AllEvents()
+			content = renderEventsPage(active, completed, m.evtSelected, renderW, m.height)
+		case PageProbe:
+			content = renderProbePage(m.probeManager, m.snap, renderW, m.height)
+		case PageThresholds:
+			content = renderThresholdsPage(m.snap, m.rates, m.result, renderW, m.height)
+		case PageDiskGuard:
+			dgMsg := ""
+			if time.Since(m.diskGuardMsgT) < 10*time.Second {
+				dgMsg = m.diskGuardMsg
+			}
+			content = renderDiskGuardPage(m.snap, m.rates, m.result, m.probeManager, m.diskGuardMode, dgMsg, m.frozenPIDs, renderW, m.height)
+		case PageSecurity:
+			content = renderSecurityPage(m.snap, m.rates, m.result, m.probeManager, renderW, m.height)
+		case PageLogs:
+			content = renderLogsPage(m.snap, m.rates, m.result, m.probeManager, renderW, m.height)
+		case PageServices:
+			content = renderServicesPage(m.snap, m.rates, m.result, m.probeManager, renderW, m.height)
+		case PageDiag:
+			content = renderDiagPage(m.snap, m.rates, m.result, m.probeManager, renderW, m.height)
 		}
-		content = renderDiskGuardPage(m.snap, m.rates, m.result, m.probeManager, m.diskGuardMode, dgMsg, m.frozenPIDs, m.width, m.height)
-	case PageSecurity:
-		content = renderSecurityPage(m.snap, m.rates, m.result, m.probeManager, m.width, m.height)
-	case PageLogs:
-		content = renderLogsPage(m.snap, m.rates, m.result, m.probeManager, m.width, m.height)
-	case PageServices:
-		content = renderServicesPage(m.snap, m.rates, m.result, m.probeManager, m.width, m.height)
-	case PageDiag:
-		content = renderDiagPage(m.snap, m.rates, m.result, m.probeManager, m.width, m.height)
 	}
 
-	// Explain verdict panel (appended after page content)
+	// Old explain verdict panel (appended after page content when 'e' is pressed)
 	if m.showExplain && m.result != nil {
-		content += renderExplainPanel(m.result, m.width)
+		content += renderExplainPanel(m.result, renderW)
+	}
+
+	// Explain side panel (joined as right column when 'E' is pressed)
+	if m.explainPanelOpen && explainW > 0 {
+		panel := renderExplainSidePanel(m.page, m.result, explainW, m.height, m.explainScroll, m.explainFocused)
+		content = joinColumns(content, panel, renderW, "")
 	}
 
 	// Inject clock + interval into the first line (top-right)
@@ -838,11 +977,14 @@ func (m Model) renderStatusBar() string {
 	if m.saveMsg != "" && time.Since(m.saveMsgTime) < 5*time.Second {
 		indicators += "  " + okStyle.Render(m.saveMsg)
 	}
-	if m.page == PageOverview {
+	if m.beginnerMode {
+		indicators += "  " + okStyle.Render("[Simple]")
+	}
+	if m.page == PageOverview && !m.beginnerMode {
 		indicators += "  " + dimStyle.Render(fmt.Sprintf("[%s]", m.layoutMode))
 	}
 
-	help := helpStyle.Render("I:probe  E:export  e:explain  v:layout  a:pause  S:save  ?:help  q:quit")
+	help := helpStyle.Render("E:explain  I:probe  e:verdict  A/B:mode  v:layout  a:pause  S:save  ?:help  q:quit")
 
 	// Try full tabs + indicators + help
 	leftFull := left + indicators
@@ -1115,8 +1257,11 @@ func (m Model) renderHelp() string {
 	sb.WriteString("  J / K     Replay jump to start / end\n")
 	sb.WriteString("  I         Start eBPF probe investigation (auto-detect)\n")
 	sb.WriteString("  S         Save RCA snapshot to JSON file\n")
-	sb.WriteString("  E         Export incident report as markdown\n")
+	sb.WriteString("  E         Toggle explain side panel (metric glossary)\n")
 	sb.WriteString("  e         Toggle explain verdict panel (evidence detail)\n")
+	sb.WriteString("  P         Export incident report as markdown\n")
+	sb.WriteString("  A         Switch to advanced mode\n")
+	sb.WriteString("  B         Switch to simple/beginner mode\n")
 	sb.WriteString("  Enter     Jump to bottleneck detail page\n")
 	sb.WriteString("  j/k       Scroll down/up\n")
 	sb.WriteString("  g/G       Top / jump down\n")
