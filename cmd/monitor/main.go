@@ -18,7 +18,7 @@ func main() {
 	duration := flag.Int("duration", 60, "How long to run in seconds (0=forever)")
 	flag.Parse()
 
-	eng := engine.NewEngine(60)
+	eng := engine.NewEngine(60, *interval)
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)

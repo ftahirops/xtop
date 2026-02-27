@@ -42,8 +42,8 @@ type AlertConfig struct {
 func Default() Config {
 	return Config{
 		DefaultLayout: 0,
-		IntervalSec:   1,
-		HistorySize:   300,
+		IntervalSec:   3,
+		HistorySize:   600,
 		Section:       "overview",
 		Prometheus: PrometheusConfig{
 			Enabled: false,

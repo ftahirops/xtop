@@ -49,7 +49,8 @@ func renderOnboarding(width, height int) string {
 }
 
 // renderBeginnerPage renders the simplified plain-English overview.
-func renderBeginnerPage(snap *model.Snapshot, rates *model.RateSnapshot, result *model.AnalysisResult, width, height int) string {
+// resolvedAgo > 0 means the RCA result is from a pinned (sticky) finding that has since recovered.
+func renderBeginnerPage(snap *model.Snapshot, rates *model.RateSnapshot, result *model.AnalysisResult, resolvedAgo int, width, height int) string {
 	if snap == nil {
 		return "Collecting first sample..."
 	}
@@ -64,20 +65,24 @@ func renderBeginnerPage(snap *model.Snapshot, rates *model.RateSnapshot, result 
 		innerW = 60
 	}
 
-	// Determine subsystem statuses
+	// Determine subsystem statuses (always from live data)
 	cpuStatus, cpuDesc := beginnerCPUStatus(rates)
 	memStatus, memDesc := beginnerMemStatus(snap)
 	diskStatus, diskDesc := beginnerDiskStatus(snap, rates)
 	netStatus, netDesc := beginnerNetStatus(result)
 
 	healthy := cpuStatus == "OK" && memStatus == "OK" && diskStatus == "OK" && netStatus == "OK"
+	// RCA result may be pinned from a recent problem even if live metrics are now OK
+	hasRCA := result != nil && result.PrimaryScore > 25
 
 	// SYSTEM HEALTH box
 	sb.WriteString(boxTopTitle(dimStyle.Render(" SYSTEM HEALTH "), innerW) + "\n")
 	sb.WriteString(boxRow("", innerW) + "\n")
 
-	if healthy {
+	if healthy && !hasRCA {
 		sb.WriteString(boxRow("  "+okStyle.Render("\u2713")+" "+okStyle.Render("Your system is healthy"), innerW) + "\n")
+	} else if healthy && hasRCA && resolvedAgo > 0 {
+		sb.WriteString(boxRow("  "+okStyle.Render("\u2713")+" "+okStyle.Render("System recovered")+"  "+dimStyle.Render(fmt.Sprintf("(problem ended %ds ago)", resolvedAgo)), innerW) + "\n")
 	} else {
 		sb.WriteString(boxRow("  "+warnStyle.Render("\u26a0")+" "+warnStyle.Render("Problem Detected"), innerW) + "\n")
 	}
@@ -89,8 +94,8 @@ func renderBeginnerPage(snap *model.Snapshot, rates *model.RateSnapshot, result 
 	sb.WriteString(boxRow(beginnerStatusLine("Network", netStatus, netDesc, innerW), innerW) + "\n")
 	sb.WriteString(boxRow("", innerW) + "\n")
 
-	// WHAT'S HAPPENING section (only when unhealthy)
-	if !healthy {
+	// WHAT'S HAPPENING section (show when unhealthy OR when pinned RCA exists)
+	if !healthy || hasRCA {
 		sb.WriteString(boxMid(innerW) + "\n")
 		sb.WriteString(boxRow(" "+titleStyle.Render("WHAT'S HAPPENING"), innerW) + "\n")
 		sb.WriteString(boxRow("", innerW) + "\n")

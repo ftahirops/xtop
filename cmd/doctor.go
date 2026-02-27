@@ -62,7 +62,7 @@ type DoctorReport struct {
 
 // runDoctor performs all health checks and outputs the report.
 func runDoctor(cfg Config) error {
-	eng := engine.NewEngine(cfg.HistorySize)
+	eng := engine.NewEngine(cfg.HistorySize, int(cfg.Interval.Seconds()))
 	ticker := engine.Ticker(eng)
 
 	// Collect two snapshots for rate calculation
@@ -159,7 +159,7 @@ func runDoctorWatch(cfg Config) error {
 	defer intervalTicker.Stop()
 
 	// #18: Create engine once and reuse across iterations
-	eng := engine.NewEngine(cfg.HistorySize)
+	eng := engine.NewEngine(cfg.HistorySize, int(cfg.Interval.Seconds()))
 	ticker := engine.Ticker(eng)
 
 	// Prime with first tick for rate baseline

@@ -21,13 +21,17 @@ type History struct {
 }
 
 // NewHistory creates a ring buffer with the given capacity.
-func NewHistory(capacity int) *History {
+// intervalSec is the collection interval, used to calibrate alert thresholds.
+func NewHistory(capacity, intervalSec int) *History {
+	if intervalSec <= 0 {
+		intervalSec = 3
+	}
 	return &History{
 		buf:          make([]model.Snapshot, capacity),
 		rateBuf:      make([]model.RateSnapshot, capacity),
 		cap:          capacity,
 		anomaly:      &AnomalyState{},
-		alert:        &AlertState{},
+		alert:        NewAlertState(intervalSec),
 		signalOnsets: make(map[string]time.Time),
 	}
 }

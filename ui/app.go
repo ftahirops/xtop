@@ -154,6 +154,13 @@ type Model struct {
 	explainPanelOpen bool // 'E' toggles side panel
 	explainScroll    int  // scroll offset within explain panel
 	explainFocused   bool // Tab toggles focus to panel for scrolling
+
+	// Sticky RCA: pin significant findings so they persist after recovery
+	pinnedResult *model.AnalysisResult // most significant recent finding
+	pinnedSnap   *model.Snapshot       // snapshot at time of pinning
+	pinnedRates  *model.RateSnapshot   // rates at time of pinning
+	pinnedAt     time.Time             // when it was pinned
+	resolvedAt   time.Time             // when health dropped back to OK (zero = still active)
 }
 
 // NewModel creates a new TUI model.
@@ -492,8 +499,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.layoutMode = LayoutBtop
 		case "enter":
 			// Culprit jump: from overview or events, go to bottleneck detail page
-			if m.page == PageOverview && m.result != nil && m.result.PrimaryBottleneck != "" {
-				m.page = bottleneckToPage(m.result.PrimaryBottleneck)
+			// Use pinned result if available (sticky RCA survives recovery)
+			jumpResult, _ := m.displayResult()
+			if m.page == PageOverview && jumpResult != nil && jumpResult.PrimaryBottleneck != "" {
+				m.page = bottleneckToPage(jumpResult.PrimaryBottleneck)
 				m.scroll = 0
 				m.explainScroll = 0
 			} else if m.page == PageEvents {
@@ -705,6 +714,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			// DiskGuard Contain mode: auto-freeze top writers when CRIT
 			m.diskGuardContain()
+			// Sticky RCA: pin significant findings so they persist after recovery
+			m.updatePinnedRCA()
 		}
 	case saveConfirmMsg:
 		if msg.err != nil {
@@ -753,14 +764,18 @@ func (m Model) View() string {
 
 	smartDisks := m.engine.Smart.Get()
 
+	// Sticky RCA: use pinned result for RCA-heavy views (overview, beginner, explain)
+	// Live metrics on detail pages always use current m.result
+	rcaResult, resolvedAgo := m.displayResult()
+
 	var content string
 	// Beginner mode: render simplified page on overview
 	if m.beginnerMode && m.page == PageOverview {
-		content = renderBeginnerPage(m.snap, m.rates, m.result, renderW, m.height)
+		content = renderBeginnerPage(m.snap, m.rates, rcaResult, resolvedAgo, renderW, m.height)
 	} else {
 		switch m.page {
 		case PageOverview:
-			content = renderOverview(m.snap, m.rates, m.result, m.engine.History, smartDisks, m.probeManager, m.layoutMode, renderW, m.height)
+			content = renderOverview(m.snap, m.rates, rcaResult, m.engine.History, smartDisks, m.probeManager, m.layoutMode, renderW, m.height)
 		case PageCPU:
 			content = renderCPUPage(m.snap, m.rates, m.result, m.probeManager, renderW, m.height)
 		case PageMemory:
@@ -797,15 +812,21 @@ func (m Model) View() string {
 		}
 	}
 
-	// Old explain verdict panel (appended after page content when 'e' is pressed)
-	if m.showExplain && m.result != nil {
-		content += renderExplainPanel(m.result, renderW)
+	// Old explain verdict panel — uses pinned RCA for persistence
+	if m.showExplain && rcaResult != nil {
+		content += renderExplainPanel(rcaResult, renderW)
 	}
 
 	// Explain side panel (joined as right column when 'E' is pressed)
 	if m.explainPanelOpen && explainW > 0 {
-		panel := renderExplainSidePanel(m.page, m.result, explainW, m.height, m.explainScroll, m.explainFocused)
+		panel := renderExplainSidePanel(m.page, rcaResult, explainW, m.height, m.explainScroll, m.explainFocused)
 		content = joinColumns(content, panel, renderW, "")
+	}
+
+	// Sticky RCA resolved badge (shown below content, above status bar)
+	if resolvedAgo > 0 {
+		badge := dimStyle.Render(fmt.Sprintf("  Root cause from %ds ago — system recovered, holding for review", resolvedAgo))
+		content += "\n" + badge
 	}
 
 	// Inject clock + interval into the first line (top-right)
@@ -1295,6 +1316,70 @@ func (m Model) renderHelp() string {
 	sb.WriteString("\n")
 	sb.WriteString(helpStyle.Render("Press any key to close"))
 	return sb.String()
+}
+
+// stickyRCAHoldDuration is how long a pinned RCA result stays visible after recovery.
+const stickyRCAHoldDuration = 45 * time.Second
+
+// updatePinnedRCA implements sticky RCA: pin significant findings so they
+// persist after the system recovers, giving users time to read the diagnosis.
+func (m *Model) updatePinnedRCA() {
+	if m.result == nil {
+		return
+	}
+
+	now := time.Now()
+	isSignificant := m.result.Health >= model.HealthDegraded || m.result.PrimaryScore > 25
+
+	if isSignificant {
+		// Pin if: no existing pin, or new finding is worse, or old pin is stale
+		shouldPin := false
+		if m.pinnedResult == nil {
+			shouldPin = true
+		} else if m.result.PrimaryScore > m.pinnedResult.PrimaryScore {
+			shouldPin = true // new finding is worse
+		} else if !m.resolvedAt.IsZero() && now.Sub(m.resolvedAt) > 15*time.Second {
+			shouldPin = true // old pin is in decay phase, replace with fresh finding
+		}
+
+		if shouldPin {
+			m.pinnedResult = m.result
+			m.pinnedSnap = m.snap
+			m.pinnedRates = m.rates
+			m.pinnedAt = now
+			m.resolvedAt = time.Time{} // clear resolved — problem is active
+		} else if m.pinnedResult != nil {
+			// Problem still active — keep the pin fresh, clear resolved
+			m.resolvedAt = time.Time{}
+		}
+	} else if m.pinnedResult != nil {
+		// System recovered — start or continue decay timer
+		if m.resolvedAt.IsZero() {
+			m.resolvedAt = now
+		}
+		// After hold duration, clear the pin
+		if now.Sub(m.resolvedAt) > stickyRCAHoldDuration {
+			m.pinnedResult = nil
+			m.pinnedSnap = nil
+			m.pinnedRates = nil
+			m.pinnedAt = time.Time{}
+			m.resolvedAt = time.Time{}
+		}
+	}
+}
+
+// displayResult returns the best AnalysisResult to show RCA data from.
+// Returns the pinned result if available, otherwise the live result.
+// Also returns seconds since resolution (0 = still active, >0 = resolved N seconds ago).
+func (m *Model) displayResult() (result *model.AnalysisResult, resolvedAgo int) {
+	if m.pinnedResult != nil {
+		ago := 0
+		if !m.resolvedAt.IsZero() {
+			ago = int(time.Since(m.resolvedAt).Seconds())
+		}
+		return m.pinnedResult, ago
+	}
+	return m.result, 0
 }
 
 // diskGuardContain handles automatic freeze/resume in Contain/DryRun mode.

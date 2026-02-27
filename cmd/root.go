@@ -19,7 +19,7 @@ import (
 )
 
 // Version is set at build time via ldflags.
-var Version = "0.12.0"
+var Version = "0.12.1"
 
 // Config holds CLI configuration.
 type Config struct {
@@ -157,11 +157,11 @@ func Run() error {
 	if userCfg.IntervalSec > 0 {
 		intervalSec = userCfg.IntervalSec
 	} else {
-		intervalSec = 1
+		intervalSec = 3
 	}
 	historyDefault := userCfg.HistorySize
 	if historyDefault <= 0 {
-		historyDefault = 300
+		historyDefault = 600
 	}
 	sectionDefault := userCfg.Section
 	if sectionDefault == "" {
@@ -350,7 +350,7 @@ func Run() error {
 	}
 
 	// Create engine
-	eng := engine.NewEngine(cfg.HistorySize)
+	eng := engine.NewEngine(cfg.HistorySize, intervalSec)
 
 	// -json mode: single snapshot to stdout
 	if cfg.JSONMode {

@@ -23,7 +23,8 @@ type Engine struct {
 }
 
 // NewEngine creates a new engine with all collectors registered.
-func NewEngine(historySize int) *Engine {
+// intervalSec is the collection interval used to calibrate alert thresholds.
+func NewEngine(historySize, intervalSec int) *Engine {
 	reg := collector.NewRegistry()
 	cgc := cgcollector.NewCollector()
 	reg.Add(cgc)
@@ -34,7 +35,7 @@ func NewEngine(historySize int) *Engine {
 	return &Engine{
 		registry:      reg,
 		cgCollect:     cgc,
-		History:       NewHistory(historySize),
+		History:       NewHistory(historySize, intervalSec),
 		Smart:         collector.NewSMARTCollector(5 * time.Minute),
 		growthTracker: NewMountGrowthTracker(),
 		Sentinel:      sentinel,

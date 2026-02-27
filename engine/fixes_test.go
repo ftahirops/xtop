@@ -21,7 +21,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestHistoryLatestReturnsCopy(t *testing.T) {
-	h := NewHistory(4)
+	h := NewHistory(4, 3)
 
 	snap1 := model.Snapshot{Timestamp: time.Unix(100, 0)}
 	snap1.Global.CPU.NumCPUs = 4
@@ -53,7 +53,7 @@ func TestHistoryLatestReturnsCopy(t *testing.T) {
 }
 
 func TestHistoryPreviousReturnsCopy(t *testing.T) {
-	h := NewHistory(4)
+	h := NewHistory(4, 3)
 
 	snap1 := model.Snapshot{Timestamp: time.Unix(100, 0)}
 	snap1.Global.Memory.Total = 1000
@@ -83,7 +83,7 @@ func TestHistoryPreviousReturnsCopy(t *testing.T) {
 }
 
 func TestHistoryGetReturnsCopy(t *testing.T) {
-	h := NewHistory(4)
+	h := NewHistory(4, 3)
 
 	for i := 0; i < 3; i++ {
 		s := model.Snapshot{Timestamp: time.Unix(int64(i*100), 0)}
@@ -111,7 +111,7 @@ func TestHistoryGetReturnsCopy(t *testing.T) {
 }
 
 func TestHistoryGetRateReturnsCopy(t *testing.T) {
-	h := NewHistory(4)
+	h := NewHistory(4, 3)
 
 	snap1 := model.Snapshot{Timestamp: time.Unix(100, 0)}
 	h.Push(snap1)
@@ -144,7 +144,7 @@ func TestHistoryGetRateReturnsCopy(t *testing.T) {
 }
 
 func TestHistoryGetOutOfBounds(t *testing.T) {
-	h := NewHistory(4)
+	h := NewHistory(4, 3)
 
 	if h.Latest() != nil {
 		t.Fatal("Latest() on empty history should be nil")
@@ -349,7 +349,7 @@ func TestRecorderErrorWriterDoesNotPanic(t *testing.T) {
 	// /proc, so instead we directly construct a Recorder with a nil-safe
 	// approach: create a real engine (its Tick will fail gracefully on
 	// non-Linux or missing /proc, returning a snapshot with errors).
-	eng := NewEngine(10)
+	eng := NewEngine(10, 3)
 	rec := NewRecorder(eng, errorWriter{})
 	defer rec.Close()
 
@@ -383,7 +383,7 @@ func TestRecorderErrorWriterDoesNotPanic(t *testing.T) {
 }
 
 func TestRecorderWithProbeFindings(t *testing.T) {
-	eng := NewEngine(10)
+	eng := NewEngine(10, 3)
 	rec := NewRecorder(eng, errorWriter{})
 	defer rec.Close()
 

@@ -98,7 +98,7 @@ func NewPlayer(r io.Reader, historySize int) (*Player, error) {
 		frames = append(frames, frame)
 	}
 
-	eng := NewEngine(historySize)
+	eng := NewEngine(historySize, 3) // replay uses default 3s calibration
 
 	p := &Player{
 		Engine: eng,
