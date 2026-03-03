@@ -10,44 +10,7 @@
 #define ETH_P_IP    0x0800
 #define IPPROTO_TCP 6
 
-#define TH_FIN  0x01
-#define TH_SYN  0x02
-#define TH_RST  0x04
-#define TH_PUSH 0x08
-#define TH_ACK  0x10
-#define TH_URG  0x20
-
 #define TC_ACT_OK 0
-
-struct ethhdr {
-    unsigned char h_dest[6];
-    unsigned char h_source[6];
-    __u16         h_proto;
-} __attribute__((packed));
-
-struct iphdr {
-    __u8  ihl_ver;
-    __u8  tos;
-    __u16 tot_len;
-    __u16 id;
-    __u16 frag_off;
-    __u8  ttl;
-    __u8  protocol;
-    __u16 check;
-    __u32 saddr;
-    __u32 daddr;
-} __attribute__((packed));
-
-struct tcphdr {
-    __u16 source;
-    __u16 dest;
-    __u32 seq;
-    __u32 ack_seq;
-    __u16 flags_offset; // data offset + reserved + flags
-    __u16 window;
-    __u16 check;
-    __u16 urg_ptr;
-} __attribute__((packed));
 
 struct flags_key {
     __u32 saddr;
@@ -66,6 +29,19 @@ struct {
     __type(value, struct flags_val);
 } flags_accum SEC(".maps");
 
+// Build a flags byte from the individual tcphdr bitfields.
+static __always_inline __u8 extract_tcp_flags(struct tcphdr *tcp)
+{
+    __u8 f = 0;
+    if (tcp->fin) f |= 0x01;
+    if (tcp->syn) f |= 0x02;
+    if (tcp->rst) f |= 0x04;
+    if (tcp->psh) f |= 0x08;
+    if (tcp->ack) f |= 0x10;
+    if (tcp->urg) f |= 0x20;
+    return f;
+}
+
 // Check if the flag combination is anomalous:
 //   XMAS scan:       FIN+PSH+URG (0x29)
 //   NULL scan:       no flags set (0x00)
@@ -74,16 +50,16 @@ struct {
 static __always_inline int is_anomalous(__u8 flags)
 {
     // XMAS: FIN+PUSH+URG
-    if ((flags & (TH_FIN | TH_PUSH | TH_URG)) == (TH_FIN | TH_PUSH | TH_URG))
+    if ((flags & 0x29) == 0x29)
         return 1;
     // NULL: no flags at all
     if (flags == 0x00)
         return 1;
     // SYN+FIN: illegal
-    if ((flags & (TH_SYN | TH_FIN)) == (TH_SYN | TH_FIN))
+    if ((flags & 0x03) == 0x03)
         return 1;
     // FIN without ACK: RFC violation
-    if ((flags & TH_FIN) && !(flags & TH_ACK))
+    if ((flags & 0x01) && !(flags & 0x10))
         return 1;
     return 0;
 }
@@ -112,8 +88,8 @@ int handle_tcpflags(struct __sk_buff *skb)
     if (ip->protocol != IPPROTO_TCP)
         return TC_ACT_OK;
 
-    // Compute IP header length (IHL is lower nibble, in 4-byte units)
-    __u8 ihl = (ip->ihl_ver & 0x0F) * 4;
+    // Compute IP header length (IHL is in 4-byte units)
+    __u8 ihl = ip->ihl * 4;
     if (ihl < 20)
         return TC_ACT_OK;
 
@@ -122,9 +98,8 @@ int handle_tcpflags(struct __sk_buff *skb)
     if ((void *)(tcp + 1) > data_end)
         return TC_ACT_OK;
 
-    // Extract flags: lower 8 bits of flags_offset (network byte order)
-    // TCP flags are in the second byte of the 2-byte field after data offset
-    __u8 flags = (__u8)(__builtin_bswap16(tcp->flags_offset) & 0x3F);
+    // Extract flags from individual bitfields
+    __u8 flags = extract_tcp_flags(tcp);
 
     if (!is_anomalous(flags))
         return TC_ACT_OK;

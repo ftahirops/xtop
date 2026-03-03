@@ -13,32 +13,6 @@
 #define DNS_TYPE_TXT 16
 #define TC_ACT_OK   0
 
-struct ethhdr {
-    unsigned char h_dest[6];
-    unsigned char h_source[6];
-    __u16         h_proto;
-} __attribute__((packed));
-
-struct iphdr {
-    __u8  ihl_ver;
-    __u8  tos;
-    __u16 tot_len;
-    __u16 id;
-    __u16 frag_off;
-    __u8  ttl;
-    __u8  protocol;
-    __u16 check;
-    __u32 saddr;
-    __u32 daddr;
-} __attribute__((packed));
-
-struct udphdr {
-    __u16 source;
-    __u16 dest;
-    __u16 len;
-    __u16 check;
-} __attribute__((packed));
-
 // DNS header: 12 bytes
 struct dnshdr {
     __u16 id;
@@ -49,7 +23,7 @@ struct dnshdr {
     __u16 arcount;
 } __attribute__((packed));
 
-struct dns_val {
+struct dns_deep_val {
     __u64 total_queries;
     __u64 txt_queries;
     __u64 total_query_bytes;
@@ -60,7 +34,7 @@ struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __uint(max_entries, 1024);
     __type(key, __u32);
-    __type(value, struct dns_val);
+    __type(value, struct dns_deep_val);
 } dns_deep SEC(".maps");
 
 SEC("tc")
@@ -85,7 +59,7 @@ int handle_dnsdeep(struct __sk_buff *skb)
     if (ip->protocol != IPPROTO_UDP)
         return TC_ACT_OK;
 
-    __u8 ihl = (ip->ihl_ver & 0x0F) * 4;
+    __u8 ihl = ip->ihl * 4;
     if (ihl < 20)
         return TC_ACT_OK;
 
@@ -144,7 +118,7 @@ int handle_dnsdeep(struct __sk_buff *skb)
 
     // Accumulate per source IP
     __u32 saddr = ip->saddr;
-    struct dns_val *val = bpf_map_lookup_elem(&dns_deep, &saddr);
+    struct dns_deep_val *val = bpf_map_lookup_elem(&dns_deep, &saddr);
     if (val) {
         __sync_fetch_and_add(&val->total_queries, 1);
         __sync_fetch_and_add(&val->total_query_bytes, (__u64)name_len);
@@ -153,7 +127,7 @@ int handle_dnsdeep(struct __sk_buff *skb)
         if (name_len > val->max_name_len)
             val->max_name_len = name_len;
     } else {
-        struct dns_val new_val = {
+        struct dns_deep_val new_val = {
             .total_queries = 1,
             .txt_queries = (qtype == DNS_TYPE_TXT) ? 1 : 0,
             .total_query_bytes = name_len,

@@ -20,36 +20,6 @@
 #define FNV_OFFSET_BASIS 0x811c9dc5U
 #define FNV_PRIME        0x01000193U
 
-struct ethhdr {
-    unsigned char h_dest[6];
-    unsigned char h_source[6];
-    __u16         h_proto;
-} __attribute__((packed));
-
-struct iphdr {
-    __u8  ihl_ver;
-    __u8  tos;
-    __u16 tot_len;
-    __u16 id;
-    __u16 frag_off;
-    __u8  ttl;
-    __u8  protocol;
-    __u16 check;
-    __u32 saddr;
-    __u32 daddr;
-} __attribute__((packed));
-
-struct tcphdr {
-    __u16 source;
-    __u16 dest;
-    __u32 seq;
-    __u32 ack_seq;
-    __u16 flags_offset;
-    __u16 window;
-    __u16 check;
-    __u16 urg_ptr;
-} __attribute__((packed));
-
 struct ja3_val {
     __u64 count;
     __u32 sample_saddr;
@@ -94,7 +64,7 @@ int handle_tlsfinger(struct __sk_buff *skb)
     if (ip->protocol != IPPROTO_TCP)
         return TC_ACT_OK;
 
-    __u8 ihl = (ip->ihl_ver & 0x0F) * 4;
+    __u8 ihl = ip->ihl * 4;
     if (ihl < 20)
         return TC_ACT_OK;
 
@@ -107,8 +77,8 @@ int handle_tlsfinger(struct __sk_buff *skb)
     if (tcp->dest != __builtin_bswap16(TLS_PORT))
         return TC_ACT_OK;
 
-    // Compute TCP header length (data offset is upper 4 bits, in 4-byte units)
-    __u8 tcp_hlen = (__u8)(__builtin_bswap16(tcp->flags_offset) >> 12) * 4;
+    // Compute TCP header length (doff is data offset in 4-byte units)
+    __u8 tcp_hlen = tcp->doff * 4;
     if (tcp_hlen < 20)
         return TC_ACT_OK;
 
