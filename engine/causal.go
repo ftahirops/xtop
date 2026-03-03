@@ -33,6 +33,8 @@ var causalRules = []causalRule{
 	{"mem.major.faults", "io.disk.latency", "faults→iolatency", 0.5},
 
 	// CPU domain
+	{"cpu.busy", "cpu.runqueue", "cpubusy→runqueue", 0.85},
+	{"cpu.busy", "cpu.psi", "cpubusy→psi", 0.8},
 	{"cpu.runqueue", "cpu.psi", "runqueue→psi", 0.85},
 	{"cpu.cgroup.throttle", "cpu.runqueue", "throttle→runqueue", 0.8},
 	{"cpu.steal", "cpu.psi", "steal→psi", 0.9},

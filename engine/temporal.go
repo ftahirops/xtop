@@ -116,6 +116,7 @@ type crossSignalPair struct {
 
 // predefinedPairs are known cause-effect signal relationships.
 var predefinedPairs = []crossSignalPair{
+	{"cpu.busy", "cpu.runqueue", "High CPU utilization driving run queue saturation"},
 	{"cpu.runqueue", "io.disk.latency", "CPU saturation causing IO scheduling delays"},
 	{"mem.reclaim.direct", "io.disk.latency", "Direct page reclaim blocking on disk IO"},
 	{"dotnet.gc.pause", "cpu.runqueue", ".NET GC stop-the-world pauses adding to run queue"},
@@ -217,6 +218,7 @@ func BuildCrossCorrelation(result *model.AnalysisResult, hist *History) []model.
 func shortLabel(id string) string {
 	labels := map[string]string{
 		"cpu.psi":              "CPU PSI",
+		"cpu.busy":             "CPU busy",
 		"cpu.runqueue":         "runqueue",
 		"cpu.ctxswitch":        "ctx-switch",
 		"cpu.steal":            "steal",

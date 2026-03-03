@@ -606,6 +606,7 @@ func analyzeCPU(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEntry 
 
 	// --- v2 evidence ---
 	w, c := threshold("cpu.psi", 5, 20)
+	wb, cb := threshold("cpu.busy", 60, 90)
 	w2, c2 := threshold("cpu.runqueue", 1.0, 2.0)
 	w3, c3 := threshold("cpu.ctxswitch", 2000, 10000)
 	w4, c4 := threshold("cpu.steal", 5, 15)
@@ -614,6 +615,10 @@ func analyzeCPU(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEntry 
 		emitEvidence("cpu.psi", model.DomainCPU,
 			cpuSome*100, w, c, true, 0.9,
 			fmt.Sprintf("CPU PSI some=%.1f%% full=%.1f%%", cpuSome*100, cpuFull*100), "avg10",
+			nil, nil),
+		emitEvidence("cpu.busy", model.DomainCPU,
+			busyPct, wb, cb, true, 0.85,
+			fmt.Sprintf("CPU busy=%.1f%%", busyPct), "1s",
 			nil, nil),
 		emitEvidence("cpu.runqueue", model.DomainCPU,
 			rqRatio, w2, c2, false, 0.7,
@@ -697,6 +702,9 @@ func analyzeCPU(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEntry 
 	r.Checks = evidenceToChecks(r.EvidenceV2)
 
 	// Evidence strings
+	if busyPct > 70 {
+		r.Evidence = append(r.Evidence, fmt.Sprintf("CPU busy=%.1f%%", busyPct))
+	}
 	if cpuSome > 0.05 {
 		r.Evidence = append(r.Evidence, fmt.Sprintf("CPU PSI some=%.1f%%", cpuSome*100))
 	}

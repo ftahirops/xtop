@@ -52,7 +52,15 @@ func (as *AlertState) Update(health model.HealthLevel, hasCritEvidence bool) mod
 	}
 
 	// Transition if sustained long enough
-	if as.candidateTicks >= required && as.candidate != as.current {
+	// DEGRADED transitions faster (half the ticks) since it's lower severity
+	needed := required
+	if as.candidate == model.HealthDegraded && as.current == model.HealthOK {
+		needed = required / 2
+		if needed < 2 {
+			needed = 2
+		}
+	}
+	if as.candidateTicks >= needed && as.candidate != as.current {
 		as.current = as.candidate
 	}
 

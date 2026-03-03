@@ -7,6 +7,7 @@ import "github.com/ftahirops/xtop/model"
 var evidenceWeightCategory = map[string]string{
 	// CPU
 	"cpu.psi":              "psi",
+	"cpu.busy":             "latency",
 	"cpu.runqueue":         "queue",
 	"cpu.ctxswitch":        "secondary",
 	"cpu.steal":            "secondary",
