@@ -461,6 +461,14 @@ type SecurityMetrics struct {
 	ReverseShells   []ReverseShellProc
 	BruteForce      bool
 	Score           string // "OK", "WARN", "CRIT"
+
+	// Network security watchdog results
+	TCPFlagAnomalies    []TCPFlagAnomaly    `json:"tcp_flag_anomalies,omitempty"`
+	DNSTunnelIndicators []DNSTunnelIndicator `json:"dns_tunnel_indicators,omitempty"`
+	JA3Fingerprints     []JA3Entry          `json:"ja3_fingerprints,omitempty"`
+	BeaconIndicators    []BeaconIndicator   `json:"beacon_indicators,omitempty"`
+	ThreatScore         string              `json:"threat_score"`
+	ActiveWatchdogs     []string            `json:"active_watchdogs,omitempty"`
 }
 
 // ServiceLogStats holds per-service log error/warning stats.
@@ -557,6 +565,13 @@ type SentinelData struct {
 
 	// CPU
 	CgThrottles []CgThrottleEntry
+
+	// Network security sentinels
+	SynFlood    []SynFloodEntry   `json:"syn_flood,omitempty"`
+	PortScans   []PortScanEntry   `json:"port_scans,omitempty"`
+	DNSAnomaly  []DNSAnomalyEntry `json:"dns_anomaly,omitempty"`
+	FlowRates   []FlowRateEntry   `json:"flow_rates,omitempty"`
+	OutboundTop []OutboundEntry   `json:"outbound_top,omitempty"`
 
 	// Aggregate rates (computed from deltas)
 	PktDropRate    float64
@@ -665,6 +680,94 @@ type PtraceEventEntry struct {
 	RequestStr string
 	Count      uint64
 	Timestamp  int64
+}
+
+// --- Network Security Intelligence types ---
+
+// SynFloodEntry holds BPF-detected SYN flood indicators per source IP.
+type SynFloodEntry struct {
+	SrcIP         string  `json:"src_ip"`
+	SynCount      uint64  `json:"syn_count"`
+	SynAckRetrans uint64  `json:"synack_retrans"`
+	HalfOpenRatio float64 `json:"half_open_ratio"`
+	Rate          float64 `json:"rate"`
+}
+
+// PortScanEntry holds BPF-detected port scan indicators per source IP.
+type PortScanEntry struct {
+	SrcIP             string  `json:"src_ip"`
+	RSTCount          uint64  `json:"rst_count"`
+	UniquePortBuckets int     `json:"unique_port_buckets"`
+	DurationSec       float64 `json:"duration_sec"`
+	Rate              float64 `json:"rate"`
+}
+
+// DNSAnomalyEntry holds BPF-detected DNS anomaly indicators per process.
+type DNSAnomalyEntry struct {
+	PID            int     `json:"pid"`
+	Comm           string  `json:"comm"`
+	QueryCount     uint64  `json:"query_count"`
+	AvgQueryLen    int     `json:"avg_query_len"`
+	TotalRespBytes uint64  `json:"total_resp_bytes"`
+	QueriesPerSec  float64 `json:"queries_per_sec"`
+}
+
+// FlowRateEntry holds BPF-detected connection flow rate data per process/destination.
+type FlowRateEntry struct {
+	PID             int     `json:"pid"`
+	Comm            string  `json:"comm"`
+	DstIP           string  `json:"dst_ip"`
+	ConnectCount    uint64  `json:"connect_count"`
+	CloseCount      uint64  `json:"close_count"`
+	UniqueDestCount int     `json:"unique_dest_count"`
+	Rate            float64 `json:"rate"`
+}
+
+// OutboundEntry holds BPF-detected top outbound data transfer per process/destination.
+type OutboundEntry struct {
+	PID         int     `json:"pid"`
+	Comm        string  `json:"comm"`
+	DstIP       string  `json:"dst_ip"`
+	TotalBytes  uint64  `json:"total_bytes"`
+	PacketCount uint64  `json:"packet_count"`
+	BytesPerSec float64 `json:"bytes_per_sec"`
+}
+
+// TCPFlagAnomaly holds BPF-detected unusual TCP flag combinations.
+type TCPFlagAnomaly struct {
+	SrcIP     string `json:"src_ip"`
+	FlagCombo string `json:"flag_combo"`
+	Count     uint64 `json:"count"`
+}
+
+// DNSTunnelIndicator holds BPF-detected DNS tunneling indicators per process.
+type DNSTunnelIndicator struct {
+	PID         int     `json:"pid"`
+	Comm        string  `json:"comm"`
+	DomainHash  string  `json:"domain_hash"`
+	TXTRatio    float64 `json:"txt_ratio"`
+	AvgQueryLen int     `json:"avg_query_len"`
+	QueryRate   float64 `json:"query_rate"`
+}
+
+// JA3Entry holds a TLS JA3 fingerprint hash and its occurrence data.
+type JA3Entry struct {
+	Hash      string `json:"hash"`
+	Count     uint64 `json:"count"`
+	SampleSrc string `json:"sample_src"`
+	SampleDst string `json:"sample_dst"`
+	Known     string `json:"known"`
+}
+
+// BeaconIndicator holds BPF-detected C2 beacon-like periodic connection indicators.
+type BeaconIndicator struct {
+	PID            int     `json:"pid"`
+	Comm           string  `json:"comm"`
+	DstIP          string  `json:"dst_ip"`
+	DstPort        uint16  `json:"dst_port"`
+	AvgIntervalSec float64 `json:"avg_interval_sec"`
+	Jitter         float64 `json:"jitter"`
+	SampleCount    int     `json:"sample_count"`
 }
 
 // DotNetProcessMetrics holds .NET Core runtime metrics for a single process.
