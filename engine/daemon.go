@@ -155,6 +155,7 @@ func RunDaemon(cfg DaemonConfig) error {
 						"score":      result.PrimaryScore,
 						"culprit":    result.PrimaryCulprit,
 						"process":    result.PrimaryProcess,
+						"app":        result.PrimaryAppName,
 						"pid":        result.PrimaryPID,
 					})
 				}
@@ -233,7 +234,7 @@ func RunDaemon(cfg DaemonConfig) error {
 				topPID, topComm := 0, ""
 				if result.PrimaryPID > 0 {
 					topPID = result.PrimaryPID
-					topComm = result.PrimaryProcess
+					topComm = primaryDisplayName(result)
 				}
 				agg := store.AggregateSample{
 					Health:  result.Health.String(),
@@ -290,7 +291,7 @@ func RunDaemon(cfg DaemonConfig) error {
 				DiskState:      diskState,
 				NetState:       netState,
 				Culprit:        result.PrimaryCulprit,
-				Process:        result.PrimaryProcess,
+				Process:        primaryDisplayName(result),
 				ProcessPID:     result.PrimaryPID,
 				CausalChain:    result.CausalChain,
 				HiddenLatency:  result.HiddenLatency,
@@ -337,7 +338,7 @@ func saveIncidentSnapshot(path string, snap *model.Snapshot, rates *model.RateSn
 		Score:      result.PrimaryScore,
 		Bottleneck: result.PrimaryBottleneck,
 		Culprit:    result.PrimaryCulprit,
-		Process:    result.PrimaryProcess,
+		Process:    primaryDisplayName(result),
 		PID:        result.PrimaryPID,
 		Evidence:   result.PrimaryEvidence,
 		Chain:      result.CausalChain,

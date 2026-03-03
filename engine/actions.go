@@ -27,9 +27,13 @@ func SuggestActions(result *model.AnalysisResult) []model.Action {
 
 	// ── Culprit identification (always first if known) ──
 	if result.PrimaryProcess != "" && result.PrimaryPID > 0 {
+		displayName := result.PrimaryProcess
+		if result.PrimaryAppName != "" {
+			displayName = result.PrimaryAppName
+		}
 		actions = append(actions, model.Action{
 			Summary: fmt.Sprintf("Top culprit: %s (PID %d) — consuming most %s resources",
-				result.PrimaryProcess, result.PrimaryPID, result.PrimaryBottleneck),
+				displayName, result.PrimaryPID, result.PrimaryBottleneck),
 		})
 	}
 	if result.PrimaryCulprit != "" {
@@ -40,7 +44,11 @@ func SuggestActions(result *model.AnalysisResult) []model.Action {
 
 	// ── Point to deep diagnostics for known services ──
 	if result.PrimaryProcess != "" {
-		if svc := knownService(result.PrimaryProcess); svc != "" {
+		diagName := result.PrimaryProcess
+		if result.PrimaryAppName != "" {
+			diagName = result.PrimaryAppName
+		}
+		if svc := knownService(diagName); svc != "" {
 			actions = append(actions, model.Action{
 				Summary: fmt.Sprintf("Press W for %s deep diagnostics (connections, queries, config) — press O for error rate logs", svc),
 			})

@@ -119,10 +119,18 @@ func (e *Engine) Tick() (*model.Snapshot, *model.RateSnapshot, *model.AnalysisRe
 				MemPct:    memPct,
 				IOPSI:     snap.Global.PSI.IO.Full.Avg10,
 				TopPID:    result.PrimaryPID,
-				TopComm:   result.PrimaryProcess,
+				TopComm:   primaryDisplayName(result),
 			})
 		}
 	}
 
 	return snap, rates, result
+}
+
+// primaryDisplayName returns the best display name for the primary culprit.
+func primaryDisplayName(result *model.AnalysisResult) string {
+	if result.PrimaryAppName != "" {
+		return result.PrimaryAppName
+	}
+	return result.PrimaryProcess
 }

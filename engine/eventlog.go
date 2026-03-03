@@ -121,14 +121,18 @@ func (d *EventDetector) updatePeaks(snap *model.Snapshot, rates *model.RateSnaps
 		}
 		d.active.CulpritCgroup = result.PrimaryCulprit
 	}
-	if result.PrimaryProcess != "" && result.PrimaryProcess != d.active.CulpritProcess {
+	culpritDisplay := result.PrimaryProcess
+	if result.PrimaryAppName != "" {
+		culpritDisplay = result.PrimaryAppName
+	}
+	if culpritDisplay != "" && culpritDisplay != d.active.CulpritProcess {
 		if d.active.CulpritProcess != "" {
 			d.addTimelineEntry(now, fmt.Sprintf("%s became top consumer (was %s)",
-				result.PrimaryProcess, d.active.CulpritProcess))
+				culpritDisplay, d.active.CulpritProcess))
 		} else {
-			d.addTimelineEntry(now, fmt.Sprintf("%s identified as culprit", result.PrimaryProcess))
+			d.addTimelineEntry(now, fmt.Sprintf("%s identified as culprit", culpritDisplay))
 		}
-		d.active.CulpritProcess = result.PrimaryProcess
+		d.active.CulpritProcess = culpritDisplay
 	}
 	if result.PrimaryPID > 0 {
 		d.active.CulpritPID = result.PrimaryPID

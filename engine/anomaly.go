@@ -53,7 +53,7 @@ func trackAnomaly(result *model.AnalysisResult, hist *History) {
 		// Track culprit
 		culpritKey := result.PrimaryCulprit
 		if culpritKey == "" {
-			culpritKey = result.PrimaryProcess
+			culpritKey = primaryDisplayName(result)
 		}
 		if culpritKey != "" {
 			if a.CulpritName == culpritKey {
