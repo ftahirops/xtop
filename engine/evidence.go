@@ -34,7 +34,12 @@ var evidenceWeightCategory = map[string]string{
 	"net.conntrack":        "queue",
 	"net.softirq":          "secondary",
 	"net.tcp.state":        "secondary",
-	"net.closewait":        "queue",
+	"net.closewait":              "queue",
+	"net.conntrack.drops":        "latency",
+	"net.conntrack.insertfail":   "latency",
+	"net.conntrack.growth":       "queue",
+	"net.conntrack.invalid":      "secondary",
+	"net.conntrack.hashcontention": "secondary",
 
 	// Sentinel evidence
 	"net.sentinel.drops":    "latency",

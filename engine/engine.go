@@ -7,6 +7,7 @@ import (
 	"github.com/ftahirops/xtop/collector"
 	cgcollector "github.com/ftahirops/xtop/collector/cgroup"
 	bpf "github.com/ftahirops/xtop/collector/ebpf"
+	rt "github.com/ftahirops/xtop/collector/runtime"
 	"github.com/ftahirops/xtop/model"
 )
 
@@ -19,7 +20,10 @@ type Engine struct {
 	growthTracker *MountGrowthTracker
 	Sentinel      *bpf.SentinelManager
 	Watchdog      *WatchdogTrigger
-	tickMu        sync.Mutex // serializes Tick() calls to prevent concurrent collection
+	MultiRes      *MultiResBuffer // multi-resolution time series (nil if unused)
+	SLOPolicies   []SLOPolicy    // SLO policies from config/flags
+	Autopilot     *Autopilot     // autopilot subsystem (nil if disabled)
+	tickMu        sync.Mutex     // serializes Tick() calls to prevent concurrent collection
 }
 
 // NewEngine creates a new engine with all collectors registered.
@@ -31,6 +35,15 @@ func NewEngine(historySize, intervalSec int) *Engine {
 
 	sentinel := bpf.NewSentinelManager()
 	reg.Add(sentinel)
+
+	// Runtime detection modules — runs after ProcessCollector so snap.Processes is available
+	rtm := rt.NewManager()
+	rtm.Register(rt.NewDotNetModule())
+	rtm.Register(rt.NewJVMModule())
+	rtm.Register(rt.NewPythonModule())
+	rtm.Register(rt.NewNodeModule())
+	rtm.Register(rt.NewGoModule())
+	reg.Add(rtm)
 
 	return &Engine{
 		registry:      reg,
@@ -90,6 +103,24 @@ func (e *Engine) Tick() (*model.Snapshot, *model.RateSnapshot, *model.AnalysisRe
 		if worst == "WARN" || worst == "CRIT" {
 			e.registry.TriggerByName("bigfiles")
 			e.registry.TriggerByName("deleted_open")
+		}
+
+		// Push to multi-resolution buffer if enabled
+		if e.MultiRes != nil {
+			memPct := float64(0)
+			if snap.Global.Memory.Total > 0 {
+				memPct = float64(snap.Global.Memory.Total-snap.Global.Memory.Available) / float64(snap.Global.Memory.Total) * 100
+			}
+			e.MultiRes.PushHiRes(TimeSeries1s{
+				Timestamp: snap.Timestamp,
+				Health:    int(result.Health),
+				Score:     result.PrimaryScore,
+				CPUBusy:   rates.CPUBusyPct,
+				MemPct:    memPct,
+				IOPSI:     snap.Global.PSI.IO.Full.Avg10,
+				TopPID:    result.PrimaryPID,
+				TopComm:   result.PrimaryProcess,
+			})
 		}
 	}
 

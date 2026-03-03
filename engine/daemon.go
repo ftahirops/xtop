@@ -10,7 +10,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ftahirops/xtop/api"
 	"github.com/ftahirops/xtop/model"
+	"github.com/ftahirops/xtop/store"
 )
 
 // DaemonConfig holds daemon-specific configuration.
@@ -69,6 +71,39 @@ func RunDaemon(cfg DaemonConfig) error {
 	eventWriter := NewEventLogWriter(filepath.Join(cfg.DataDir, "events.jsonl"))
 	summaryPath := filepath.Join(cfg.DataDir, "current.jsonl")
 
+	// SQLite incident store (fallback to JSONL-only if init fails)
+	dbPath := filepath.Join(cfg.DataDir, "incidents.db")
+	var db *store.Store
+	if st, err := store.Open(dbPath); err != nil {
+		log.Printf("SQLite init failed (JSONL fallback): %v", err)
+	} else if err := st.Migrate(); err != nil {
+		log.Printf("SQLite migrate failed (JSONL fallback): %v", err)
+		st.Close()
+	} else {
+		db = st
+		defer db.Close()
+		log.Printf("SQLite incident store: %s", dbPath)
+	}
+
+	// Enable multi-resolution buffer on the engine
+	eng.MultiRes = NewMultiResBuffer()
+
+	// Start Unix socket API server
+	apiProvider := api.NewDaemonSnapshotProvider()
+	sockPath := api.DefaultSockPath()
+	apiSrv, err := api.NewServer(sockPath, apiProvider, db)
+	if err != nil {
+		log.Printf("API server init failed: %v", err)
+	} else {
+		go func() {
+			if err := apiSrv.Serve(); err != nil {
+				log.Printf("API server error: %v", err)
+			}
+		}()
+		defer apiSrv.Close()
+		log.Printf("API server listening on %s", sockPath)
+	}
+
 	// Signal handling
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -85,6 +120,9 @@ func RunDaemon(cfg DaemonConfig) error {
 		log.Printf("create incident dir: %v", err)
 	}
 
+	tickCount := 0
+	lastPruneDay := 0
+
 	for {
 		select {
 		case <-sigCh:
@@ -95,6 +133,11 @@ func RunDaemon(cfg DaemonConfig) error {
 			if snap == nil || result == nil {
 				continue
 			}
+			tickCount++
+
+			// Update API snapshot provider
+			scores := ComputeImpactScores(snap, rates, result)
+			apiProvider.Update(snap, rates, result, scores)
 
 			// Event detection
 			detector.Process(snap, rates, result)
@@ -127,7 +170,7 @@ func RunDaemon(cfg DaemonConfig) error {
 
 			// Check for newly completed events
 			// completed is reverse-chronological (newest first).
-			_, completed := detector.AllEvents()
+			active, completed := detector.AllEvents()
 			if len(completed) > prevCompleted {
 				// New events are at indices 0..newCount-1 (newest first).
 				// Process oldest-first for chronological logging.
@@ -143,8 +186,79 @@ func RunDaemon(cfg DaemonConfig) error {
 							notifier.Notify("event_closed", evt)
 						}
 					}
+
+					// SQLite: update incident with end time
+					if db != nil {
+						if err := db.UpdateIncident(evt.ID, evt); err != nil {
+							log.Printf("sqlite update incident: %v", err)
+						}
+						// Update fingerprint
+						fp := ComputeFingerprint(&evt, result)
+						fpRec := store.Fingerprint{
+							FP:          fp,
+							FirstSeen:   evt.StartTime,
+							LastSeen:     evt.EndTime,
+							Count:       1,
+							AvgDuration: evt.Duration,
+							SymptomType: evt.Bottleneck,
+							RootClass:   evt.Bottleneck,
+							TopOffender: evt.CulpritProcess,
+						}
+						if err := db.UpsertFingerprint(fpRec); err != nil {
+							log.Printf("sqlite upsert fingerprint: %v", err)
+						}
+					}
 				}
 				prevCompleted = len(completed)
+			}
+
+			// SQLite: insert active event (if any)
+			if db != nil && active != nil && active.Active {
+				fp := ComputeFingerprint(active, result)
+				scores := ComputeImpactScores(snap, rates, result)
+				// Only insert if new (ignore duplicate key on subsequent ticks)
+				_ = db.InsertIncident(*active, fp, scores)
+			}
+
+			// SQLite: insert 10s aggregate (every 10th tick)
+			if db != nil && tickCount%10 == 0 {
+				memPctAgg := float64(0)
+				if snap.Global.Memory.Total > 0 {
+					memPctAgg = float64(snap.Global.Memory.Total-snap.Global.Memory.Available) / float64(snap.Global.Memory.Total) * 100
+				}
+				cpuBusyAgg := float64(0)
+				if rates != nil {
+					cpuBusyAgg = rates.CPUBusyPct
+				}
+				topPID, topComm := 0, ""
+				if result.PrimaryPID > 0 {
+					topPID = result.PrimaryPID
+					topComm = result.PrimaryProcess
+				}
+				agg := store.AggregateSample{
+					Health:  result.Health.String(),
+					Score:   result.PrimaryScore,
+					CPUBusy: cpuBusyAgg,
+					MemPct:  memPctAgg,
+					IOPSI:   snap.Global.PSI.IO.Full.Avg10,
+					TopPID:  topPID,
+					TopComm: topComm,
+				}
+				if err := db.InsertAggregate(snap.Timestamp, agg); err != nil {
+					log.Printf("sqlite aggregate: %v", err)
+				}
+			}
+
+			// Daily prune: 30 days
+			today := snap.Timestamp.YearDay()
+			if db != nil && today != lastPruneDay {
+				lastPruneDay = today
+				cutoff := snap.Timestamp.Add(-30 * 24 * time.Hour)
+				if n, err := db.Prune(cutoff); err != nil {
+					log.Printf("sqlite prune: %v", err)
+				} else if n > 0 {
+					log.Printf("pruned %d old incidents", n)
+				}
 			}
 
 			// Write compact summary

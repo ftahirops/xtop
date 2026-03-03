@@ -127,6 +127,7 @@ func renderTimelinePage(history *engine.History, width, height int) string {
 		sb.WriteString(critStyle.Render(fmt.Sprintf("  OOM kill detected: %s (PID %d) killed this tick", victim.VictimComm, victim.VictimPID)))
 		sb.WriteString("\n")
 	}
+	sb.WriteString(pageFooter(""))
 
 	return sb.String()
 }

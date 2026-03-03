@@ -60,6 +60,7 @@ func renderDiagPage(snap *model.Snapshot, rates *model.RateSnapshot, result *mod
 		sb.WriteString(boxBot(iw) + "\n")
 		sb.WriteString("\n")
 	}
+	sb.WriteString(pageFooter(""))
 
 	return sb.String()
 }

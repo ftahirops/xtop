@@ -183,6 +183,7 @@ func renderMemPage(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 		procLines = append(procLines, dimStyle.Render("(collecting...)"))
 	}
 	sb.WriteString(boxSection("TOP PROCESSES BY MEMORY", procLines, iw))
+	sb.WriteString(pageFooter(""))
 
 	return sb.String()
 }

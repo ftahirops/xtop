@@ -49,6 +49,21 @@ var causalRules = []causalRule{
 	{"net.tcp.state", "net.drops", "tcpstate→drops", 0.4},
 	{"net.closewait", "net.conntrack", "closewait→conntrack", 0.5},
 	{"net.drops", "net.tcp.retrans", "drops→retrans", 0.6},
+	{"net.conntrack", "net.conntrack.drops", "conntrack→ctdrops", 0.9},
+	{"net.conntrack", "net.conntrack.insertfail", "conntrack→ctinsertfail", 0.9},
+	{"net.conntrack.growth", "net.conntrack", "ctgrowth→conntrack", 0.7},
+	{"net.conntrack.drops", "net.tcp.retrans", "ctdrops→retrans", 0.6},
+
+	// .NET domain
+	{"dotnet.gc.pause", "cpu.runqueue", "gcpause→runqueue", 0.7},
+	{"dotnet.alloc.storm", "mem.reclaim.direct", "allocstorm→reclaim", 0.65},
+	{"dotnet.alloc.storm", "dotnet.gc.pause", "allocstorm→gcpause", 0.8},
+	{"dotnet.threadpool.queue", "dotnet.gc.pause", "tpqueue→gcpause", 0.5},
+
+	// JVM domain
+	{"jvm.gc.pause", "cpu.runqueue", "jvmgcpause→runqueue", 0.7},
+	{"jvm.heap.pressure", "mem.reclaim.direct", "jvmheap→reclaim", 0.6},
+	{"jvm.heap.pressure", "jvm.gc.pause", "jvmheap→gcpause", 0.85},
 }
 
 // buildCausalDAG constructs a causal DAG from fired evidence across all domains.

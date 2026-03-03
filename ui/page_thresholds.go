@@ -22,7 +22,7 @@ type thresholdEntry struct {
 	Status   string // "ok", "warn", "crit"
 }
 
-func renderThresholdsPage(snap *model.Snapshot, rates *model.RateSnapshot, result *model.AnalysisResult, width, height int) string {
+func renderThresholdsPage(snap *model.Snapshot, rates *model.RateSnapshot, result *model.AnalysisResult, width, height int, showAll bool) string {
 	var sb strings.Builder
 	iw := pageInnerW(width)
 
@@ -68,7 +68,6 @@ func renderThresholdsPage(snap *model.Snapshot, rates *model.RateSnapshot, resul
 		makeEntry("SoftIRQ CPU", softPct, "%", 0, 5, 15, "100%", "/proc/stat"),
 		makeEntry("Cgroup Throttle", maxThrottle, "%", 0, 5, 30, "100%", "cpu.stat nr_throttled"),
 	}
-	sb.WriteString(renderThresholdSection("CPU", cpuEntries, iw))
 
 	// ── Memory Thresholds ──
 	mem := snap.Global.Memory
@@ -104,8 +103,6 @@ func renderThresholdsPage(snap *model.Snapshot, rates *model.RateSnapshot, resul
 		makeEntry("Direct Reclaim", directR, "pg/s", 0, 1, 1000, "unlimited", "/proc/vmstat pgscan_direct"),
 		makeEntry("Major Faults", majFaultR, "/s", 0, 10, 500, "unlimited", "/proc/vmstat pgmajfault"),
 	}
-	sb.WriteString(renderThresholdSection("Memory", memEntries, iw))
-
 	// ── Disk IO Thresholds ──
 	psiIO := snap.Global.PSI.IO.Full.Avg10
 	worstAwait := float64(0)
@@ -133,8 +130,6 @@ func renderThresholdsPage(snap *model.Snapshot, rates *model.RateSnapshot, resul
 		makeEntry("D-state Procs", float64(dCount), "", 0, 1, 10, "nr_procs", "/proc/pid/stat state=D"),
 		makeEntry("Dirty % of RAM", dirtyPct, "%", 0, 5, 20, "vm.dirty_ratio", "/proc/meminfo"),
 	}
-	sb.WriteString(renderThresholdSection("Disk IO", ioEntries, iw))
-
 	// ── Disk Space Thresholds ──
 	worstFSUsed := float64(0)
 	worstFSETA := float64(-1)
@@ -161,8 +156,6 @@ func renderThresholdsPage(snap *model.Snapshot, rates *model.RateSnapshot, resul
 		makeEntry("FS ETA to full", etaMin, "min", 9999, 120, 30, "—", "EWMA growth rate (lower=worse)"),
 		makeEntry("Inode Used%", worstFSInode, "%", 0, 85, 95, "100%", "statfs / worst mount"),
 	}
-	sb.WriteString(renderThresholdSection("Disk Space", fsEntries, iw))
-
 	// ── Network Thresholds ──
 	retransR := float64(0)
 	totalDrops := float64(0)
@@ -227,7 +220,35 @@ func renderThresholdsPage(snap *model.Snapshot, rates *model.RateSnapshot, resul
 		makeEntry("TCP Orphans", float64(snap.Global.Sockets.TCPOrphan), "", 0, 200, 2000, "net.ipv4.tcp_max_orphans", "/proc/net/sockstat"),
 		makeEntry("SoftIRQ CPU", softPct, "%", 0, 5, 15, "100% (per core)", "/proc/stat"),
 	}
-	sb.WriteString(renderThresholdSection("Network", netEntries, iw))
+	// Filter banner
+	allEntries := [][]thresholdEntry{cpuEntries, memEntries, ioEntries, fsEntries, netEntries}
+	if !showAll {
+		anomalies := 0
+		total := 0
+		for _, entries := range allEntries {
+			total += len(entries)
+			for _, e := range entries {
+				if e.Status != "ok" {
+					anomalies++
+				}
+			}
+		}
+		if anomalies == 0 {
+			sb.WriteString(okStyle.Render(fmt.Sprintf("  All %d metrics within normal range", total)))
+		} else {
+			sb.WriteString(warnStyle.Render(fmt.Sprintf("  Showing %d anomalies", anomalies)) +
+				dimStyle.Render(fmt.Sprintf(" of %d metrics  (t: show all)", total)))
+		}
+		sb.WriteString("\n\n")
+	} else {
+		sb.WriteString(dimStyle.Render("  Showing all metrics  (t: show anomalies only)") + "\n\n")
+	}
+
+	sb.WriteString(renderThresholdSection("CPU", cpuEntries, iw, showAll))
+	sb.WriteString(renderThresholdSection("Memory", memEntries, iw, showAll))
+	sb.WriteString(renderThresholdSection("Disk IO", ioEntries, iw, showAll))
+	sb.WriteString(renderThresholdSection("Disk Space", fsEntries, iw, showAll))
+	sb.WriteString(renderThresholdSection("Network", netEntries, iw, showAll))
 
 	// ── RCA Score Thresholds ──
 	var rcaLines []string
@@ -319,6 +340,7 @@ func renderThresholdsPage(snap *model.Snapshot, rates *model.RateSnapshot, resul
 	sb.WriteString(dimStyle.Render("  Limits marked 'Dynamic' adapt to your hardware. Fixed limits are detection thresholds."))
 	sb.WriteString("\n")
 	sb.WriteString(dimStyle.Render("  All system limits are read from /proc and /sys at runtime."))
+	sb.WriteString(pageFooter("t:filter anomalies"))
 
 	return sb.String()
 }
@@ -368,12 +390,17 @@ func makeEntry(name string, cur float64, unit string, normVal, warnVal, critVal 
 	}
 }
 
-func renderThresholdSection(title string, entries []thresholdEntry, iw int) string {
+func renderThresholdSection(title string, entries []thresholdEntry, iw int, showAll bool) string {
 	var lines []string
 	lines = append(lines, dimStyle.Render(fmt.Sprintf("%-22s %12s %10s %10s %10s  %-24s %s",
 		"METRIC", "CURRENT", "NORMAL", "WARN @", "CRIT @", "SYSTEM LIMIT", "SOURCE")))
 
+	hidden := 0
 	for _, e := range entries {
+		if !showAll && e.Status == "ok" {
+			hidden++
+			continue
+		}
 		statusIcon := okStyle.Render("\u25cf") // ●
 		curStyle := valueStyle
 		if e.Status == "crit" {
@@ -394,6 +421,9 @@ func renderThresholdSection(title string, entries []thresholdEntry, iw int) stri
 			e.Limit,
 			dimStyle.Render(e.Source))
 		lines = append(lines, line)
+	}
+	if !showAll && hidden > 0 {
+		lines = append(lines, dimStyle.Render(fmt.Sprintf("  ... %d OK metrics hidden", hidden)))
 	}
 	return boxSection(title, lines, iw)
 }

@@ -911,7 +911,12 @@ func renderRCABox(result *model.AnalysisResult, width int) string {
 
 			// Line 4: Impact + Culprit + Confidence + Active
 			culprit := "\u2014"
-			if result.PrimaryProcess != "" {
+			if result.PrimaryAppName != "" {
+				culprit = result.PrimaryAppName
+				if result.PrimaryPID > 0 {
+					culprit = fmt.Sprintf("%s (PID %d)", result.PrimaryAppName, result.PrimaryPID)
+				}
+			} else if result.PrimaryProcess != "" {
 				culprit = result.PrimaryProcess
 				if result.PrimaryPID > 0 {
 					culprit = fmt.Sprintf("%s(%d)", result.PrimaryProcess, result.PrimaryPID)
@@ -1262,7 +1267,9 @@ func renderRCAInline(result *model.AnalysisResult) string {
 		sb.WriteString(style.Render(rootCause))
 
 		culprit := "\u2014"
-		if result.PrimaryProcess != "" {
+		if result.PrimaryAppName != "" {
+			culprit = truncate(result.PrimaryAppName, 30)
+		} else if result.PrimaryProcess != "" {
 			culprit = truncate(result.PrimaryProcess, 24)
 		} else if result.PrimaryCulprit != "" && result.PrimaryCulprit != "/" {
 			culprit = truncate(result.PrimaryCulprit, 24)
@@ -1553,9 +1560,13 @@ func renderExplainPanel(result *model.AnalysisResult, width int) string {
 			for k, v := range b.Metrics {
 				metricParts = append(metricParts, k+":"+v)
 			}
-			line := fmt.Sprintf(" %d. %s(%d) — %s",
+			displayName := b.Comm
+			if b.AppName != "" {
+				displayName = b.AppName
+			}
+			line := fmt.Sprintf(" %d. %s (PID %d) — %s",
 				i+1,
-				truncate(b.Comm, 16),
+				truncate(displayName, 22),
 				b.PID,
 				strings.Join(metricParts, ", "))
 			sb.WriteString(boxRow(dimStyle.Render(line), innerW) + "\n")
@@ -1588,7 +1599,11 @@ func renderExplainPanel(result *model.AnalysisResult, width int) string {
 		sb.WriteString(boxRow(header, innerW) + "\n")
 
 		if rca.TopProcess != "" {
-			culprit := fmt.Sprintf(" Culprit: %s (PID %d)", valueStyle.Render(rca.TopProcess), rca.TopPID)
+			displayName := rca.TopProcess
+			if rca.TopAppName != "" {
+				displayName = rca.TopAppName
+			}
+			culprit := fmt.Sprintf(" Culprit: %s (PID %d)", valueStyle.Render(displayName), rca.TopPID)
 			sb.WriteString(boxRow(culprit, innerW) + "\n")
 		}
 

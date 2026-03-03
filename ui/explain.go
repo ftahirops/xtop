@@ -79,6 +79,14 @@ var netGlossary = []ExplainEntry{
 	{"Conntrack", "Connection tracking table usage (firewall). Near-full = drops.", "< 70%", "> 90%"},
 	{"softirq%", "CPU time processing network interrupts.", "< 5%", "> 10%"},
 	{"Link util%", "% of link speed being used.", "< 70%", "> 90%"},
+	{"CT drops/s", "Conntrack drop rate. Table full — new connections rejected.", "0", "> 0"},
+	{"CT insertfail", "Conntrack insert failure rate. Flows denied entry to table.", "0", "> 0"},
+	{"CT growth/s", "Net conntrack entries added per second (insert minus delete).", "< 100", "> 1000"},
+	{"CT invalid/s", "Packets that don't match any conntrack entry. Protocol violations.", "< 10", "> 100"},
+	{"CT restart/s", "Hash table search restarts. Indicates contention or sizing issues.", "< 100", "> 1000"},
+	{"CT timeouts", "TCP timeout config from sysctl. ESTABLISHED > 1 day is risky.", "< 1d", "> 1d"},
+	{"Age buckets", "Connection TTL distribution. High churn (<10s) vs persistent (>5m).", "balanced", "> 50% short"},
+	{"CT states", "Conntrack state distribution (ESTABLISHED, TIME_WAIT, etc.).", "mostly ESTAB", "high CW/TW"},
 }
 
 var probeGlossary = []ExplainEntry{
@@ -90,6 +98,20 @@ var probeGlossary = []ExplainEntry{
 	{"Sentinel", "Always-on lightweight probes that detect anomalies.", "active", "errors"},
 	{"Watchdog", "Auto-triggered deep probes activated by RCA findings.", "idle", "n/a"},
 	{"Deep Dive", "Manual investigation probes. Press I to start.", "idle", "n/a"},
+}
+
+var intelGlossary = []ExplainEntry{
+	{"Impact Score", "Weighted composite: CPU 30%, PSI 20%, IO 20%, Mem 20%, Net 10%. Higher = bigger resource hog.", "> 0", "> 70"},
+	{"Cross-correlation", "Cause-effect detection across signal domains (CPU→IO, Mem→Swap, etc.).", "none", "high confidence"},
+	{"Runtime Module", "Auto-discovered language runtime (JVM, .NET, Python, Node, Go). Zero cost when absent.", "detected", "n/a"},
+	{"GC Heap", "Managed heap size after garbage collection (JVM, .NET). Growth = potential memory leak.", "stable", "growing"},
+	{"GC Time%", "% of time spent in garbage collection (JVM, .NET). High = throughput loss.", "< 10%", "> 20%"},
+	{"hsperfdata", "JVM performance data files in /tmp. Provides GC counts, heap sizes, thread counts.", "present", "n/a"},
+	{"GIL-bound", "Python process limited by Global Interpreter Lock. 1 thread + high CPU = likely GIL-bound.", "no", "likely"},
+	{"Alloc Rate", ".NET memory allocation rate. Spikes cause GC pressure.", "stable", "spiking"},
+	{"SLO Status", "Service level objective pass/fail. Evaluated against live metrics.", "PASS", "FAIL"},
+	{"Autopilot", "Safe automated remediation (CPU throttle, process isolation, ionice).", "idle", "active"},
+	{"Incidents", "Stored incident records with fingerprinting for pattern detection.", "0", "> 0"},
 }
 
 var cgroupGlossary = []ExplainEntry{
@@ -118,6 +140,8 @@ func glossaryForPage(page Page) []ExplainEntry {
 		return probeGlossary
 	case PageCgroups:
 		return cgroupGlossary
+	case PageIntel:
+		return intelGlossary
 	default:
 		return overviewGlossary
 	}

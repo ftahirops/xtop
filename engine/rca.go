@@ -38,6 +38,17 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History) 
 		return result.RCA[i].Score > result.RCA[j].Score
 	})
 
+	// Resolve application identity for all RCA entries
+	if curr.Global.AppIdentities != nil {
+		for i := range result.RCA {
+			if result.RCA[i].TopPID > 0 {
+				if id, ok := curr.Global.AppIdentities[result.RCA[i].TopPID]; ok {
+					result.RCA[i].TopAppName = id.DisplayName
+				}
+			}
+		}
+	}
+
 	// Primary + secondary
 	if len(result.RCA) > 0 && result.RCA[0].Score > 0 {
 		primary := result.RCA[0]
@@ -48,6 +59,7 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History) 
 		result.PrimaryCulprit = primary.TopCgroup
 		result.PrimaryPID = primary.TopPID
 		result.PrimaryProcess = primary.TopProcess
+		result.PrimaryAppName = primary.TopAppName
 	}
 
 	// Health level — v2: uses trust gate + domain confidence
@@ -156,6 +168,9 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History) 
 	if result.Narrative != nil && result.TemporalChain != nil {
 		result.Narrative.Temporal = result.TemporalChain.Summary
 	}
+
+	// Cross-signal correlation: detect cause-effect pairs across domains
+	result.CrossCorrelations = BuildCrossCorrelation(result, hist)
 
 	// Blame attribution: identify top offenders
 	result.Blame = ComputeBlame(result, curr, rates)
@@ -373,6 +388,52 @@ func analyzeMemory(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEnt
 			nil, nil),
 	)
 
+	// .NET allocation storm evidence: high alloc rate + threadpool queuing
+	for _, dn := range curr.Global.DotNet {
+		if dn.AllocRateMBs > 100 {
+			r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("dotnet.alloc.storm", model.DomainMemory,
+				dn.AllocRateMBs, 50, 200, true, 0.8,
+				fmt.Sprintf(".NET alloc=%.0f MB/s (PID %d %s)", dn.AllocRateMBs, dn.PID, dn.Comm), "1s",
+				nil, map[string]string{"pid": fmt.Sprintf("%d", dn.PID)}))
+			break
+		}
+	}
+	for _, dn := range curr.Global.DotNet {
+		if dn.ThreadPoolQueue > 10 {
+			r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("dotnet.threadpool.queue", model.DomainMemory,
+				float64(dn.ThreadPoolQueue), 5, 50, true, 0.7,
+				fmt.Sprintf(".NET threadpool queue=%d (PID %d %s)", dn.ThreadPoolQueue, dn.PID, dn.Comm), "1s",
+				nil, map[string]string{"pid": fmt.Sprintf("%d", dn.PID)}))
+			break
+		}
+	}
+
+	// JVM heap pressure evidence: heap used > 80% of capacity
+	for _, entry := range curr.Global.Runtimes.Entries {
+		if entry.Name != "jvm" || !entry.Active {
+			continue
+		}
+		for _, jp := range entry.Processes {
+			heapMaxStr := jp.Extra["heap_max_mb"]
+			if heapMaxStr == "" {
+				continue
+			}
+			heapMaxMB := parseFloat(heapMaxStr)
+			if heapMaxMB <= 0 {
+				continue
+			}
+			heapPct := jp.GCHeapMB / heapMaxMB * 100
+			if heapPct > 80 {
+				r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("jvm.heap.pressure", model.DomainMemory,
+					heapPct, 70, 90, true, 0.8,
+					fmt.Sprintf("JVM heap=%.0f%% (%.0f/%.0f MB, PID %d %s)", heapPct, jp.GCHeapMB, heapMaxMB, jp.PID, jp.Comm), "1s",
+					nil, map[string]string{"pid": fmt.Sprintf("%d", jp.PID)}))
+				break // use worst JVM process
+			}
+		}
+		break
+	}
+
 	// Sentinel: BPF-measured OOM kills and direct reclaim stalls
 	if sent := curr.Global.Sentinel; sent.Active {
 		if len(sent.OOMKills) > 0 {
@@ -572,6 +633,34 @@ func analyzeCPU(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEntry 
 			nil, map[string]string{"cgroup": maxThrottleCg}),
 	)
 
+	// .NET GC pause evidence: high time-in-GC adds CPU contention
+	for _, dn := range curr.Global.DotNet {
+		if dn.TimeInGCPct > 5 {
+			r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("dotnet.gc.pause", model.DomainCPU,
+				dn.TimeInGCPct, 10, 30, true, 0.8,
+				fmt.Sprintf(".NET GC pause=%.1f%% (PID %d %s)", dn.TimeInGCPct, dn.PID, dn.Comm), "1s",
+				nil, map[string]string{"pid": fmt.Sprintf("%d", dn.PID)}))
+			break // use worst .NET process
+		}
+	}
+
+	// JVM GC pause evidence: high GC time from hsperfdata
+	for _, entry := range curr.Global.Runtimes.Entries {
+		if entry.Name != "jvm" || !entry.Active {
+			continue
+		}
+		for _, jp := range entry.Processes {
+			if jp.GCPausePct > 5 {
+				r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("jvm.gc.pause", model.DomainCPU,
+					jp.GCPausePct, 10, 30, true, 0.8,
+					fmt.Sprintf("JVM GC pause=%.1f%% (PID %d %s)", jp.GCPausePct, jp.PID, jp.Comm), "1s",
+					nil, map[string]string{"pid": fmt.Sprintf("%d", jp.PID)}))
+				break // use worst JVM process
+			}
+		}
+		break
+	}
+
 	// Sentinel: BPF-measured cgroup throttle events
 	if sent := curr.Global.Sentinel; sent.Active {
 		if sent.ThrottleRate > 0 {
@@ -740,6 +829,39 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEn
 				nil, nil))
 		}
 	}
+
+	// Conntrack kernel failure rates
+	w6a, c6a := threshold("net.conntrack.drops", 1, 100)
+	w6b, c6b := threshold("net.conntrack.insertfail", 0.1, 10)
+	ctGrowth := rates.ConntrackGrowthRate
+	if ctGrowth < 0 {
+		ctGrowth = 0 // only fire evidence on positive growth
+	}
+	w6c, c6c := threshold("net.conntrack.growth", 100, 1000)
+	w6d, c6d := threshold("net.conntrack.invalid", 10, 500)
+	w6e, c6e := threshold("net.conntrack.hashcontention", 100, 5000)
+	r.EvidenceV2 = append(r.EvidenceV2,
+		emitEvidence("net.conntrack.drops", model.DomainNetwork,
+			rates.ConntrackDropRate, w6a, c6a, true, 0.95,
+			fmt.Sprintf("conntrack drops=%.0f/s", rates.ConntrackDropRate), "1s",
+			nil, nil),
+		emitEvidence("net.conntrack.insertfail", model.DomainNetwork,
+			rates.ConntrackInsertFailRate, w6b, c6b, true, 0.95,
+			fmt.Sprintf("conntrack insert_failed=%.1f/s", rates.ConntrackInsertFailRate), "1s",
+			nil, nil),
+		emitEvidence("net.conntrack.growth", model.DomainNetwork,
+			ctGrowth, w6c, c6c, false, 0.7,
+			fmt.Sprintf("conntrack growth=%.0f/s", rates.ConntrackGrowthRate), "1s",
+			nil, nil),
+		emitEvidence("net.conntrack.invalid", model.DomainNetwork,
+			rates.ConntrackInvalidRate, w6d, c6d, false, 0.6,
+			fmt.Sprintf("conntrack invalid=%.0f/s", rates.ConntrackInvalidRate), "1s",
+			nil, nil),
+		emitEvidence("net.conntrack.hashcontention", model.DomainNetwork,
+			rates.ConntrackSearchRestartRate, w6e, c6e, false, 0.6,
+			fmt.Sprintf("conntrack search_restart=%.0f/s", rates.ConntrackSearchRestartRate), "1s",
+			nil, nil),
+	)
 
 	// Dedicated CLOSE_WAIT evidence with per-PID attribution
 	w6, c6 := threshold("net.closewait", 50, 500)

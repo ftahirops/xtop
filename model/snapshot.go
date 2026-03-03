@@ -195,6 +195,16 @@ type RateSnapshot struct {
 	UDPOutRate   float64
 	UDPErrRate   float64
 
+	// Conntrack rates
+	ConntrackInsertRate        float64
+	ConntrackInsertFailRate    float64 // insert_failed/s — table full indicator
+	ConntrackDeleteRate        float64
+	ConntrackDropRate          float64
+	ConntrackEarlyDropRate     float64 // forced evictions/s
+	ConntrackInvalidRate       float64
+	ConntrackSearchRestartRate float64 // hash contention/s
+	ConntrackGrowthRate        float64 // insert - delete (net change)
+
 	// SoftIRQ rates
 	SoftIRQNetRxRate float64
 	SoftIRQNetTxRate float64
@@ -226,6 +236,7 @@ type AnalysisResult struct {
 	PrimaryCulprit    string
 	PrimaryPID        int
 	PrimaryProcess    string
+	PrimaryAppName    string // resolved app name for primary culprit
 
 	// Next risk (early warning)
 	NextRisk string
@@ -300,6 +311,9 @@ type AnalysisResult struct {
 	// Temporal causality chain
 	TemporalChain *TemporalChain
 
+	// Cross-signal correlation
+	CrossCorrelations []CrossCorrelation
+
 	// Blame attribution
 	Blame []BlameEntry
 }
@@ -358,6 +372,7 @@ type RCAEntry struct {
 	TopCgroup      string
 	TopProcess     string
 	TopPID         int
+	TopAppName     string // resolved app name from identity (empty = use TopProcess)
 	Evidence       []string
 	Checks         []EvidenceCheck // structured evidence with pass/fail
 	Chain          []string
@@ -466,9 +481,20 @@ type TemporalEvent struct {
 	Sequence   int
 }
 
+// CrossCorrelation describes a detected cause-effect relationship between two
+// signals across different domains (e.g., memory reclaim causing IO latency).
+type CrossCorrelation struct {
+	Cause       string  `json:"cause"`        // evidence ID of the leading signal
+	Effect      string  `json:"effect"`       // evidence ID of the lagging signal
+	LeadTimeSec float64 `json:"lead_time_sec"` // seconds the cause preceded the effect
+	Confidence  float64 `json:"confidence"`   // 0-1 confidence in the correlation
+	Explanation string  `json:"explanation"`  // human-readable description
+}
+
 // BlameEntry identifies a top offending process or cgroup for the current bottleneck.
 type BlameEntry struct {
 	Comm       string
+	AppName    string // resolved app name from identity
 	PID        int
 	CgroupPath string
 	Metrics    map[string]string // "cpu" → "45.2%", "io" → "12 MB/s"

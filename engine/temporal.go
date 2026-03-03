@@ -107,6 +107,112 @@ func BuildTemporalChain(result *model.AnalysisResult, hist *History) *model.Temp
 	return chain
 }
 
+// crossSignalPair defines a predefined cause-effect relationship across domains.
+type crossSignalPair struct {
+	Cause       string
+	Effect      string
+	Explanation string
+}
+
+// predefinedPairs are known cause-effect signal relationships.
+var predefinedPairs = []crossSignalPair{
+	{"cpu.runqueue", "io.disk.latency", "CPU saturation causing IO scheduling delays"},
+	{"mem.reclaim.direct", "io.disk.latency", "Direct page reclaim blocking on disk IO"},
+	{"dotnet.gc.pause", "cpu.runqueue", ".NET GC stop-the-world pauses adding to run queue"},
+	{"net.tcp.retrans", "net.softirq", "TCP retransmits driving softIRQ CPU overhead"},
+	{"mem.swap.activity", "io.disk.latency", "Swap thrashing competing with disk IO"},
+	{"cpu.cgroup.throttle", "net.tcp.retrans", "CPU throttling causing TCP retransmit timeouts"},
+	{"dotnet.alloc.storm", "mem.reclaim.direct", ".NET allocation storm triggering direct reclaim"},
+	{"mem.oom.kills", "cpu.runqueue", "OOM kill recovery causing CPU scheduling storms"},
+	{"io.writeback", "io.disk.latency", "Dirty page writeback flooding disk queue"},
+	{"net.conntrack", "net.drops", "Conntrack table pressure causing packet drops"},
+	{"jvm.gc.pause", "cpu.runqueue", "JVM GC stop-the-world pauses adding to run queue"},
+	{"jvm.heap.pressure", "mem.reclaim.direct", "JVM heap pressure triggering kernel direct reclaim"},
+}
+
+// BuildCrossCorrelation analyzes signal onset ordering across domains to detect
+// cause-effect relationships. It checks predefined signal pairs and computes
+// lead times from signal onsets tracked in History.
+func BuildCrossCorrelation(result *model.AnalysisResult, hist *History) []model.CrossCorrelation {
+	if hist == nil || result == nil {
+		return nil
+	}
+	hist.mu.RLock()
+	defer hist.mu.RUnlock()
+
+	if len(hist.signalOnsets) < 2 {
+		return nil
+	}
+
+	// Build map of currently firing evidence with strength
+	fired := make(map[string]float64)
+	for _, rca := range result.RCA {
+		for _, ev := range rca.EvidenceV2 {
+			if ev.Strength > 0 {
+				fired[ev.ID] = ev.Strength
+			}
+		}
+	}
+
+	var correlations []model.CrossCorrelation
+
+	for _, pair := range predefinedPairs {
+		causeStr, causeOK := fired[pair.Cause]
+		effectStr, effectOK := fired[pair.Effect]
+		if !causeOK || !effectOK {
+			continue
+		}
+
+		causeOnset, cOK := hist.signalOnsets[pair.Cause]
+		effectOnset, eOK := hist.signalOnsets[pair.Effect]
+		if !cOK || !eOK {
+			continue
+		}
+
+		// Cause must have started before or at the same time as effect
+		leadTime := effectOnset.Sub(causeOnset).Seconds()
+		if leadTime < 0 {
+			continue // effect started first — not this correlation
+		}
+
+		// Confidence based on: lead time plausibility + signal strengths
+		confidence := 0.5
+		if leadTime > 0 && leadTime < 30 {
+			confidence += 0.3 // strong temporal evidence
+		} else if leadTime == 0 {
+			confidence += 0.1 // simultaneous — weaker
+		}
+		// Boost for strong signals
+		avgStr := (causeStr + effectStr) / 2
+		if avgStr > 0.5 {
+			confidence += 0.15
+		}
+		if confidence > 1.0 {
+			confidence = 1.0
+		}
+
+		correlations = append(correlations, model.CrossCorrelation{
+			Cause:       pair.Cause,
+			Effect:      pair.Effect,
+			LeadTimeSec: leadTime,
+			Confidence:  confidence,
+			Explanation: pair.Explanation,
+		})
+	}
+
+	// Sort by confidence descending
+	sort.Slice(correlations, func(i, j int) bool {
+		return correlations[i].Confidence > correlations[j].Confidence
+	})
+
+	// Limit to top 5
+	if len(correlations) > 5 {
+		correlations = correlations[:5]
+	}
+
+	return correlations
+}
+
 // shortLabel converts an evidence ID like "cpu.cgroup.throttle" to a short display label.
 func shortLabel(id string) string {
 	labels := map[string]string{
@@ -136,8 +242,18 @@ func shortLabel(id string) string {
 		"net.softirq":          "softirq",
 		"net.tcp.state":        "tcp-state",
 		"net.closewait":        "CLOSE_WAIT",
-		"net.sentinel.drops":   "BPF drops",
-		"net.sentinel.resets":  "BPF resets",
+		"net.sentinel.drops":            "BPF drops",
+		"net.sentinel.resets":           "BPF resets",
+		"net.conntrack.drops":           "ct-drops",
+		"net.conntrack.insertfail":      "ct-insertfail",
+		"net.conntrack.growth":          "ct-growth",
+		"net.conntrack.invalid":         "ct-invalid",
+		"net.conntrack.hashcontention":  "ct-hash",
+		"dotnet.gc.pause":               ".NET GC",
+		"dotnet.alloc.storm":            ".NET alloc",
+		"dotnet.threadpool.queue":       ".NET tp-queue",
+		"jvm.gc.pause":                  "JVM GC",
+		"jvm.heap.pressure":             "JVM heap",
 	}
 	if l, ok := labels[id]; ok {
 		return l

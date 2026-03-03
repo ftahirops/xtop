@@ -13,18 +13,28 @@ func ComputeBlame(result *model.AnalysisResult, curr *model.Snapshot, rates *mod
 		return nil
 	}
 
+	var entries []model.BlameEntry
 	switch result.PrimaryBottleneck {
 	case BottleneckCPU:
-		return blameCPU(rates)
+		entries = blameCPU(rates)
 	case BottleneckMemory:
-		return blameMemory(rates)
+		entries = blameMemory(rates)
 	case BottleneckIO:
-		return blameIO(rates)
+		entries = blameIO(rates)
 	case BottleneckNetwork:
-		return blameNetwork(rates, curr)
-	default:
-		return nil
+		entries = blameNetwork(rates, curr)
 	}
+
+	// Resolve application identity for all blame entries
+	if curr != nil && curr.Global.AppIdentities != nil {
+		for i := range entries {
+			if id, ok := curr.Global.AppIdentities[entries[i].PID]; ok {
+				entries[i].AppName = id.DisplayName
+			}
+		}
+	}
+
+	return entries
 }
 
 func blameCPU(rates *model.RateSnapshot) []model.BlameEntry {

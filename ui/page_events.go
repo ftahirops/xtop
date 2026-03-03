@@ -118,15 +118,5 @@ func renderEventsPage(active *model.Event, completed []model.Event, selected int
 }
 
 func healthStyled(h model.HealthLevel) string {
-	switch h {
-	case model.HealthOK:
-		return okStyle.Render("OK")
-	case model.HealthInconclusive:
-		return orangeStyle.Render("INCONC")
-	case model.HealthDegraded:
-		return warnStyle.Render("DEGRADED")
-	case model.HealthCritical:
-		return critStyle.Render("CRITICAL")
-	}
-	return "UNKNOWN"
+	return renderHealthBadge(h.String())
 }

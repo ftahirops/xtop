@@ -308,13 +308,53 @@ type SoftIRQStats struct {
 
 // ConntrackStats holds conntrack data.
 type ConntrackStats struct {
-	Count   uint64
-	Max     uint64
-	Found   uint64
-	Invalid uint64
-	Insert  uint64
-	Delete  uint64
-	Drop    uint64
+	Count         uint64
+	Max           uint64
+	Buckets       uint64 // hash table buckets (ideal max ~= buckets * 4)
+	Found         uint64
+	Invalid       uint64
+	Insert        uint64
+	InsertFailed  uint64 // failed inserts (table full)
+	Delete        uint64
+	Drop          uint64
+	EarlyDrop     uint64 // evicted before timeout
+	SearchRestart uint64 // hash contention / CPU pressure
+}
+
+// ConntrackDissection holds parsed /proc/net/nf_conntrack data.
+type ConntrackDissection struct {
+	Available   bool
+	TCPCount    int
+	UDPCount    int
+	ICMPCount   int
+	OtherCount  int
+	AgeLt10s    int // TTL remaining < 10s
+	Age10s60s   int // 10s-60s
+	Age1m5m     int // 1m-5m
+	AgeGt5m     int // >= 5m
+	TopSrcIPs   []ConntrackIPCount
+	TopDstIPs   []ConntrackIPCount
+	CTStates    map[string]int // "ESTABLISHED" -> count
+	TotalParsed int
+}
+
+// ConntrackIPCount holds an IP address and its connection count.
+type ConntrackIPCount struct {
+	IP    string
+	Count int
+}
+
+// ConntrackTimeouts holds TCP timeout values from sysctl.
+type ConntrackTimeouts struct {
+	Available   bool
+	Established int // default 432000 (5 days!)
+	TimeWait    int // default 120
+	Close       int
+	CloseWait   int
+	SynSent     int
+	SynRecv     int
+	FinWait     int
+	LastAck     int
 }
 
 // FDStats holds file descriptor usage.
@@ -627,6 +667,68 @@ type PtraceEventEntry struct {
 	Timestamp  int64
 }
 
+// DotNetProcessMetrics holds .NET Core runtime metrics for a single process.
+type DotNetProcessMetrics struct {
+	PID              int     `json:"pid"`
+	Comm             string  `json:"comm"`
+	GCHeapSizeMB     float64 `json:"gc_heap_size_mb"`
+	Gen0GCCount      uint64  `json:"gen0_gc_count"`
+	Gen1GCCount      uint64  `json:"gen1_gc_count"`
+	Gen2GCCount      uint64  `json:"gen2_gc_count"`
+	TimeInGCPct      float64 `json:"time_in_gc_pct"`
+	AllocRateMBs     float64 `json:"alloc_rate_mbs"`
+	ThreadPoolCount  int     `json:"threadpool_count"`
+	ThreadPoolQueue  int     `json:"threadpool_queue"`
+	ExceptionCount   uint64  `json:"exception_count"`
+	MonitorLockCount uint64  `json:"monitor_lock_count"`
+	WorkingSetMB     float64 `json:"working_set_mb"`
+	RequestsPerSec   float64 `json:"requests_per_sec"`
+	CurrentRequests  int     `json:"current_requests"`
+}
+
+// RuntimeProcessMetrics holds metrics for a single process detected by a language runtime module.
+type RuntimeProcessMetrics struct {
+	PID          int               `json:"pid"`
+	Comm         string            `json:"comm"`
+	Runtime      string            `json:"runtime"` // "jvm", "dotnet", "python", "node", "go"
+	WorkingSetMB float64           `json:"working_set_mb"`
+	ThreadCount  int               `json:"thread_count"`
+	GCHeapMB     float64           `json:"gc_heap_mb,omitempty"`
+	GCPausePct   float64           `json:"gc_pause_pct,omitempty"`
+	GCCount      uint64            `json:"gc_count,omitempty"`
+	AllocRateMBs float64           `json:"alloc_rate_mbs,omitempty"`
+	Extra        map[string]string `json:"extra,omitempty"`
+}
+
+// RuntimeEntry represents one detected language runtime and its processes.
+type RuntimeEntry struct {
+	Name        string                  `json:"name"`         // "jvm", "dotnet", etc.
+	DisplayName string                  `json:"display_name"` // "JVM", ".NET", etc.
+	Active      bool                    `json:"active"`
+	Processes   []RuntimeProcessMetrics `json:"processes"`
+}
+
+// RuntimeMetrics holds all detected language runtime data.
+type RuntimeMetrics struct {
+	Entries []RuntimeEntry `json:"entries,omitempty"`
+}
+
+// AppIdentity holds the resolved application identity for a process.
+type AppIdentity struct {
+	PID           int
+	Comm          string // raw comm from /proc/PID/stat
+	AppName       string // resolved application name ("Elasticsearch")
+	AppVersion    string // version if detectable
+	BinaryPath    string // /proc/PID/exe target
+	Cmdline       string // full cmdline (truncated to 256 chars)
+	ServiceUnit   string // systemd unit name
+	ContainerID   string // container ID prefix (12 chars)
+	ParentComm    string // parent process comm
+	ParentPID     int
+	CgroupPath    string
+	DisplayName   string // pre-formatted: "Elasticsearch [java, elasticsearch.service]"
+}
+
 // GlobalMetrics is the full system-wide metric snapshot.
 type GlobalMetrics struct {
 	PSI            PSIMetrics
@@ -640,8 +742,10 @@ type GlobalMetrics struct {
 	Sockets        SocketStats
 	TCPStates      TCPConnState
 	SoftIRQ        SoftIRQStats
-	Conntrack      ConntrackStats
-	FD             FDStats
+	Conntrack         ConntrackStats
+	ConntrackDissect  ConntrackDissection
+	ConntrackTimeouts ConntrackTimeouts
+	FD                FDStats
 	EphemeralPorts EphemeralPorts
 	TopRemoteIPs     []RemoteIPStats
 	CloseWaitLeakers []CloseWaitLeaker
@@ -656,6 +760,9 @@ type GlobalMetrics struct {
 	Sessions       []ActiveSession
 	Diagnostics    DiagMetrics
 	Sentinel       SentinelData
+	DotNet         []DotNetProcessMetrics
+	Runtimes       RuntimeMetrics
+	AppIdentities  map[int]AppIdentity // PID → resolved identity
 }
 
 // CgroupMetrics holds metrics for a single cgroup.

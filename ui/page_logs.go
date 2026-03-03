@@ -123,6 +123,7 @@ func renderLogsPage(snap *model.Snapshot, rates *model.RateSnapshot, result *mod
 		}
 	}
 	sb.WriteString(boxSection("PER-SERVICE LOG RATES", svcLines, iw))
+	sb.WriteString(pageFooter(""))
 
 	return sb.String()
 }

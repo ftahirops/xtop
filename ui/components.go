@@ -368,3 +368,30 @@ func healthBadge(h fmt.Stringer, score int) string {
 	}
 	return s
 }
+
+// pageFooter renders a consistent key-hint footer line.
+// pageKeys: page-specific bindings (can be ""). Universal keys always appended.
+func pageFooter(pageKeys string) string {
+	universal := "j/k:scroll  ?:help  Esc:back  q:quit"
+	if pageKeys == "" {
+		return "\n" + dimStyle.Render("  "+universal) + "\n"
+	}
+	return "\n" + dimStyle.Render("  "+pageKeys+"  "+universal) + "\n"
+}
+
+// renderHealthBadge returns a styled status badge from a string status.
+// Canonical implementation — use everywhere for consistent badge rendering.
+func renderHealthBadge(status string) string {
+	switch status {
+	case "OK":
+		return okStyle.Render("OK")
+	case "WARN", "WARNING", "DEGRADED":
+		return warnStyle.Render(status)
+	case "CRIT", "CRITICAL":
+		return critStyle.Render(status)
+	case "INCONCLUSIVE":
+		return orangeStyle.Render("INCONCLUSIVE")
+	default:
+		return dimStyle.Render(status)
+	}
+}

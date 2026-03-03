@@ -19,7 +19,7 @@ import (
 )
 
 // Version is set at build time via ldflags.
-var Version = "0.12.1"
+var Version = "0.20.0"
 
 // Config holds CLI configuration.
 type Config struct {
@@ -67,6 +67,16 @@ func printUsage() {
 
 Usage:
   xtop [OPTIONS] [INTERVAL]
+  xtop <subcommand> [ARGS]
+
+Subcommands:
+  why               Instant root-cause summary (health + evidence + actions)
+  top               Impact-scored process table
+  proc <pid>        Deep per-PID report (memory, IO, FDs, connections)
+  incidents         List stored incidents from SQLite
+  incident <id>     Full incident report with offenders and fingerprint
+  export            Export incident to file (--incident <id> --format json|md)
+  flame <pid>       CPU flamegraph (ASCII or folded format)
 
 Modes:
   (default)         Interactive TUI (bubbletea, fullscreen)
@@ -136,11 +146,42 @@ Examples:
   xtop -tmux-status                    Tmux status segment
   xtop -cron-install                   Print crontab line
   xtop -version
+
+Subcommand Examples:
+  sudo xtop why                          Instant RCA summary
+  sudo xtop why --json                   RCA summary as JSON
+  sudo xtop why --md                     RCA summary as Markdown
+  sudo xtop top                          Impact-scored process table (top 20)
+  sudo xtop top -n 10 --sort cpu         Top 10 by CPU impact
+  sudo xtop top --json                   Process table as JSON
+  sudo xtop proc 1234                    Deep report for PID 1234
+  sudo xtop proc 1234 --json             Deep report as JSON
 `, Version)
+}
+
+// subcommands lists known subcommand names for pre-parse dispatch.
+var subcommands = map[string]func([]string) error{
+	"why":       runWhy,
+	"top":       runTop,
+	"proc":      runProc,
+	"incidents": runIncidents,
+	"incident":  runIncident,
+	"export":    runExport,
+	"flame":     runFlame,
 }
 
 // Run parses flags and starts the application.
 func Run() error {
+	// Pre-parse: check for subcommands before flag.Parse().
+	// Subcommands are exact word matches on os.Args[1].
+	// Numbers still parse as interval args.
+	if len(os.Args) > 1 {
+		arg := os.Args[1]
+		if fn, ok := subcommands[arg]; ok {
+			return fn(os.Args[2:])
+		}
+	}
+
 	var cfg Config
 	var intervalSec int
 	var showVersion bool

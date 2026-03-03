@@ -34,10 +34,11 @@ const (
 	PageLogs
 	PageServices
 	PageDiag
+	PageIntel
 	pageCount
 )
 
-var pageNames = []string{"Overview", "CPU", "Memory", "IO", "Network", "CGroups", "Timeline", "Events", "Probe", "Thresholds", "DiskGuard", "Security", "Logs", "Services", "Diagnostics"}
+var pageNames = []string{"Overview", "CPU", "Memory", "IO", "Network", "CGroups", "Timeline", "Events", "Probe", "Thresholds", "DiskGuard", "Security", "Logs", "Services", "Diagnostics", "Intel"}
 
 type tickMsg time.Time
 
@@ -161,6 +162,30 @@ type Model struct {
 	pinnedRates  *model.RateSnapshot   // rates at time of pinning
 	pinnedAt     time.Time             // when it was pinned
 	resolvedAt   time.Time             // when health dropped back to OK (zero = still active)
+
+	// Sticky network intelligence summary
+	pinnedNetSummary   string    // rendered summary box
+	pinnedNetHealth    string    // "DEGRADED" or "CRITICAL" at pin time
+	pinnedNetAt        time.Time // when pinned
+	netSummaryResolved time.Time // when health recovered (zero = active)
+
+	// Thresholds page anomaly filter
+	threshShowAll bool // false=anomalies only; true=show all
+
+	// Probe page collapsible sections
+	probeSectionCursor   int       // 0-12: highlighted section
+	probeSectionExpanded [13]bool  // which sections are expanded
+	probeAutoExpanded    bool      // auto-expand done after probe completes
+
+	// Network page collapsible sections
+	netSectionCursor   int      // 0-5: highlighted section
+	netSectionExpanded [6]bool  // which sections are expanded
+	netFocusMode       bool     // F: show only RCA summary
+	netManualOverride  bool     // user toggled section; disable auto-expand
+
+	// Intel page collapsible sections
+	intelSectionCursor   int                    // 0-5: highlighted section
+	intelSectionExpanded [intelSecCount]bool     // which sections are expanded
 }
 
 // NewModel creates a new TUI model.
@@ -437,6 +462,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.page = PageProbe
 				m.scroll = 0
 				m.explainScroll = 0
+				m.probeAutoExpanded = false
+				for i := range m.probeSectionExpanded {
+					m.probeSectionExpanded[i] = false
+				}
 			}
 		case "b", "esc":
 			m.page = PageOverview
@@ -475,6 +504,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.page == PageCgroups {
 				m.cgSortCol = (m.cgSortCol + 1) % cgSortCount
 			}
+		case "t":
+			if m.page == PageThresholds {
+				m.threshShowAll = !m.threshShowAll
+			}
 		case "G":
 			m.scroll += 20
 		case "g":
@@ -498,6 +531,39 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "f6":
 			m.layoutMode = LayoutBtop
 		case "enter":
+			// Network page: expand/collapse section
+			if m.page == PageNetwork && !m.netFocusMode {
+				cur := m.netSectionCursor
+				if m.netSectionExpanded[cur] {
+					m.netSectionExpanded[cur] = false
+				} else {
+					for i := range m.netSectionExpanded {
+						m.netSectionExpanded[i] = false
+					}
+					m.netSectionExpanded[cur] = true
+				}
+				m.netManualOverride = true
+				return m, nil
+			}
+			// Probe page: expand/collapse section
+			if m.page == PageProbe && m.probeManager != nil && m.probeManager.State() == engine.ProbeDone {
+				cur := m.probeSectionCursor
+				m.probeSectionExpanded[cur] = !m.probeSectionExpanded[cur]
+				return m, nil
+			}
+			// Intel page: expand/collapse section
+			if m.page == PageIntel {
+				cur := m.intelSectionCursor
+				if m.intelSectionExpanded[cur] {
+					m.intelSectionExpanded[cur] = false
+				} else {
+					for i := range m.intelSectionExpanded {
+						m.intelSectionExpanded[i] = false
+					}
+					m.intelSectionExpanded[cur] = true
+				}
+				return m, nil
+			}
 			// Culprit jump: from overview or events, go to bottleneck detail page
 			// Use pinned result if available (sticky RCA survives recovery)
 			jumpResult, _ := m.displayResult()
@@ -522,9 +588,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.explainScroll = 0
 			}
 		case "tab":
-			// Focus/unfocus explain panel for scrolling
 			if m.explainPanelOpen {
 				m.explainFocused = !m.explainFocused
+			} else if m.page == PageNetwork && !m.netFocusMode {
+				m.netSectionCursor = (m.netSectionCursor + 1) % 6
+			} else if m.page == PageProbe && m.probeManager != nil && m.probeManager.State() == engine.ProbeDone {
+				m.probeSectionCursor = (m.probeSectionCursor + 1) % probSecCount
+			} else if m.page == PageIntel {
+				m.intelSectionCursor = (m.intelSectionCursor + 1) % intelSecCount
+			}
+		case "shift+tab":
+			if m.explainPanelOpen {
+				m.explainFocused = !m.explainFocused
+			} else if m.page == PageNetwork && !m.netFocusMode {
+				m.netSectionCursor = (m.netSectionCursor + 5) % 6
+			} else if m.page == PageProbe && m.probeManager != nil && m.probeManager.State() == engine.ProbeDone {
+				m.probeSectionCursor = (m.probeSectionCursor + probSecCount - 1) % probSecCount
+			} else if m.page == PageIntel {
+				m.intelSectionCursor = (m.intelSectionCursor + intelSecCount - 1) % intelSecCount
 			}
 		case "P":
 			// Export incident report as markdown (was E, moved for explain panel)
@@ -564,8 +645,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.showExplain = !m.showExplain
 			}
 		case "A":
-			// Switch to advanced mode (from beginner)
-			if m.beginnerMode {
+			if m.page == PageNetwork {
+				for i := range m.netSectionExpanded {
+					m.netSectionExpanded[i] = true
+				}
+				m.netManualOverride = true
+			} else if m.page == PageProbe {
+				for i := range m.probeSectionExpanded {
+					m.probeSectionExpanded[i] = true
+				}
+			} else if m.page == PageIntel {
+				for i := range m.intelSectionExpanded {
+					m.intelSectionExpanded[i] = true
+				}
+			} else if m.beginnerMode {
 				m.beginnerMode = false
 				_ = saveExperienceLevel("advanced")
 				m.saveMsg = "Switched to Advanced mode"
@@ -578,6 +671,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				_ = saveExperienceLevel("beginner")
 				m.saveMsg = "Switched to Simple mode"
 				m.saveMsgTime = time.Now()
+			}
+		case "C":
+			if m.page == PageNetwork {
+				for i := range m.netSectionExpanded {
+					m.netSectionExpanded[i] = false
+				}
+				m.netManualOverride = false
+				m.netFocusMode = false
+			} else if m.page == PageProbe {
+				for i := range m.probeSectionExpanded {
+					m.probeSectionExpanded[i] = false
+				}
+			} else if m.page == PageIntel {
+				for i := range m.intelSectionExpanded {
+					m.intelSectionExpanded[i] = false
+				}
 			}
 		case "m", "M":
 			// Cycle DiskGuard mode (only on DiskGuard page)
@@ -594,8 +703,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case "x", "X":
-			// Action mode: kill top writer (only on DiskGuard page in Action mode)
-			if m.page == PageDiskGuard && m.diskGuardMode == "Action" && m.rates != nil {
+			// Navigate to Intel page (unless on DiskGuard in Action mode)
+			if m.page != PageDiskGuard || m.diskGuardMode != "Action" {
+				m.page = PageIntel
+				m.scroll = 0
+				m.explainScroll = 0
+			} else if m.page == PageDiskGuard && m.diskGuardMode == "Action" && m.rates != nil {
 				procs := make([]model.ProcessRate, len(m.rates.ProcessRates))
 				copy(procs, m.rates.ProcessRates)
 				sort.Slice(procs, func(i, j int) bool {
@@ -635,8 +748,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case "f", "F":
-			// Contain/Action mode: manually freeze top writer
-			if m.page == PageDiskGuard && (m.diskGuardMode == "Contain" || m.diskGuardMode == "Action") && m.rates != nil {
+			// Network page: toggle focus mode
+			if m.page == PageNetwork {
+				m.netFocusMode = !m.netFocusMode
+			} else if m.page == PageDiskGuard && (m.diskGuardMode == "Contain" || m.diskGuardMode == "Action") && m.rates != nil {
 				procs := make([]model.ProcessRate, len(m.rates.ProcessRates))
 				copy(procs, m.rates.ProcessRates)
 				sort.Slice(procs, func(i, j int) bool {
@@ -706,6 +821,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.eventDetector.Process(msg.snap, msg.rates, msg.result)
 			// Check probe state transitions
 			m.probeManager.Tick()
+			// Auto-expand first non-empty section when probe completes
+			if m.probeManager.State() == engine.ProbeDone && !m.probeAutoExpanded {
+				if f := m.probeManager.Findings(); f != nil {
+					m.probeAutoExpanded = true
+					sections := []int{probSecOffCPU, probSecIOLat, probSecLockWait, probSecTCPRetrans, probSecNetThruput, probSecTCPRTT, probSecTCPConnLat, probSecRunQLat, probSecWBStall, probSecPgFault, probSecSwapEvict, probSecSyscall, probSecSockIO}
+					counts := []int{len(f.OffCPUWaiters), len(f.IOLatency), len(f.LockWaiters), len(f.TCPRetrans), len(f.NetThroughput), len(f.TCPRTT), len(f.TCPConnLat), len(f.RunQLat), len(f.WBStall), len(f.PgFault), len(f.SwapEvict), len(f.SyscallDissect), len(f.SockIO)}
+					for i, c := range counts {
+						if c > 0 {
+							m.probeSectionExpanded[sections[i]] = true
+							m.probeSectionCursor = sections[i]
+							break
+						}
+					}
+				}
+			}
 			// Watchdog auto-trigger: start domain probes when RCA fires
 			if msg.result != nil && msg.result.Watchdog.Active {
 				if m.probeManager.State() != engine.ProbeRunning {
@@ -716,6 +846,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.diskGuardContain()
 			// Sticky RCA: pin significant findings so they persist after recovery
 			m.updatePinnedRCA()
+			// Sticky network intelligence summary
+			m.updatePinnedNetSummary()
+			// Auto-expand relevant network section on anomaly
+			if m.page == PageNetwork && !m.netManualOverride {
+				m.autoExpandNetSection()
+			}
 		}
 	case saveConfirmMsg:
 		if msg.err != nil {
@@ -783,7 +919,11 @@ func (m Model) View() string {
 		case PageIO:
 			content = renderIOPage(m.snap, m.rates, m.result, smartDisks, m.probeManager, renderW, m.height)
 		case PageNetwork:
-			content = renderNetPage(m.snap, m.rates, m.result, m.probeManager, renderW, m.height)
+			netSum, netResAgo := m.displayNetSummary()
+			content = renderNetPage(m.snap, m.rates, m.result, m.probeManager,
+				netSum, netResAgo,
+				m.netSectionCursor, m.netSectionExpanded, m.netFocusMode,
+				renderW, m.height)
 		case PageCgroups:
 			content = renderCgroupPage(m.snap, m.rates, m.result, m.probeManager, m.cgSortCol, m.cgSelected, renderW, m.height)
 		case PageTimeline:
@@ -792,9 +932,9 @@ func (m Model) View() string {
 			active, completed := m.eventDetector.AllEvents()
 			content = renderEventsPage(active, completed, m.evtSelected, renderW, m.height)
 		case PageProbe:
-			content = renderProbePage(m.probeManager, m.snap, renderW, m.height)
+			content = renderProbePage(m.probeManager, m.snap, renderW, m.height, m.probeSectionCursor, m.probeSectionExpanded)
 		case PageThresholds:
-			content = renderThresholdsPage(m.snap, m.rates, m.result, renderW, m.height)
+			content = renderThresholdsPage(m.snap, m.rates, m.result, renderW, m.height, m.threshShowAll)
 		case PageDiskGuard:
 			dgMsg := ""
 			if time.Since(m.diskGuardMsgT) < 10*time.Second {
@@ -809,6 +949,10 @@ func (m Model) View() string {
 			content = renderServicesPage(m.snap, m.rates, m.result, m.probeManager, renderW, m.height)
 		case PageDiag:
 			content = renderDiagPage(m.snap, m.rates, m.result, m.probeManager, renderW, m.height)
+		case PageIntel:
+			content = renderIntelPage(m.snap, m.rates, m.result, m.engine,
+				m.intelSectionCursor, m.intelSectionExpanded,
+				renderW, m.height)
 		}
 	}
 
@@ -834,6 +978,7 @@ func (m Model) View() string {
 
 	// Apply scroll (#34: clamp scroll to valid range)
 	lines := strings.Split(content, "\n")
+	totalLines := len(lines)
 	if m.scroll >= len(lines) {
 		m.scroll = len(lines) - 1
 	}
@@ -845,15 +990,23 @@ func (m Model) View() string {
 	}
 	// Trim to viewport height (leave room for status bar)
 	maxLines := m.height - 2
-	if maxLines > 0 && len(lines) > maxLines {
+	truncated := maxLines > 0 && len(lines) > maxLines
+	if truncated {
 		lines = lines[:maxLines]
 	}
 	content = strings.Join(lines, "\n")
 
-	return content + "\n" + m.renderStatusBar()
+	// Pass scroll info to status bar
+	scrollInfo := ""
+	if m.scroll > 0 || truncated {
+		bottomLine := m.scroll + len(lines)
+		scrollInfo = fmt.Sprintf("%d/%d", bottomLine, totalLines)
+	}
+
+	return content + "\n" + m.renderStatusBar(scrollInfo)
 }
 
-func (m Model) renderStatusBar() string {
+func (m Model) renderStatusBar(scrollInfo string) string {
 	// Page keys
 	pageKey := func(i int) string {
 		switch Page(i) {
@@ -867,6 +1020,8 @@ func (m Model) renderStatusBar() string {
 			return "H"
 		case PageDiag:
 			return "W"
+		case PageIntel:
+			return "X"
 		default:
 			return fmt.Sprintf("%d", i)
 		}
@@ -990,7 +1145,7 @@ func (m Model) renderStatusBar() string {
 
 	left := buildTabs(0) // full labels
 
-	// Indicators (paused, save msg, layout)
+	// Indicators (paused, save msg, layout, scroll)
 	var indicators string
 	if m.paused {
 		indicators += "  " + critStyle.Render("[PAUSED]")
@@ -1003,6 +1158,9 @@ func (m Model) renderStatusBar() string {
 	}
 	if m.page == PageOverview && !m.beginnerMode {
 		indicators += "  " + dimStyle.Render(fmt.Sprintf("[%s]", m.layoutMode))
+	}
+	if scrollInfo != "" {
+		indicators += "  " + dimStyle.Render("↕"+scrollInfo)
 	}
 
 	help := helpStyle.Render("E:explain  I:probe  e:verdict  A/B:mode  v:layout  a:pause  S:save  ?:help  q:quit")
@@ -1128,7 +1286,9 @@ func exportIncidentMarkdown(snap *model.Snapshot, rates *model.RateSnapshot, res
 			sb.WriteString(fmt.Sprintf("- **Health**: %s\n", result.Health))
 			sb.WriteString(fmt.Sprintf("- **Primary Bottleneck**: %s (score %d%%)\n", result.PrimaryBottleneck, result.PrimaryScore))
 			sb.WriteString(fmt.Sprintf("- **Confidence**: %d%%\n", result.Confidence))
-			if result.PrimaryProcess != "" {
+			if result.PrimaryAppName != "" {
+				sb.WriteString(fmt.Sprintf("- **Culprit Application**: %s (PID %d)\n", result.PrimaryAppName, result.PrimaryPID))
+			} else if result.PrimaryProcess != "" {
 				sb.WriteString(fmt.Sprintf("- **Culprit Process**: %s (PID %d)\n", result.PrimaryProcess, result.PrimaryPID))
 			}
 			if result.PrimaryCulprit != "" {
@@ -1268,8 +1428,7 @@ func (m Model) renderHelp() string {
 	sb.WriteString("\n")
 	sb.WriteString(headerStyle.Render("Controls"))
 	sb.WriteString("\n")
-	sb.WriteString("  v/V       Cycle overview layout (F1-F4 for direct)\n")
-	sb.WriteString("  D         DiskGuard page (filesystem space monitor)\n")
+	sb.WriteString("  v/V       Cycle overview layout (F1-F6 for direct)\n")
 	sb.WriteString("  Ctrl+D    Set current layout as default\n")
 	sb.WriteString("  a         Toggle auto-refresh (pause/resume)\n")
 	sb.WriteString("  n         Step one frame (replay mode while paused)\n")
@@ -1285,7 +1444,7 @@ func (m Model) renderHelp() string {
 	sb.WriteString("  B         Switch to simple/beginner mode\n")
 	sb.WriteString("  Enter     Jump to bottleneck detail page\n")
 	sb.WriteString("  j/k       Scroll down/up\n")
-	sb.WriteString("  g/G       Top / jump down\n")
+	sb.WriteString("  g/G       Jump to top / scroll down 20 lines\n")
 	sb.WriteString("  s         Cycle sort column (Cgroups page)\n")
 	sb.WriteString("  ?         Toggle this help\n")
 	sb.WriteString("  q/Ctrl+C  Quit\n")
@@ -1296,23 +1455,35 @@ func (m Model) renderHelp() string {
 	sb.WriteString("  F2        Compact (single summary table)\n")
 	sb.WriteString("  F3        Adaptive (healthy=1 line, unhealthy=expanded)\n")
 	sb.WriteString("  F4        Grid (2x2 subsystem dashboard)\n")
+	sb.WriteString("  F5        htop-style (per-core bars + process table)\n")
+	sb.WriteString("  F6        btop-style (sparkline graphs + process table)\n")
+	sb.WriteString("\n")
+	sb.WriteString(headerStyle.Render("Page-Specific Controls"))
+	sb.WriteString("\n")
+	sb.WriteString("  Network    Tab:sections  Enter:expand  A:all  C:collapse  F:focus\n")
+	sb.WriteString("  DiskGuard  m:cycle mode  f:freeze  x:kill  r:resume\n")
+	sb.WriteString("  CGroups    s:cycle sort  Enter:drilldown\n")
+	sb.WriteString("  Events     Enter:jump to detail\n")
+	sb.WriteString("  Thresholds t:toggle anomaly filter\n")
+	sb.WriteString("  Probe      Tab:sections  Enter:expand  A:all  C:collapse\n")
 	sb.WriteString("\n")
 	sb.WriteString(headerStyle.Render("Panels"))
 	sb.WriteString("\n")
-	sb.WriteString("  Overview   Health + PSI + capacity + owners + chain + RCA\n")
-	sb.WriteString("  CPU        Busy/steal/softirq + throttling + top cgroups/PIDs\n")
-	sb.WriteString("  Memory     Full breakdown + swap + vmstat + reclaim + top consumers\n")
-	sb.WriteString("  IO         Per-device stats + IO type + D-state + top cgroups/PIDs\n")
-	sb.WriteString("  Network    Health + throughput + connections + top consumers\n")
-	sb.WriteString("  CGroups    All cgroups sortable by CPU/throttle/mem/oom/IO\n")
-	sb.WriteString("  Timeline   5m history charts for PSI/load/D-state\n")
-	sb.WriteString("  Events     Detected incidents with RCA detail\n")
-	sb.WriteString("  Probe      eBPF investigation (off-CPU/IO latency/locks/retrans)\n")
-	sb.WriteString("  Thresholds All metrics with thresholds, limits, and scoring rules\n")
-	sb.WriteString("  DiskGuard  Filesystem monitor: growth, ETA, big files, writers\n")
-	sb.WriteString("  Security   Failed auth, SUID changes, fileless, reverse shells\n")
-	sb.WriteString("  Logs       Per-service error/warn rates with sparklines\n")
-	sb.WriteString("  Services   HTTP/TCP probes, cert expiry, DNS resolution\n")
+	sb.WriteString("  Overview    Health + PSI + capacity + owners + chain + RCA\n")
+	sb.WriteString("  CPU         Busy/steal/softirq + throttling + top cgroups/PIDs\n")
+	sb.WriteString("  Memory      Full breakdown + swap + vmstat + reclaim + top consumers\n")
+	sb.WriteString("  IO          Per-device stats + IO type + D-state + top cgroups/PIDs\n")
+	sb.WriteString("  Network     RCA summary + 6 collapsible sections (Tab/Enter/A/C/F)\n")
+	sb.WriteString("  CGroups     All cgroups sortable by CPU/throttle/mem/oom/IO\n")
+	sb.WriteString("  Timeline    5m history charts for PSI/load/D-state\n")
+	sb.WriteString("  Events      Detected incidents with RCA detail\n")
+	sb.WriteString("  Probe       eBPF investigation (off-CPU/IO latency/locks/retrans)\n")
+	sb.WriteString("  Thresholds  All metrics with thresholds, limits, and scoring rules\n")
+	sb.WriteString("  DiskGuard   Filesystem monitor: growth, ETA, big files, writers\n")
+	sb.WriteString("  Security    Failed auth, SUID changes, fileless, reverse shells\n")
+	sb.WriteString("  Logs        Per-service error/warn rates with sparklines\n")
+	sb.WriteString("  Services    HTTP/TCP probes, cert expiry, DNS resolution\n")
+	sb.WriteString("  Diagnostics Per-service deep analysis (nginx, mysql, redis, etc.)\n")
 	sb.WriteString("\n")
 	sb.WriteString(helpStyle.Render("Press any key to close"))
 	return sb.String()
@@ -1320,6 +1491,9 @@ func (m Model) renderHelp() string {
 
 // stickyRCAHoldDuration is how long a pinned RCA result stays visible after recovery.
 const stickyRCAHoldDuration = 45 * time.Second
+
+// stickyNetHoldDuration is how long a pinned network intelligence summary stays visible after recovery.
+const stickyNetHoldDuration = 60 * time.Second
 
 // updatePinnedRCA implements sticky RCA: pin significant findings so they
 // persist after the system recovers, giving users time to read the diagnosis.
@@ -1380,6 +1554,106 @@ func (m *Model) displayResult() (result *model.AnalysisResult, resolvedAgo int) 
 		return m.pinnedResult, ago
 	}
 	return m.result, 0
+}
+
+// updatePinnedNetSummary pins the network intelligence summary during degraded/critical conditions.
+func (m *Model) updatePinnedNetSummary() {
+	if m.snap == nil {
+		return
+	}
+
+	now := time.Now()
+	health, _ := analyzeNetHealth(m.snap, m.rates)
+
+	if health == "DEGRADED" || health == "CRITICAL" {
+		iw := pageInnerW(m.width)
+		summary := buildNetIntelligenceSummary(m.snap, m.rates, m.result, iw)
+
+		shouldPin := false
+		if m.pinnedNetSummary == "" {
+			shouldPin = true
+		} else if health == "CRITICAL" && m.pinnedNetHealth == "DEGRADED" {
+			shouldPin = true // new health is worse
+		} else if !m.netSummaryResolved.IsZero() && now.Sub(m.netSummaryResolved) > 20*time.Second {
+			shouldPin = true // old pin is stale in decay
+		}
+
+		if shouldPin {
+			m.pinnedNetSummary = summary
+			m.pinnedNetHealth = health
+			m.pinnedNetAt = now
+			m.netSummaryResolved = time.Time{}
+		} else if m.pinnedNetSummary != "" {
+			m.netSummaryResolved = time.Time{} // still active
+		}
+	} else if m.pinnedNetSummary != "" {
+		// Recovered — start or continue decay timer
+		if m.netSummaryResolved.IsZero() {
+			m.netSummaryResolved = now
+		}
+		if now.Sub(m.netSummaryResolved) > stickyNetHoldDuration {
+			m.pinnedNetSummary = ""
+			m.pinnedNetHealth = ""
+			m.pinnedNetAt = time.Time{}
+			m.netSummaryResolved = time.Time{}
+		}
+	}
+}
+
+// displayNetSummary returns the pinned network summary and how many seconds since resolution.
+func (m Model) displayNetSummary() (string, int) {
+	if m.pinnedNetSummary == "" {
+		return "", 0
+	}
+	ago := 0
+	if !m.netSummaryResolved.IsZero() {
+		ago = int(time.Since(m.netSummaryResolved).Seconds())
+	}
+	return m.pinnedNetSummary, ago
+}
+
+// autoExpandNetSection automatically expands the most relevant section
+// based on anomaly detection (only when user hasn't manually overridden).
+func (m *Model) autoExpandNetSection() {
+	if m.snap == nil {
+		return
+	}
+
+	health, _ := analyzeNetHealth(m.snap, m.rates)
+	if health == "OK" {
+		return // no anomaly, no auto-expand
+	}
+
+	target := -1
+
+	// Priority order for auto-expand
+	ct := m.snap.Global.Conntrack
+	st := m.snap.Global.TCPStates
+
+	// Conntrack failures → expand Conntrack
+	if m.rates != nil && (m.rates.ConntrackInsertFailRate > 0 || m.rates.ConntrackDropRate > 0) {
+		target = netSecConntrack
+	} else if ct.Max > 0 && float64(ct.Count)/float64(ct.Max)*100 > 70 {
+		target = netSecConntrack
+	}
+
+	// Socket leak → expand Connections
+	if target < 0 && st.CloseWait > 100 {
+		target = netSecConnections
+	}
+
+	// Retransmits → expand Quality
+	if target < 0 && m.rates != nil && m.rates.RetransRate > 10 {
+		target = netSecQuality
+	}
+
+	if target >= 0 {
+		for i := range m.netSectionExpanded {
+			m.netSectionExpanded[i] = false
+		}
+		m.netSectionExpanded[target] = true
+		m.netSectionCursor = target
+	}
 }
 
 // diskGuardContain handles automatic freeze/resume in Contain/DryRun mode.

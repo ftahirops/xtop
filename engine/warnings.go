@@ -204,6 +204,48 @@ func ComputeWarnings(snap *model.Snapshot, rates *model.RateSnapshot) []model.Wa
 		}
 	}
 
+	// Conntrack kernel failure rates
+	if rates.ConntrackDropRate > 0 {
+		warns = append(warns, model.Warning{
+			Severity: severity(rates.ConntrackDropRate, 10, 100),
+			Signal:   "ct drops/s",
+			Detail:   "Conntrack dropping connections",
+			Value:    fmt.Sprintf("%.0f/s", rates.ConntrackDropRate),
+		})
+	}
+	if rates.ConntrackInsertFailRate > 0 {
+		warns = append(warns, model.Warning{
+			Severity: severity(rates.ConntrackInsertFailRate, 1, 10),
+			Signal:   "ct insertfail",
+			Detail:   "Conntrack insert failures",
+			Value:    fmt.Sprintf("%.1f/s", rates.ConntrackInsertFailRate),
+		})
+	}
+	if rates.ConntrackGrowthRate > 100 {
+		warns = append(warns, model.Warning{
+			Severity: severity(rates.ConntrackGrowthRate, 500, 5000),
+			Signal:   "ct growth",
+			Detail:   "Conntrack table growing fast",
+			Value:    fmt.Sprintf("+%.0f/s", rates.ConntrackGrowthRate),
+		})
+	}
+	if rates.ConntrackInvalidRate > 10 {
+		warns = append(warns, model.Warning{
+			Severity: severity(rates.ConntrackInvalidRate, 50, 500),
+			Signal:   "ct invalid",
+			Detail:   "Conntrack invalid packets",
+			Value:    fmt.Sprintf("%.0f/s", rates.ConntrackInvalidRate),
+		})
+	}
+	if rates.ConntrackSearchRestartRate > 100 {
+		warns = append(warns, model.Warning{
+			Severity: severity(rates.ConntrackSearchRestartRate, 1000, 10000),
+			Signal:   "ct hash",
+			Detail:   "Conntrack hash contention",
+			Value:    fmt.Sprintf("%.0f/s", rates.ConntrackSearchRestartRate),
+		})
+	}
+
 	// FD usage
 	fd := snap.Global.FD
 	if fd.Max > 0 {

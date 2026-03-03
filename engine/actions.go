@@ -302,6 +302,26 @@ func netActions(result *model.AnalysisResult, primary *model.RCAEntry) []model.A
 			actions = append(actions, model.Action{
 				Summary: fmt.Sprintf("Interface errors: %s — check cable/NIC health", c.Value),
 			})
+		case "net.conntrack.drops":
+			actions = append(actions, model.Action{
+				Summary: fmt.Sprintf("Conntrack drops: %s — increase nf_conntrack_max or investigate connection flood", c.Value),
+			})
+		case "net.conntrack.insertfail":
+			actions = append(actions, model.Action{
+				Summary: fmt.Sprintf("Conntrack insert failures: %s — table rejecting new flows, increase max or reduce churn", c.Value),
+			})
+		case "net.conntrack.growth":
+			actions = append(actions, model.Action{
+				Summary: fmt.Sprintf("Conntrack growth: %s — connections accumulating faster than closing; check keepalive/pooling", c.Value),
+			})
+		case "net.conntrack.invalid":
+			actions = append(actions, model.Action{
+				Summary: fmt.Sprintf("Conntrack invalid: %s — malformed packets, check asymmetric routing or LB config", c.Value),
+			})
+		case "net.conntrack.hashcontention":
+			actions = append(actions, model.Action{
+				Summary: fmt.Sprintf("Conntrack hash contention: %s — consider increasing buckets, check CPU/IRQ balance", c.Value),
+			})
 		}
 	}
 

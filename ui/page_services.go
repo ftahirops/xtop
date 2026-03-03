@@ -158,21 +158,13 @@ func renderServicesPage(snap *model.Snapshot, rates *model.RateSnapshot, result 
 		hintLines = append(hintLines, dimStyle.Render("  Cert files are scanned from /etc/letsencrypt/live/*/cert.pem"))
 		sb.WriteString(boxSection("PROBE DISCOVERY", hintLines, iw))
 	}
+	sb.WriteString(pageFooter(""))
 
 	return sb.String()
 }
 
 func statusBadge(status string) string {
-	switch status {
-	case "OK":
-		return okStyle.Render("OK")
-	case "WARN":
-		return warnStyle.Render("WARN")
-	case "CRIT":
-		return critStyle.Render("CRIT")
-	default:
-		return dimStyle.Render("UNKN")
-	}
+	return renderHealthBadge(status)
 }
 
 func certDaysStr(days int) string {

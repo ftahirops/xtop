@@ -220,6 +220,18 @@ func computeNetRates(prev, curr *model.Snapshot, dt time.Duration, r *model.Rate
 	r.UDPOutRate = util.Rate(prev.Global.UDP.OutDatagrams, curr.Global.UDP.OutDatagrams, dt)
 	r.UDPErrRate = util.Rate(prev.Global.UDP.InErrors+prev.Global.UDP.RcvbufErrors,
 		curr.Global.UDP.InErrors+curr.Global.UDP.RcvbufErrors, dt)
+
+	// Conntrack rates
+	pct := prev.Global.Conntrack
+	cct := curr.Global.Conntrack
+	r.ConntrackInsertRate = util.Rate(pct.Insert, cct.Insert, dt)
+	r.ConntrackInsertFailRate = util.Rate(pct.InsertFailed, cct.InsertFailed, dt)
+	r.ConntrackDeleteRate = util.Rate(pct.Delete, cct.Delete, dt)
+	r.ConntrackDropRate = util.Rate(pct.Drop, cct.Drop, dt)
+	r.ConntrackEarlyDropRate = util.Rate(pct.EarlyDrop, cct.EarlyDrop, dt)
+	r.ConntrackInvalidRate = util.Rate(pct.Invalid, cct.Invalid, dt)
+	r.ConntrackSearchRestartRate = util.Rate(pct.SearchRestart, cct.SearchRestart, dt)
+	r.ConntrackGrowthRate = r.ConntrackInsertRate - r.ConntrackDeleteRate
 }
 
 func computeSoftIRQRates(prev, curr *model.Snapshot, dt time.Duration, r *model.RateSnapshot) {

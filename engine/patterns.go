@@ -118,6 +118,16 @@ var patternLibrary = []Pattern{
 		Narrative: "Network congestion — retransmits with packet drops",
 	},
 	{
+		Name:     "Conntrack Drop Storm",
+		Priority: 57,
+		Conditions: []PatternCondition{
+			{EvidenceID: "net.conntrack"},
+			{EvidenceID: "net.conntrack.drops"},
+		},
+		MinMatch:  2,
+		Narrative: "Conntrack drop storm — table full, new connections being rejected",
+	},
+	{
 		Name:     "Conntrack Exhaustion",
 		Priority: 55,
 		Conditions: []PatternCondition{
@@ -126,6 +136,16 @@ var patternLibrary = []Pattern{
 		},
 		MinMatch:  1,
 		Narrative: "Conntrack exhaustion — connection tracking table saturated",
+	},
+	{
+		Name:     "Conntrack Growth Flood",
+		Priority: 53,
+		Conditions: []PatternCondition{
+			{EvidenceID: "net.conntrack.growth"},
+			{EvidenceID: "net.conntrack"},
+		},
+		MinMatch:  2,
+		Narrative: "Conntrack growth flood — connections accumulating faster than closing",
 	},
 	{
 		Name:     "Socket Leak",
@@ -137,6 +157,15 @@ var patternLibrary = []Pattern{
 		Narrative: "Socket leak — CLOSE_WAIT accumulating, application not closing connections",
 	},
 	{
+		Name:     "Conntrack Hash Contention",
+		Priority: 48,
+		Conditions: []PatternCondition{
+			{EvidenceID: "net.conntrack.hashcontention"},
+		},
+		MinMatch:  1,
+		Narrative: "Conntrack hash contention — search_restart spikes, bucket sizing or CPU/IRQ imbalance",
+	},
+	{
 		Name:     "Memory Leak",
 		Priority: 45,
 		Conditions: []PatternCondition{
@@ -144,6 +173,27 @@ var patternLibrary = []Pattern{
 		},
 		MinMatch:  1,
 		Narrative: "Memory pressure from low available memory",
+	},
+	{
+		Name:     "DotNet GC Storm",
+		Priority: 42,
+		Conditions: []PatternCondition{
+			{EvidenceID: "dotnet.gc.pause"},
+			{EvidenceID: "dotnet.alloc.storm"},
+			{EvidenceID: "dotnet.threadpool.queue"},
+		},
+		MinMatch:  2,
+		Narrative: ".NET GC storm — high GC pause time with rapid allocation driving threadpool queuing",
+	},
+	{
+		Name:     "JVM GC Storm",
+		Priority: 41,
+		Conditions: []PatternCondition{
+			{EvidenceID: "jvm.gc.pause"},
+			{EvidenceID: "jvm.heap.pressure"},
+		},
+		MinMatch:  2,
+		Narrative: "JVM GC storm — heap pressure driving excessive garbage collection pauses",
 	},
 }
 

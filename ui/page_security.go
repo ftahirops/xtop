@@ -80,14 +80,16 @@ func renderSecurityPage(snap *model.Snapshot, rates *model.RateSnapshot, result 
 
 	// === SECURITY STATUS ===
 	var statusLines []string
-	switch sec.Score {
-	case "CRIT":
-		statusLines = append(statusLines, critStyle.Render("CRITICAL")+" "+dimStyle.Render("— security signals detected"))
-	case "WARN":
-		statusLines = append(statusLines, warnStyle.Render("WARNING")+" "+dimStyle.Render("— review recommended"))
-	default:
-		statusLines = append(statusLines, okStyle.Render("OK")+" "+dimStyle.Render("— no anomalies"))
-	}
+	statusLines = append(statusLines, renderHealthBadge(sec.Score)+" "+dimStyle.Render(func() string {
+		switch sec.Score {
+		case "CRIT":
+			return "— security signals detected"
+		case "WARN":
+			return "— review recommended"
+		default:
+			return "— no anomalies"
+		}
+	}()))
 	sb.WriteString(boxSection("SECURITY STATUS", statusLines, iw))
 
 	// === SSH / AUTH ===
@@ -111,10 +113,20 @@ func renderSecurityPage(snap *model.Snapshot, rates *model.RateSnapshot, result 
 		authLines = append(authLines, "")
 		authLines = append(authLines, dimStyle.Render("  Source IP              Count"))
 		authLines = append(authLines, dimStyle.Render("  "+strings.Repeat("─", 35)))
-		for _, ip := range sec.FailedAuthIPs {
+		const maxAuthIPs = 10
+		shown := sec.FailedAuthIPs
+		overflow := 0
+		if len(shown) > maxAuthIPs {
+			overflow = len(shown) - maxAuthIPs
+			shown = shown[:maxAuthIPs]
+		}
+		for _, ip := range shown {
 			authLines = append(authLines, fmt.Sprintf("  %s %s",
 				styledPad(valueStyle.Render(ip.IP), 22),
 				warnStyle.Render(fmt.Sprintf("%d", ip.Count))))
+		}
+		if overflow > 0 {
+			authLines = append(authLines, dimStyle.Render(fmt.Sprintf("  ... and %d more", overflow)))
 		}
 	}
 	sb.WriteString(boxSection("SSH / AUTH", authLines, iw))
@@ -308,6 +320,7 @@ func renderSecurityPage(snap *model.Snapshot, rates *model.RateSnapshot, result 
 		}
 	}
 	sb.WriteString(boxSection("REVERSE SHELLS", rsLines, iw))
+	sb.WriteString(pageFooter(""))
 
 	return sb.String()
 }

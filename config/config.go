@@ -22,6 +22,28 @@ type Config struct {
 	CriticalServices []string              `json:"critical_services,omitempty"`
 	ThresholdProfile string                `json:"threshold_profile,omitempty"`
 	ExperienceLevel  string                `json:"experience_level,omitempty"` // "beginner", "advanced", or "" (first run)
+	Autopilot        AutopilotConfig       `json:"autopilot,omitempty"`
+	SLO              SLOConfig             `json:"slo,omitempty"`
+}
+
+// AutopilotConfig configures the safe autopilot subsystem.
+type AutopilotConfig struct {
+	Enabled            bool     `json:"enabled"`
+	AutoConfirm        bool     `json:"auto_confirm"`
+	ProtectedServices  []string `json:"protected_services,omitempty"`
+	MaxCPUQuotaUs      int      `json:"max_cpu_quota_us,omitempty"`
+	MaxMemLimitMB      int      `json:"max_mem_limit_mb,omitempty"`
+	RollbackTimeoutSec int      `json:"rollback_timeout_sec,omitempty"`
+}
+
+// SLOConfig holds SLO policy configuration.
+type SLOConfig struct {
+	Policies []SLOPolicyConfig `json:"policies,omitempty"`
+}
+
+// SLOPolicyConfig is a named SLO policy string.
+type SLOPolicyConfig struct {
+	Name string `json:"name"` // e.g. "cpu<80%", "io_psi<5%"
 }
 
 type PrometheusConfig struct {

@@ -146,11 +146,7 @@ func renderBeginnerPage(snap *model.Snapshot, rates *model.RateSnapshot, result 
 	}
 
 	sb.WriteString(boxBot(innerW) + "\n")
-
-	// Footer hints
-	sb.WriteString("\n")
-	sb.WriteString(dimStyle.Render("  Press A to switch to advanced mode  |  Press 1-9 for detail pages  |  S to save report"))
-	sb.WriteString("\n")
+	sb.WriteString(pageFooter("A:advanced  1-9:pages"))
 
 	return sb.String()
 }

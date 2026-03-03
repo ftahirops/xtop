@@ -234,6 +234,7 @@ func renderIOPage(snap *model.Snapshot, rates *model.RateSnapshot, result *model
 		smartLines = append(smartLines, dimStyle.Render("smartctl not available or no disks detected"))
 	}
 	sb.WriteString(boxSection("SMART DISK HEALTH", smartLines, iw))
+	sb.WriteString(pageFooter(""))
 
 	return sb.String()
 }
