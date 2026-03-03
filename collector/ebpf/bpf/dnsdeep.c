@@ -1,0 +1,168 @@
+// SPDX-License-Identifier: GPL-2.0
+// dnsdeep.c — deep DNS payload inspector (watchdog)
+//
+// TC ingress classifier that parses DNS query packets to detect
+// anomalous patterns: excessive TXT queries (tunneling indicator),
+// unusually long query names (exfiltration indicator).
+#include "vmlinux.h"
+#include <bpf/bpf_helpers.h>
+
+#define ETH_P_IP    0x0800
+#define IPPROTO_UDP 17
+#define DNS_PORT    53
+#define DNS_TYPE_TXT 16
+#define TC_ACT_OK   0
+
+struct ethhdr {
+    unsigned char h_dest[6];
+    unsigned char h_source[6];
+    __u16         h_proto;
+} __attribute__((packed));
+
+struct iphdr {
+    __u8  ihl_ver;
+    __u8  tos;
+    __u16 tot_len;
+    __u16 id;
+    __u16 frag_off;
+    __u8  ttl;
+    __u8  protocol;
+    __u16 check;
+    __u32 saddr;
+    __u32 daddr;
+} __attribute__((packed));
+
+struct udphdr {
+    __u16 source;
+    __u16 dest;
+    __u16 len;
+    __u16 check;
+} __attribute__((packed));
+
+// DNS header: 12 bytes
+struct dnshdr {
+    __u16 id;
+    __u16 flags;
+    __u16 qdcount;
+    __u16 ancount;
+    __u16 nscount;
+    __u16 arcount;
+} __attribute__((packed));
+
+struct dns_val {
+    __u64 total_queries;
+    __u64 txt_queries;
+    __u64 total_query_bytes;
+    __u32 max_name_len;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 1024);
+    __type(key, __u32);
+    __type(value, struct dns_val);
+} dns_deep SEC(".maps");
+
+SEC("tc")
+int handle_dnsdeep(struct __sk_buff *skb)
+{
+    void *data     = (void *)(long)skb->data;
+    void *data_end = (void *)(long)skb->data_end;
+
+    // Parse ethernet header
+    struct ethhdr *eth = data;
+    if ((void *)(eth + 1) > data_end)
+        return TC_ACT_OK;
+
+    if (eth->h_proto != __builtin_bswap16(ETH_P_IP))
+        return TC_ACT_OK;
+
+    // Parse IP header
+    struct iphdr *ip = (void *)(eth + 1);
+    if ((void *)(ip + 1) > data_end)
+        return TC_ACT_OK;
+
+    if (ip->protocol != IPPROTO_UDP)
+        return TC_ACT_OK;
+
+    __u8 ihl = (ip->ihl_ver & 0x0F) * 4;
+    if (ihl < 20)
+        return TC_ACT_OK;
+
+    // Parse UDP header
+    struct udphdr *udp = (void *)ip + ihl;
+    if ((void *)(udp + 1) > data_end)
+        return TC_ACT_OK;
+
+    // Filter DNS: destination port 53
+    if (udp->dest != __builtin_bswap16(DNS_PORT))
+        return TC_ACT_OK;
+
+    // Parse DNS header
+    struct dnshdr *dns = (void *)(udp + 1);
+    if ((void *)(dns + 1) > data_end)
+        return TC_ACT_OK;
+
+    // Only interested in queries (QR bit = 0 in flags, flags are network order)
+    __u16 flags = __builtin_bswap16(dns->flags);
+    if (flags & 0x8000) // QR bit set = response, skip
+        return TC_ACT_OK;
+
+    // Walk query name labels to compute total name length
+    // DNS names are a sequence of length-prefixed labels ending with 0x00
+    __u8 *qname = (__u8 *)(dns + 1);
+    __u32 name_len = 0;
+    __u8 label_len = 0;
+
+    #pragma unroll
+    for (int i = 0; i < 128; i++) {
+        __u8 *pos = qname + name_len;
+        if ((void *)(pos + 1) > data_end)
+            break;
+
+        label_len = *pos;
+
+        // End of name
+        if (label_len == 0)
+            break;
+
+        // Sanity: label can't exceed 63 bytes per RFC
+        if (label_len > 63)
+            break;
+
+        // Advance past label length byte + label data
+        name_len += 1 + label_len;
+    }
+
+    // After the name, read QTYPE (2 bytes)
+    __u8 *qtype_ptr = qname + name_len + 1; // +1 for the terminating 0x00
+    if ((void *)(qtype_ptr + 2) > data_end)
+        return TC_ACT_OK;
+
+    __u16 qtype = 0;
+    qtype = ((__u16)qtype_ptr[0] << 8) | (__u16)qtype_ptr[1];
+
+    // Accumulate per source IP
+    __u32 saddr = ip->saddr;
+    struct dns_val *val = bpf_map_lookup_elem(&dns_deep, &saddr);
+    if (val) {
+        __sync_fetch_and_add(&val->total_queries, 1);
+        __sync_fetch_and_add(&val->total_query_bytes, (__u64)name_len);
+        if (qtype == DNS_TYPE_TXT)
+            __sync_fetch_and_add(&val->txt_queries, 1);
+        if (name_len > val->max_name_len)
+            val->max_name_len = name_len;
+    } else {
+        struct dns_val new_val = {
+            .total_queries = 1,
+            .txt_queries = (qtype == DNS_TYPE_TXT) ? 1 : 0,
+            .total_query_bytes = name_len,
+            .max_name_len = name_len,
+        };
+        bpf_map_update_elem(&dns_deep, &saddr, &new_val, BPF_NOEXIST);
+    }
+
+    return TC_ACT_OK;
+}
+
+char LICENSE[] SEC("license") = "GPL";
