@@ -186,6 +186,11 @@ type Model struct {
 	// Intel page collapsible sections
 	intelSectionCursor   int                    // 0-5: highlighted section
 	intelSectionExpanded [intelSecCount]bool     // which sections are expanded
+
+	// Security page collapsible sections
+	secSectionCursor   int              // 0-13: highlighted section
+	secSectionExpanded [secSecCount]bool // which sections are expanded
+	secManualOverride  bool             // user toggled section; disable auto-expand
 }
 
 // NewModel creates a new TUI model.
@@ -564,6 +569,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			}
+			// Security page: expand/collapse section
+			if m.page == PageSecurity {
+				cur := m.secSectionCursor
+				if m.secSectionExpanded[cur] {
+					m.secSectionExpanded[cur] = false
+				} else {
+					for i := range m.secSectionExpanded {
+						m.secSectionExpanded[i] = false
+					}
+					m.secSectionExpanded[cur] = true
+				}
+				m.secManualOverride = true
+				return m, nil
+			}
 			// Culprit jump: from overview or events, go to bottleneck detail page
 			// Use pinned result if available (sticky RCA survives recovery)
 			jumpResult, _ := m.displayResult()
@@ -596,6 +615,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.probeSectionCursor = (m.probeSectionCursor + 1) % probSecCount
 			} else if m.page == PageIntel {
 				m.intelSectionCursor = (m.intelSectionCursor + 1) % intelSecCount
+			} else if m.page == PageSecurity {
+				m.secSectionCursor = (m.secSectionCursor + 1) % secSecCount
 			}
 		case "shift+tab":
 			if m.explainPanelOpen {
@@ -606,6 +627,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.probeSectionCursor = (m.probeSectionCursor + probSecCount - 1) % probSecCount
 			} else if m.page == PageIntel {
 				m.intelSectionCursor = (m.intelSectionCursor + intelSecCount - 1) % intelSecCount
+			} else if m.page == PageSecurity {
+				m.secSectionCursor = (m.secSectionCursor + secSecCount - 1) % secSecCount
 			}
 		case "P":
 			// Export incident report as markdown (was E, moved for explain panel)
@@ -658,6 +681,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				for i := range m.intelSectionExpanded {
 					m.intelSectionExpanded[i] = true
 				}
+			} else if m.page == PageSecurity {
+				for i := range m.secSectionExpanded {
+					m.secSectionExpanded[i] = true
+				}
+				m.secManualOverride = true
 			} else if m.beginnerMode {
 				m.beginnerMode = false
 				_ = saveExperienceLevel("advanced")
@@ -687,6 +715,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				for i := range m.intelSectionExpanded {
 					m.intelSectionExpanded[i] = false
 				}
+			} else if m.page == PageSecurity {
+				for i := range m.secSectionExpanded {
+					m.secSectionExpanded[i] = false
+				}
+				m.secManualOverride = false
 			}
 		case "m", "M":
 			// Cycle DiskGuard mode (only on DiskGuard page)
@@ -852,6 +885,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.page == PageNetwork && !m.netManualOverride {
 				m.autoExpandNetSection()
 			}
+			// Auto-expand relevant security section on anomaly
+			if m.page == PageSecurity && !m.secManualOverride {
+				autoExpandSecSection(m.snap, &m.secSectionExpanded)
+			}
 		}
 	case saveConfirmMsg:
 		if msg.err != nil {
@@ -942,7 +979,9 @@ func (m Model) View() string {
 			}
 			content = renderDiskGuardPage(m.snap, m.rates, m.result, m.probeManager, m.diskGuardMode, dgMsg, m.frozenPIDs, renderW, m.height)
 		case PageSecurity:
-			content = renderSecurityPage(m.snap, m.rates, m.result, m.probeManager, renderW, m.height)
+			content = renderSecurityPage(m.snap, m.rates, m.result, m.probeManager,
+				m.secSectionCursor, m.secSectionExpanded,
+				renderW, m.height)
 		case PageLogs:
 			content = renderLogsPage(m.snap, m.rates, m.result, m.probeManager, renderW, m.height)
 		case PageServices:

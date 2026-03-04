@@ -123,6 +123,28 @@ var cgroupGlossary = []ExplainEntry{
 	{"IO pressure", "PSI IO pressure within this cgroup.", "< 5%", "> 20%"},
 }
 
+var securityGlossary = []ExplainEntry{
+	{"SYN Flood", "Massive SYN packet rate overwhelming connection table.", "0", "> 1000 SYN/s"},
+	{"Port Scan", "Systematic probing of ports to find running services.", "0 RSTs", "> 100 RSTs"},
+	{"DNS Tunneling", "Data exfiltration encoded in DNS query names.", "0% TXT", "> 30% TXT"},
+	{"C2 Beacon", "Malware callback to command server at regular intervals.", "none", "low jitter"},
+	{"JA3 Fingerprint", "TLS client fingerprint from ClientHello parameters.", "known browser", "unknown/malware"},
+	{"Data Exfiltration", "Unauthorized transfer of data to external destination.", "< 10 MB/hr", "> 100 MB/hr"},
+	{"Lateral Movement", "Attacker moving between internal hosts after compromise.", "< 5 dests", "> 20 dests"},
+	{"TCP Flag Anomaly", "Unusual TCP flag combinations (XMAS, NULL scan, etc.).", "0", "> 0"},
+	{"Watchdog Probe", "Auto-triggered deep inspection probe (60-120s burst).", "idle", "active"},
+	{"Half-Open Ratio", "% of SYN packets without completed handshake.", "< 10%", "> 50%"},
+	{"TXT Ratio", "% of DNS queries using TXT type (high = tunneling).", "< 5%", "> 30%"},
+	{"Beacon Jitter", "Regularity of callback intervals (low jitter = suspicious).", "> 20%", "< 5%"},
+	{"Failed Auth Rate", "Rate of failed SSH/PAM authentication attempts per second.", "0/s", "> 1/s"},
+	{"Brute Force", "Rapid repeated auth failures from same source = password guessing.", "No", "YES"},
+	{"SUID Binary", "Executable with set-user-ID bit. New SUID files are suspicious.", "0 new", "> 0 new"},
+	{"Reverse Shell", "Shell process with stdin/stdout redirected to a network socket.", "0", "> 0"},
+	{"Fileless Process", "Process with deleted or missing executable on disk.", "0", "> 0"},
+	{"Ptrace", "Process tracing syscall used for debugging or process injection.", "0", "> 0"},
+	{"Module Load", "Kernel module loaded at runtime. Rootkits use this for persistence.", "0", "> 0"},
+}
+
 // glossaryForPage returns the appropriate glossary for the current page.
 func glossaryForPage(page Page) []ExplainEntry {
 	switch page {
@@ -142,6 +164,8 @@ func glossaryForPage(page Page) []ExplainEntry {
 		return cgroupGlossary
 	case PageIntel:
 		return intelGlossary
+	case PageSecurity:
+		return securityGlossary
 	default:
 		return overviewGlossary
 	}
