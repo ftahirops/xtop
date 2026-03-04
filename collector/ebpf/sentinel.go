@@ -32,6 +32,13 @@ type SentinelManager struct {
 	execsnoop     *execsnoopProbe
 	ptracedetect  *ptracedetectProbe
 
+	// Network security sentinels
+	synflood    *synfloodProbe
+	portscan    *portscanProbe
+	dnsmon      *dnsmonProbe
+	connrate    *connrateProbe
+	outbound    *outboundProbe
+
 	// Previous values for delta computation
 	prevDrops    map[uint32]uint64
 	prevResets   map[uint32]uint64
@@ -59,7 +66,7 @@ func NewSentinelManager() *SentinelManager {
 		prevRetrans:  make(map[uint32]uint32),
 		prevThrottle: make(map[uint64]uint64),
 		selfPID:      uint32(os.Getpid()),
-		totalCount:   11,
+		totalCount:   16,
 	}
 }
 
@@ -387,6 +394,62 @@ func (s *SentinelManager) Collect(snap *model.Snapshot) error {
 		sent.PtraceEvents = s.ptraceHistory
 	}
 
+	// Read SYN flood indicators
+	if s.synflood != nil {
+		results, err := s.synflood.read()
+		if err == nil {
+			for i := range results {
+				results[i].Rate = float64(results[i].SynCount) / elapsed
+			}
+			sent.SynFlood = results
+		}
+	}
+
+	// Read port scan indicators
+	if s.portscan != nil {
+		results, err := s.portscan.read()
+		if err == nil {
+			for i := range results {
+				results[i].Rate = float64(results[i].RSTCount) / elapsed
+			}
+			sent.PortScans = results
+		}
+	}
+
+	// Read DNS anomaly indicators
+	if s.dnsmon != nil {
+		results, err := s.dnsmon.read()
+		if err == nil {
+			for i := range results {
+				results[i].QueriesPerSec = float64(results[i].QueryCount) / elapsed
+			}
+			sent.DNSAnomaly = results
+		}
+	}
+
+	// Read connection flow rates
+	if s.connrate != nil {
+		flows, destCounts, err := s.connrate.read()
+		if err == nil {
+			for i := range flows {
+				flows[i].UniqueDestCount = destCounts[uint32(flows[i].PID)]
+				flows[i].Rate = float64(flows[i].ConnectCount) / elapsed
+			}
+			sent.FlowRates = flows
+		}
+	}
+
+	// Read outbound data transfer
+	if s.outbound != nil {
+		results, err := s.outbound.read()
+		if err == nil {
+			for i := range results {
+				results[i].BytesPerSec = float64(results[i].TotalBytes) / elapsed
+			}
+			sent.OutboundTop = results
+		}
+	}
+
 	return nil
 }
 
@@ -427,6 +490,21 @@ func (s *SentinelManager) Close() {
 	}
 	if s.ptracedetect != nil {
 		s.ptracedetect.close()
+	}
+	if s.synflood != nil {
+		s.synflood.close()
+	}
+	if s.portscan != nil {
+		s.portscan.close()
+	}
+	if s.dnsmon != nil {
+		s.dnsmon.close()
+	}
+	if s.connrate != nil {
+		s.connrate.close()
+	}
+	if s.outbound != nil {
+		s.outbound.close()
 	}
 }
 
@@ -525,6 +603,41 @@ func (s *SentinelManager) attach() {
 		errs = append(errs, "ptracedetect: "+err.Error())
 	} else {
 		s.ptracedetect = p
+		s.attachedCount++
+	}
+
+	if p, err := attachSynFlood(); err != nil {
+		errs = append(errs, fmt.Sprintf("synflood: %v", err))
+	} else {
+		s.synflood = p
+		s.attachedCount++
+	}
+
+	if p, err := attachPortScan(); err != nil {
+		errs = append(errs, fmt.Sprintf("portscan: %v", err))
+	} else {
+		s.portscan = p
+		s.attachedCount++
+	}
+
+	if p, err := attachDNSMon(); err != nil {
+		errs = append(errs, fmt.Sprintf("dnsmon: %v", err))
+	} else {
+		s.dnsmon = p
+		s.attachedCount++
+	}
+
+	if p, err := attachConnRate(); err != nil {
+		errs = append(errs, fmt.Sprintf("connrate: %v", err))
+	} else {
+		s.connrate = p
+		s.attachedCount++
+	}
+
+	if p, err := attachOutbound(); err != nil {
+		errs = append(errs, fmt.Sprintf("outbound: %v", err))
+	} else {
+		s.outbound = p
 		s.attachedCount++
 	}
 

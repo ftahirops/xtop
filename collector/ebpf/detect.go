@@ -61,6 +61,11 @@ func Detect() ProbeCapability {
 		"oomkill":       {"oom/mark_victim"},
 		"directreclaim": {"vmscan/mm_vmscan_direct_reclaim_begin", "vmscan/mm_vmscan_direct_reclaim_end"},
 		"cgthrottle":    {},  // kprobe
+		"synflood":      {},  // kprobe — no tracepoint dependency
+		"portscan":      {},  // kprobe
+		"dnsmon":        {},  // kprobe
+		"connrate":      {"sock/inet_sock_set_state"},  // tracepoint dependency
+		"outbound":      {},  // kprobe
 	}
 
 	watchdogChecks := map[string][]string{
