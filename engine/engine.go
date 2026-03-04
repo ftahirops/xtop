@@ -20,10 +20,11 @@ type Engine struct {
 	growthTracker *MountGrowthTracker
 	Sentinel      *bpf.SentinelManager
 	Watchdog      *WatchdogTrigger
-	MultiRes      *MultiResBuffer // multi-resolution time series (nil if unused)
-	SLOPolicies   []SLOPolicy    // SLO policies from config/flags
-	Autopilot     *Autopilot     // autopilot subsystem (nil if disabled)
-	tickMu        sync.Mutex     // serializes Tick() calls to prevent concurrent collection
+	SecWatchdog   *bpf.SecWatchdog // security deep-inspection watchdog
+	MultiRes      *MultiResBuffer  // multi-resolution time series (nil if unused)
+	SLOPolicies   []SLOPolicy     // SLO policies from config/flags
+	Autopilot     *Autopilot      // autopilot subsystem (nil if disabled)
+	tickMu        sync.Mutex      // serializes Tick() calls to prevent concurrent collection
 }
 
 // NewEngine creates a new engine with all collectors registered.
@@ -53,6 +54,7 @@ func NewEngine(historySize, intervalSec int) *Engine {
 		growthTracker: NewMountGrowthTracker(),
 		Sentinel:      sentinel,
 		Watchdog:      NewWatchdogTrigger(),
+		SecWatchdog:   bpf.NewSecWatchdog(bpf.DetectPrimaryIface()),
 	}
 }
 
@@ -76,6 +78,11 @@ func (e *Engine) Tick() (*model.Snapshot, *model.RateSnapshot, *model.AnalysisRe
 		}
 	}
 
+	// Collect security watchdog probe data into security metrics
+	if e.SecWatchdog != nil {
+		e.SecWatchdog.Collect(&snap.Global.Security)
+	}
+
 	// Get previous snapshot for rate calculations
 	prev := e.History.Latest()
 
@@ -96,6 +103,15 @@ func (e *Engine) Tick() (*model.Snapshot, *model.RateSnapshot, *model.AnalysisRe
 		// Watchdog auto-trigger: check if RCA warrants domain-specific probes
 		if domain := e.Watchdog.Check(result); domain != "" {
 			result.Watchdog = model.WatchdogState{Active: true, Domain: domain}
+		}
+
+		// Security watchdog: trigger deep inspection probes from evidence
+		if e.SecWatchdog != nil {
+			var allEvidence []model.Evidence
+			for _, entry := range result.RCA {
+				allEvidence = append(allEvidence, entry.EvidenceV2...)
+			}
+			e.SecWatchdog.TriggerFromEvidence(allEvidence)
 		}
 
 		// Trigger disk scanners when filesystem pressure detected

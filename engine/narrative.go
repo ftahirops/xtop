@@ -50,6 +50,16 @@ var narrativeTemplates = []narrativeRule{
 	{ids: []string{"io.psi", "io.disk.latency"}, text: "IO pressure — elevated disk latency"},
 	{ids: []string{"io.psi"}, text: "IO pressure — tasks stalling on disk access"},
 
+	// Security threats
+	{ids: []string{"sec.synflood", "net.drops"}, text: "DDoS SYN flood — half-open connections exhausting resources and causing drops"},
+	{ids: []string{"sec.synflood"}, text: "SYN flood detected — high rate of unanswered SYN packets from single source"},
+	{ids: []string{"sec.portscan", "sec.tcp.flags"}, text: "Port scan with evasion — anomalous TCP flags indicate stealth scanning"},
+	{ids: []string{"sec.portscan"}, text: "Port scan detected — reconnaissance probing multiple ports"},
+	{ids: []string{"sec.dns.tunnel"}, text: "DNS tunneling — data exfiltration encoded in DNS queries"},
+	{ids: []string{"sec.beacon"}, text: "C2 beacon — periodic fixed-interval callbacks to external host"},
+	{ids: []string{"sec.outbound.exfil"}, text: "Data exfiltration — large outbound data volume to single destination"},
+	{ids: []string{"sec.lateral"}, text: "Lateral movement — process connecting to many internal hosts"},
+
 	// Network
 	{ids: []string{"net.tcp.retrans", "net.drops"}, text: "Network congestion — retransmits with packet drops"},
 	{ids: []string{"net.closewait"}, text: "Socket leak — CLOSE_WAIT accumulating, application not closing connections"},

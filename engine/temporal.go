@@ -129,6 +129,10 @@ var predefinedPairs = []crossSignalPair{
 	{"net.conntrack", "net.drops", "Conntrack table pressure causing packet drops"},
 	{"jvm.gc.pause", "cpu.runqueue", "JVM GC stop-the-world pauses adding to run queue"},
 	{"jvm.heap.pressure", "mem.reclaim.direct", "JVM heap pressure triggering kernel direct reclaim"},
+	{"sec.synflood", "net.conntrack.growth", "SYN flood driving conntrack table growth"},
+	{"sec.portscan", "net.sentinel.resets", "Port scanning causing TCP RST responses"},
+	{"sec.dns.anomaly", "sec.dns.tunnel", "Elevated DNS leading to tunneling detection"},
+	{"sec.beacon", "sec.outbound.exfil", "C2 beacon associated with data exfiltration"},
 }
 
 // BuildCrossCorrelation analyzes signal onset ordering across domains to detect
@@ -256,6 +260,14 @@ func shortLabel(id string) string {
 		"dotnet.threadpool.queue":       ".NET tp-queue",
 		"jvm.gc.pause":                  "JVM GC",
 		"jvm.heap.pressure":             "JVM heap",
+		"sec.synflood":                  "SYN flood",
+		"sec.portscan":                  "port scan",
+		"sec.dns.anomaly":               "DNS anomaly",
+		"sec.dns.tunnel":                "DNS tunnel",
+		"sec.outbound.exfil":            "data exfil",
+		"sec.lateral":                   "lateral mvmt",
+		"sec.beacon":                    "C2 beacon",
+		"sec.tcp.flags":                 "TCP flags",
 	}
 	if l, ok := labels[id]; ok {
 		return l

@@ -886,6 +886,131 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEn
 			nil, nil),
 	)
 
+	// --- Network security evidence (BPF sentinel) ---
+	var maxSynRate float64
+	var maxPortBuckets int
+	if curr.Global.Sentinel.Active {
+		// SYN flood detection
+		for _, sf := range curr.Global.Sentinel.SynFlood {
+			if sf.Rate > maxSynRate {
+				maxSynRate = sf.Rate
+			}
+		}
+		if maxSynRate > 0 {
+			ws, cs := threshold("sec.synflood", 100, 1000)
+			r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("sec.synflood", model.DomainNetwork,
+				maxSynRate, ws, cs, true, 0.9,
+				fmt.Sprintf("SYN flood: %.0f SYN/s from single source", maxSynRate), "3s",
+				nil, nil))
+		}
+
+		// Port scan detection
+		for _, ps := range curr.Global.Sentinel.PortScans {
+			if ps.UniquePortBuckets > maxPortBuckets {
+				maxPortBuckets = ps.UniquePortBuckets
+			}
+		}
+		if maxPortBuckets > 0 {
+			ws, cs := threshold("sec.portscan", 10, 30)
+			r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("sec.portscan", model.DomainNetwork,
+				float64(maxPortBuckets), ws, cs, true, 0.85,
+				fmt.Sprintf("Port scan: %d unique port groups from single source", maxPortBuckets), "3s",
+				nil, nil))
+		}
+
+		// DNS anomaly detection
+		maxDNSRate := float64(0)
+		for _, dns := range curr.Global.Sentinel.DNSAnomaly {
+			if dns.QueriesPerSec > maxDNSRate {
+				maxDNSRate = dns.QueriesPerSec
+			}
+		}
+		if maxDNSRate > 0 {
+			ws, cs := threshold("sec.dns.anomaly", 50, 200)
+			r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("sec.dns.anomaly", model.DomainNetwork,
+				maxDNSRate, ws, cs, true, 0.8,
+				fmt.Sprintf("DNS anomaly: %.0f queries/s", maxDNSRate), "3s",
+				nil, nil))
+		}
+
+		// Lateral movement detection
+		maxDests := 0
+		for _, fr := range curr.Global.Sentinel.FlowRates {
+			if fr.UniqueDestCount > maxDests {
+				maxDests = fr.UniqueDestCount
+			}
+		}
+		if maxDests > 0 {
+			ws, cs := threshold("sec.lateral", 20, 50)
+			r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("sec.lateral", model.DomainNetwork,
+				float64(maxDests), ws, cs, true, 0.75,
+				fmt.Sprintf("Lateral movement: %d unique destinations from single PID", maxDests), "3s",
+				nil, nil))
+		}
+
+		// Data exfiltration detection
+		maxEgressMBHr := float64(0)
+		for _, ob := range curr.Global.Sentinel.OutboundTop {
+			mbhr := ob.BytesPerSec * 3600 / (1024 * 1024)
+			if mbhr > maxEgressMBHr {
+				maxEgressMBHr = mbhr
+			}
+		}
+		if maxEgressMBHr > 0 {
+			ws, cs := threshold("sec.outbound.exfil", 50, 500)
+			r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("sec.outbound.exfil", model.DomainNetwork,
+				maxEgressMBHr, ws, cs, true, 0.8,
+				fmt.Sprintf("Outbound data: %.0f MB/hr to single destination", maxEgressMBHr), "3s",
+				nil, nil))
+		}
+	}
+
+	// Watchdog-derived evidence (from SecurityMetrics)
+	// DNS tunneling (from dnsdeep watchdog)
+	maxTXTRatio := float64(0)
+	for _, dt := range curr.Global.Security.DNSTunnelIndicators {
+		if dt.TXTRatio > maxTXTRatio {
+			maxTXTRatio = dt.TXTRatio
+		}
+	}
+	if maxTXTRatio > 0 {
+		ws, cs := threshold("sec.dns.tunnel", 0.3, 0.7)
+		r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("sec.dns.tunnel", model.DomainNetwork,
+			maxTXTRatio, ws, cs, true, 0.85,
+			fmt.Sprintf("DNS tunneling: %.0f%% TXT queries", maxTXTRatio*100), "60s",
+			nil, nil))
+	}
+
+	// C2 beacon detection (from beacondetect watchdog)
+	minJitter := float64(1.0)
+	for _, bi := range curr.Global.Security.BeaconIndicators {
+		if bi.Jitter < minJitter && bi.SampleCount >= 5 {
+			minJitter = bi.Jitter
+		}
+	}
+	if minJitter < 1.0 && len(curr.Global.Security.BeaconIndicators) > 0 {
+		// Invert: lower jitter = more suspicious = higher value for normalize
+		invertedJitter := 1.0 - minJitter
+		ws, cs := threshold("sec.beacon", 0.8, 1.0)
+		r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("sec.beacon", model.DomainNetwork,
+			invertedJitter, ws, cs, true, 0.85,
+			fmt.Sprintf("C2 beacon: %.1f%% jitter (regular intervals)", minJitter*100), "120s",
+			nil, nil))
+	}
+
+	// TCP flag anomalies (from tcpflags watchdog)
+	totalFlagCount := uint64(0)
+	for _, fa := range curr.Global.Security.TCPFlagAnomalies {
+		totalFlagCount += fa.Count
+	}
+	if totalFlagCount > 0 {
+		ws, cs := threshold("sec.tcp.flags", 1, 10)
+		r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("sec.tcp.flags", model.DomainNetwork,
+			float64(totalFlagCount), ws, cs, true, 0.9,
+			fmt.Sprintf("TCP flag anomalies: %d suspicious packets", totalFlagCount), "60s",
+			nil, nil))
+	}
+
 	// v2 scoring
 	v2Score := weightedDomainScore(r.EvidenceV2)
 	if !v2TrustGate(r.EvidenceV2) {
@@ -937,6 +1062,12 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEn
 	}
 	if ephPct > 50 {
 		r.Evidence = append(r.Evidence, fmt.Sprintf("Ephemeral ports=%.0f%% (%d/%d)", ephPct, eph.InUse, ephRange))
+	}
+	if maxSynRate > 100 {
+		r.Evidence = append(r.Evidence, fmt.Sprintf("SYN flood: %.0f/s", maxSynRate))
+	}
+	if maxPortBuckets > 10 {
+		r.Evidence = append(r.Evidence, fmt.Sprintf("Port scan: %d port groups", maxPortBuckets))
 	}
 
 	// Chain

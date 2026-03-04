@@ -48,6 +48,16 @@ var evidenceWeightCategory = map[string]string{
 	"mem.sentinel.oom":      "psi",
 	"mem.sentinel.reclaim":  "queue",
 	"cpu.sentinel.throttle": "latency",
+
+	// Security
+	"sec.synflood":       "psi",
+	"sec.portscan":       "latency",
+	"sec.dns.anomaly":    "queue",
+	"sec.dns.tunnel":     "psi",
+	"sec.outbound.exfil": "latency",
+	"sec.lateral":        "queue",
+	"sec.beacon":         "psi",
+	"sec.tcp.flags":      "secondary",
 }
 
 // emitEvidence creates a v2 Evidence object with smooth normalization.

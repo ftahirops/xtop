@@ -56,6 +56,16 @@ var causalRules = []causalRule{
 	{"net.conntrack.growth", "net.conntrack", "ctgrowth→conntrack", 0.7},
 	{"net.conntrack.drops", "net.tcp.retrans", "ctdrops→retrans", 0.6},
 
+	// Security domain
+	{"sec.synflood", "net.conntrack.growth", "synflood→ctgrowth", 0.9},
+	{"sec.synflood", "net.drops", "synflood→drops", 0.8},
+	{"sec.portscan", "net.sentinel.resets", "portscan→resets", 0.85},
+	{"sec.dns.anomaly", "sec.dns.tunnel", "dnsanomaly→tunnel", 0.7},
+	{"sec.lateral", "sec.outbound.exfil", "lateral→exfil", 0.75},
+	{"sec.beacon", "sec.outbound.exfil", "beacon→exfil", 0.6},
+	{"sec.tcp.flags", "sec.portscan", "tcpflags→portscan", 0.8},
+	{"sec.synflood", "cpu.busy", "synflood→cpubusy", 0.5},
+
 	// .NET domain
 	{"dotnet.gc.pause", "cpu.runqueue", "gcpause→runqueue", 0.7},
 	{"dotnet.alloc.storm", "mem.reclaim.direct", "allocstorm→reclaim", 0.65},

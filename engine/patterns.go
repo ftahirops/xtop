@@ -107,6 +107,60 @@ var patternLibrary = []Pattern{
 		Narrative: "Noisy neighbor — hypervisor stealing CPU time",
 	},
 	{
+		Name: "DDoS SYN Flood",
+		Conditions: []PatternCondition{
+			{EvidenceID: "sec.synflood"},
+			{EvidenceID: "net.conntrack.growth"},
+		},
+		MinMatch: 1, Priority: 70, MinStr: 0.4,
+		Narrative: "DDoS SYN flood — half-open connections exhausting resources",
+	},
+	{
+		Name: "Port Scan Attack",
+		Conditions: []PatternCondition{
+			{EvidenceID: "sec.portscan"},
+			{EvidenceID: "sec.tcp.flags"},
+		},
+		MinMatch: 1, Priority: 68, MinStr: 0.4,
+		Narrative: "Port scan attack — reconnaissance activity detected",
+	},
+	{
+		Name: "C2 Beacon Active",
+		Conditions: []PatternCondition{
+			{EvidenceID: "sec.beacon"},
+			{EvidenceID: "sec.outbound.exfil"},
+		},
+		MinMatch: 1, Priority: 66, MinStr: 0.4,
+		Narrative: "Command & control beacon — periodic callbacks to external host",
+	},
+	{
+		Name: "DNS Tunneling",
+		Conditions: []PatternCondition{
+			{EvidenceID: "sec.dns.tunnel"},
+			{EvidenceID: "sec.dns.anomaly"},
+		},
+		MinMatch: 2, Priority: 64, MinStr: 0.4,
+		Narrative: "DNS tunneling — data exfiltration through DNS query encoding",
+	},
+	{
+		Name: "Data Exfiltration",
+		Conditions: []PatternCondition{
+			{EvidenceID: "sec.outbound.exfil"},
+			{EvidenceID: "sec.lateral"},
+		},
+		MinMatch: 1, Priority: 62, MinStr: 0.4,
+		Narrative: "Data exfiltration — large outbound transfers to external destinations",
+	},
+	{
+		Name: "Network Reconnaissance",
+		Conditions: []PatternCondition{
+			{EvidenceID: "sec.portscan"},
+			{EvidenceID: "net.tcp.retrans"},
+		},
+		MinMatch: 1, Priority: 58, MinStr: 0.3,
+		Narrative: "Network reconnaissance — scanning activity causing retransmits",
+	},
+	{
 		Name:     "Network Congestion",
 		Priority: 60,
 		Conditions: []PatternCondition{
