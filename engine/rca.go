@@ -910,8 +910,8 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEn
 				maxPortBuckets = ps.UniquePortBuckets
 			}
 		}
-		if maxPortBuckets > 0 {
-			ws, cs := threshold("sec.portscan", 10, 30)
+		if maxPortBuckets >= 10 {
+			ws, cs := threshold("sec.portscan", 15, 40)
 			r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("sec.portscan", model.DomainNetwork,
 				float64(maxPortBuckets), ws, cs, true, 0.85,
 				fmt.Sprintf("Port scan: %d unique port groups from single source", maxPortBuckets), "3s",

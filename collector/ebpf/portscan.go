@@ -37,15 +37,16 @@ func (p *portscanProbe) read() ([]model.PortScanEntry, error) {
 
 	iter := p.objs.ScanAccum.Iterate()
 	for iter.Next(&srcIP, &val) {
-		// Filter: skip entries with fewer than 5 RSTs
-		if val.RstCount < 5 {
-			continue
-		}
 		// Skip loopback (127.0.0.0/8) — local RSTs are not port scans
 		if isLoopback(srcIP) {
 			continue
 		}
 		portDiversity := bits.OnesCount64(val.PortBitmap)
+		// Filter: require significant RST count AND port diversity
+		// Low counts or few ports = normal connection failures, not scans
+		if val.RstCount < 50 || portDiversity < 10 {
+			continue
+		}
 		results = append(results, model.PortScanEntry{
 			SrcIP:             formatIPv4(srcIP),
 			RSTCount:          val.RstCount,

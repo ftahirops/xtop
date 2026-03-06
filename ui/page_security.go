@@ -774,7 +774,7 @@ func renderSecDNSContent(sent model.SentinelData, sec model.SecurityMetrics, iw 
 		sb.WriteString(dimStyle.Render("  "+strings.Repeat("─", 60)) + "\n")
 		for _, d := range sent.DNSAnomaly {
 			verdict := okStyle.Render("normal")
-			if d.QueriesPerSec > 500 || d.AvgQueryLen > 80 {
+			if d.QueriesPerSec > 500 && d.AvgQueryLen > 80 {
 				verdict = warnStyle.Render("SUSPECT")
 			}
 			if d.QueriesPerSec > 1000 && d.AvgQueryLen > 100 {
@@ -1031,7 +1031,7 @@ func autoExpandSecSection(snap *model.Snapshot, expanded *[secSecCount]bool) {
 	// DNS — only auto-expand when actual anomalies exist
 	hasDNSAnomaly := false
 	for _, d := range sent.DNSAnomaly {
-		if d.QueriesPerSec > 500 || d.AvgQueryLen > 80 {
+		if d.QueriesPerSec > 500 && d.AvgQueryLen > 80 {
 			hasDNSAnomaly = true
 			break
 		}
