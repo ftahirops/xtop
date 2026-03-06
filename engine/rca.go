@@ -940,7 +940,7 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEn
 				maxDests = fr.UniqueDestCount
 			}
 		}
-		if maxDests > 0 {
+		if maxDests >= 5 {
 			ws, cs := threshold("sec.lateral", 5, 20)
 			r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("sec.lateral", model.DomainNetwork,
 				float64(maxDests), ws, cs, true, 0.75,
@@ -956,8 +956,8 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEn
 				maxEgressMBHr = mbhr
 			}
 		}
-		if maxEgressMBHr > 0 {
-			ws, cs := threshold("sec.outbound.exfil", 10, 100)
+		if maxEgressMBHr > 100 {
+			ws, cs := threshold("sec.outbound.exfil", 500, 5000)
 			r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("sec.outbound.exfil", model.DomainNetwork,
 				maxEgressMBHr, ws, cs, true, 0.8,
 				fmt.Sprintf("Outbound data: %.0f MB/hr to single destination", maxEgressMBHr), "3s",

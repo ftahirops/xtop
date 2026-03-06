@@ -53,6 +53,10 @@ func (p *dnsdeepProbe) read() ([]model.DNSTunnelIndicator, error) {
 		if val.TotalQueries == 0 {
 			continue
 		}
+		// Skip loopback — systemd-resolved (127.0.0.53) is not a tunnel
+		if isLoopback(saddr) {
+			continue
+		}
 		var txtRatio float64
 		if val.TotalQueries > 0 {
 			txtRatio = float64(val.TxtQueries) / float64(val.TotalQueries)

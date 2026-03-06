@@ -32,13 +32,14 @@ type SecWatchdog struct {
 	beacondetectExpiry time.Time
 
 	// Primary interface for TC probes
-	iface string
+	iface   string
+	selfPID int
 }
 
 // NewSecWatchdog creates a new security watchdog manager.
 // iface is the primary network interface name (e.g. "eth0") for TC probes.
 func NewSecWatchdog(iface string) *SecWatchdog {
-	return &SecWatchdog{iface: iface}
+	return &SecWatchdog{iface: iface, selfPID: os.Getpid()}
 }
 
 // TriggerFromEvidence inspects evidence and activates deep inspection probes
@@ -201,8 +202,17 @@ func (sw *SecWatchdog) Collect(sec *model.SecurityMetrics) {
 		} else {
 			activeNames = append(activeNames, "beacondetect")
 			if results, err := sw.beacondetect.read(); err == nil && len(results) > 0 {
-				sec.BeaconIndicators = results
-				hasResults = true
+				// Filter self-PID from beacon results
+				var filtered []model.BeaconIndicator
+				for _, b := range results {
+					if b.PID != sw.selfPID {
+						filtered = append(filtered, b)
+					}
+				}
+				if len(filtered) > 0 {
+					sec.BeaconIndicators = filtered
+					hasResults = true
+				}
 			}
 		}
 	}

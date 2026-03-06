@@ -48,6 +48,10 @@ func (p *tcpresetProbe) read() ([]TCPResetResult, error) {
 		if val.Count == 0 {
 			continue
 		}
+		// Skip loopback destinations — local RSTs are normal
+		if isLoopback(val.LastDaddr) {
+			continue
+		}
 		results = append(results, TCPResetResult{
 			PID:       pid,
 			Comm:      readComm(pid),

@@ -119,7 +119,10 @@ func (s *SentinelManager) Collect(snap *model.Snapshot) error {
 			var totalDropRate float64
 			for _, r := range results {
 				prev := s.prevDrops[r.Reason]
-				delta := r.Count - prev
+				var delta uint64
+				if r.Count >= prev {
+					delta = r.Count - prev
+				}
 				rate := float64(delta) / elapsed
 				s.prevDrops[r.Reason] = r.Count
 				if delta > 0 {
@@ -153,8 +156,14 @@ func (s *SentinelManager) Collect(snap *model.Snapshot) error {
 		if err == nil {
 			var totalResetRate float64
 			for _, r := range results {
+				if r.PID == s.selfPID {
+					continue
+				}
 				prev := s.prevResets[r.PID]
 				delta := r.Count - prev
+				if r.Count < prev {
+					delta = 0
+				}
 				rate := float64(delta) / elapsed
 				s.prevResets[r.PID] = r.Count
 				if delta > 0 {
@@ -185,7 +194,10 @@ func (s *SentinelManager) Collect(snap *model.Snapshot) error {
 			for _, r := range results {
 				key := uint32(r.OldState)<<16 | uint32(r.NewState)
 				prev := s.prevStates[key]
-				delta := r.Count - prev
+				var delta uint64
+				if r.Count >= prev {
+					delta = r.Count - prev
+				}
 				rate := float64(delta) / elapsed
 				s.prevStates[key] = r.Count
 				if delta > 0 {
@@ -214,8 +226,14 @@ func (s *SentinelManager) Collect(snap *model.Snapshot) error {
 		if err == nil {
 			var totalRetransRate float64
 			for _, r := range results {
+				if r.PID == s.selfPID {
+					continue
+				}
 				prev := s.prevRetrans[r.PID]
 				delta := r.Count - prev
+				if r.Count < prev {
+					delta = 0
+				}
 				rate := float64(delta) / elapsed
 				s.prevRetrans[r.PID] = r.Count
 				if delta > 0 {
@@ -244,7 +262,7 @@ func (s *SentinelManager) Collect(snap *model.Snapshot) error {
 		results, err := s.tcpconnlat.read()
 		if err == nil {
 			for _, r := range results {
-				if r.Count == 0 {
+				if r.Count == 0 || r.PID == s.selfPID {
 					continue
 				}
 				avgNs := float64(r.TotalNs) / float64(r.Count)
@@ -334,7 +352,10 @@ func (s *SentinelManager) Collect(snap *model.Snapshot) error {
 			var totalThrottleRate float64
 			for _, r := range results {
 				prev := s.prevThrottle[r.CgID]
-				delta := r.Count - prev
+				var delta uint64
+				if r.Count >= prev {
+					delta = r.Count - prev
+				}
 				rate := float64(delta) / elapsed
 				s.prevThrottle[r.CgID] = r.Count
 				if delta > 0 {
@@ -387,6 +408,9 @@ func (s *SentinelManager) Collect(snap *model.Snapshot) error {
 	if s.ptracedetect != nil {
 		results, _ := s.ptracedetect.readAndClear()
 		for _, r := range results {
+			if r.TracerPID == s.selfPID || r.TargetPID == s.selfPID {
+				continue
+			}
 			targetComm := readComm(r.TargetPID)
 			s.ptraceHistory = append([]model.PtraceEventEntry{{
 				TracerPID:  r.TracerPID,
@@ -452,8 +476,12 @@ func (s *SentinelManager) Collect(snap *model.Snapshot) error {
 		results, err := s.dnsmon.read()
 		if err == nil {
 			newPrev := make(map[uint32]uint64, len(results))
+			var filtered []model.DNSAnomalyEntry
 			for i := range results {
 				pid := uint32(results[i].PID)
+				if pid == s.selfPID {
+					continue
+				}
 				prev := s.prevDNSQuery[pid]
 				total := results[i].QueryCount
 				delta := total
@@ -462,9 +490,10 @@ func (s *SentinelManager) Collect(snap *model.Snapshot) error {
 				}
 				results[i].QueriesPerSec = float64(delta) / elapsed
 				newPrev[pid] = total
+				filtered = append(filtered, results[i])
 			}
 			s.prevDNSQuery = newPrev
-			sent.DNSAnomaly = results
+			sent.DNSAnomaly = filtered
 		}
 	}
 

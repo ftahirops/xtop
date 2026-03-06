@@ -774,10 +774,10 @@ func renderSecDNSContent(sent model.SentinelData, sec model.SecurityMetrics, iw 
 		sb.WriteString(dimStyle.Render("  "+strings.Repeat("─", 60)) + "\n")
 		for _, d := range sent.DNSAnomaly {
 			verdict := okStyle.Render("normal")
-			if d.QueriesPerSec > 100 || d.AvgQueryLen > 50 {
+			if d.QueriesPerSec > 500 || d.AvgQueryLen > 80 {
 				verdict = warnStyle.Render("SUSPECT")
 			}
-			if d.QueriesPerSec > 200 && d.AvgQueryLen > 60 {
+			if d.QueriesPerSec > 1000 && d.AvgQueryLen > 100 {
 				verdict = critStyle.Render("TUNNEL")
 			}
 			sb.WriteString(fmt.Sprintf("  %s %s %s %s %s\n",
@@ -842,18 +842,13 @@ func renderSecFlowsContent(sent model.SentinelData, iw int) string {
 		sb.WriteString(dimStyle.Render("  PID     Comm             Dest IP          MB/hr    Pkts/s   Flag") + "\n")
 		sb.WriteString(dimStyle.Render("  "+strings.Repeat("─", 72)) + "\n")
 		for _, o := range sent.OutboundTop {
-			mbHr := float64(o.TotalBytes) / 1024.0 / 1024.0 * 3600.0 / max64f(float64(o.PacketCount), 1)
-			// Simpler: use BytesPerSec to compute MB/hr
-			mbHrFromRate := o.BytesPerSec * 3600.0 / 1024.0 / 1024.0
-			if mbHrFromRate > 0 {
-				mbHr = mbHrFromRate
-			}
+			mbHr := o.BytesPerSec * 3600.0 / 1024.0 / 1024.0
 			avgPktSize := max64f(float64(o.TotalBytes)/float64(max64u(o.PacketCount, 1)), 64)
 			pktsPerSec := o.BytesPerSec / avgPktSize
 			flag := ""
-			if mbHr > 100 {
+			if mbHr > 5000 {
 				flag = critStyle.Render("EXFIL")
-			} else if mbHr > 10 {
+			} else if mbHr > 500 {
 				flag = warnStyle.Render("HIGH")
 			}
 
@@ -969,9 +964,9 @@ func renderSecTLSContent(sec model.SecurityMetrics, iw int) string {
 			}
 			jitterStr := fmt.Sprintf("%.1f%%", b.Jitter*100)
 			flag := ""
-			if b.Jitter < 0.05 && b.SampleCount > 5 {
+			if b.Jitter < 0.05 && b.SampleCount > 20 && b.AvgIntervalSec > 1 {
 				flag = critStyle.Render("C2")
-			} else if b.Jitter < 0.15 {
+			} else if b.Jitter < 0.15 && b.SampleCount > 10 {
 				flag = warnStyle.Render("SUSPECT")
 			}
 			sb.WriteString(fmt.Sprintf("  %s %s %s %s %s %s\n",
@@ -1033,12 +1028,34 @@ func autoExpandSecSection(snap *model.Snapshot, expanded *[secSecCount]bool) {
 	if len(sent.SynFlood) > 0 || len(sent.PortScans) > 0 || len(sec.TCPFlagAnomalies) > 0 {
 		expanded[secSecAttacks] = true
 	}
-	// DNS
-	if len(sent.DNSAnomaly) > 0 || len(sec.DNSTunnelIndicators) > 0 {
+	// DNS — only auto-expand when actual anomalies exist
+	hasDNSAnomaly := false
+	for _, d := range sent.DNSAnomaly {
+		if d.QueriesPerSec > 500 || d.AvgQueryLen > 80 {
+			hasDNSAnomaly = true
+			break
+		}
+	}
+	if hasDNSAnomaly || len(sec.DNSTunnelIndicators) > 0 {
 		expanded[secSecDNS] = true
 	}
-	// Flows
-	if len(sent.FlowRates) > 0 || len(sent.OutboundTop) > 0 {
+	// Flows — only auto-expand when flagged entries exist
+	hasLateral := false
+	for _, f := range sent.FlowRates {
+		if f.UniqueDestCount > 5 {
+			hasLateral = true
+			break
+		}
+	}
+	hasHighOutbound := false
+	for _, o := range sent.OutboundTop {
+		mbHr := o.BytesPerSec * 3600.0 / 1024.0 / 1024.0
+		if mbHr > 500 {
+			hasHighOutbound = true
+			break
+		}
+	}
+	if hasLateral || hasHighOutbound {
 		expanded[secSecFlows] = true
 	}
 	// Brute force

@@ -53,6 +53,10 @@ func (p *tcpflagsProbe) read() ([]model.TCPFlagAnomaly, error) {
 		if val.Count == 0 {
 			continue
 		}
+		// Skip loopback — local flag anomalies are not attacks
+		if isLoopback(key.Saddr) {
+			continue
+		}
 		results = append(results, model.TCPFlagAnomaly{
 			SrcIP:     formatIPv4(key.Saddr),
 			FlagCombo: flagName(key.Flags),

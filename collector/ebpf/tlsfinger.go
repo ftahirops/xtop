@@ -57,6 +57,10 @@ func (p *tlsfingerProbe) read() ([]model.JA3Entry, error) {
 		if val.Count == 0 {
 			continue
 		}
+		// Skip loopback TLS traffic
+		if isLoopback(val.SampleSaddr) || isLoopback(val.SampleDaddr) {
+			continue
+		}
 		hashStr := fmt.Sprintf("%08x", hash)
 		known := knownJA3[hashStr]
 		results = append(results, model.JA3Entry{

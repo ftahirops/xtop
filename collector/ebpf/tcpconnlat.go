@@ -56,6 +56,10 @@ func (p *tcpconnlatProbe) read() ([]TCPConnLatResult, error) {
 		if val.Count == 0 {
 			continue
 		}
+		// Skip loopback destinations
+		if isLoopback(val.Daddr) {
+			continue
+		}
 		results = append(results, TCPConnLatResult{
 			PID:     pid,
 			Comm:    readComm(pid),

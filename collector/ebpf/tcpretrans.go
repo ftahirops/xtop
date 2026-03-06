@@ -49,6 +49,10 @@ func (p *tcpretransProbe) read() ([]TCPRetransResult, error) {
 		if val.Count == 0 {
 			continue
 		}
+		// Skip loopback destinations — local retransmits are not network issues
+		if isLoopback(val.LastDaddr) {
+			continue
+		}
 		results = append(results, TCPRetransResult{
 			PID:       pid,
 			Comm:      readComm(pid),

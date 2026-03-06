@@ -142,8 +142,8 @@ func (s *SecurityCollector) collectAuthLog(sec *model.SecurityMetrics) {
 	}
 	sec.FailedAuthRate = float64(failCount) / deltaS
 
-	// Brute force detection: >10 failures/minute
-	if sec.FailedAuthRate > 10.0/60.0 {
+	// Brute force detection: >1 failure/second (60/min)
+	if sec.FailedAuthRate > 1.0 {
 		sec.BruteForce = true
 	}
 

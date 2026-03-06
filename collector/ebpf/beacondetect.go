@@ -42,6 +42,10 @@ func (p *beacondetectProbe) read() ([]model.BeaconIndicator, error) {
 		if val.IntervalCount < 5 {
 			continue
 		}
+		// Skip loopback destinations — local health checks are not C2 beacons
+		if isLoopback(key.Daddr) {
+			continue
+		}
 		avgNs := float64(val.IntervalSumNs) / float64(val.IntervalCount)
 		avgSec := avgNs / 1e9
 		// Jitter = (max - min) / avg, normalized
