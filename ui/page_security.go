@@ -127,16 +127,40 @@ func renderSecurityPage(snap *model.Snapshot, rates *model.RateSnapshot,
 
 	// === SECURITY STATUS (always visible, not collapsible) ===
 	var statusLines []string
-	statusLines = append(statusLines, renderHealthBadge(sec.Score)+" "+dimStyle.Render(func() string {
-		switch sec.Score {
-		case "CRIT":
-			return "— security signals detected"
-		case "WARN":
-			return "— review recommended"
-		default:
-			return "— no anomalies"
+	// Combine legacy score with BPF threat score
+	effectiveScore := sec.Score
+	effectiveMsg := "— no anomalies"
+	switch sec.ThreatScore {
+	case "THREAT":
+		effectiveScore = "CRIT"
+		effectiveMsg = "— active threat detected (BPF)"
+	case "INVESTIGATING":
+		if effectiveScore == "" || effectiveScore == "OK" {
+			effectiveScore = "WARN"
 		}
-	}()))
+		effectiveMsg = "— investigating (watchdog active)"
+	case "ANOMALY":
+		if effectiveScore == "" || effectiveScore == "OK" {
+			effectiveScore = "WARN"
+		}
+		effectiveMsg = "— anomaly detected (BPF)"
+	}
+	if effectiveScore == "" {
+		effectiveScore = "OK"
+	}
+	switch sec.Score {
+	case "CRIT":
+		effectiveScore = "CRIT"
+		effectiveMsg = "— security signals detected"
+	case "WARN":
+		if effectiveScore != "CRIT" {
+			effectiveScore = "WARN"
+		}
+		if sec.ThreatScore == "" || sec.ThreatScore == "CLEAR" {
+			effectiveMsg = "— review recommended"
+		}
+	}
+	statusLines = append(statusLines, renderHealthBadge(effectiveScore)+" "+dimStyle.Render(effectiveMsg))
 	sb.WriteString(boxSection("SECURITY STATUS", statusLines, iw))
 
 	// Summary functions for collapsed headers
@@ -349,6 +373,12 @@ func secFlowsSummary(sent model.SentinelData) string {
 func secTLSSummary(sec model.SecurityMetrics) string {
 	n := len(sec.JA3Fingerprints)
 	if n == 0 {
+		// Check if watchdog is active but hasn't collected yet
+		for _, w := range sec.ActiveWatchdogs {
+			if w == "tlsfinger" {
+				return "investigating..."
+			}
+		}
 		return "inactive"
 	}
 	// Count known-bad
@@ -954,7 +984,18 @@ func renderSecTLSContent(sec model.SecurityMetrics, iw int) string {
 	}
 
 	if len(sec.JA3Fingerprints) == 0 && len(sec.BeaconIndicators) == 0 {
-		sb.WriteString(dimStyle.Render("  TLS fingerprinting inactive — no watchdog data") + "\n")
+		active := false
+		for _, w := range sec.ActiveWatchdogs {
+			if w == "tlsfinger" || w == "beacondetect" {
+				active = true
+				break
+			}
+		}
+		if active {
+			sb.WriteString(warnStyle.Render("  Watchdog active — collecting data...") + "\n")
+		} else {
+			sb.WriteString(dimStyle.Render("  TLS fingerprinting inactive — no watchdog data") + "\n")
+		}
 	}
 
 	return sb.String()

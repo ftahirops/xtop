@@ -1032,7 +1032,7 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEn
 	if totalDrops > 1 && rates.CPUSoftIRQPct > 5 && v2TrustGate(r.EvidenceV2) {
 		r.Score += 10
 	}
-	if r.Score < 20 {
+	if r.Score < 20 && !hasSecEvidence {
 		r.Score = 0
 	}
 	cap100(&r.Score)
