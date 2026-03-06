@@ -19,6 +19,7 @@ func main() {
 	flag.Parse()
 
 	eng := engine.NewEngine(60, *interval)
+	defer eng.Close()
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)

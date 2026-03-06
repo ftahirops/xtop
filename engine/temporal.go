@@ -131,7 +131,7 @@ var predefinedPairs = []crossSignalPair{
 	{"jvm.heap.pressure", "mem.reclaim.direct", "JVM heap pressure triggering kernel direct reclaim"},
 	{"sec.synflood", "net.conntrack.growth", "SYN flood driving conntrack table growth"},
 	{"sec.portscan", "net.sentinel.resets", "Port scanning causing TCP RST responses"},
-	{"sec.dns.anomaly", "sec.dns.tunnel", "Elevated DNS leading to tunneling detection"},
+	{"sec.dns.tunnel", "sec.dns.anomaly", "DNS tunneling causing elevated query anomaly"},
 	{"sec.beacon", "sec.outbound.exfil", "C2 beacon associated with data exfiltration"},
 }
 

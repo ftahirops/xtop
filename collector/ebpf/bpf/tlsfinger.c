@@ -67,11 +67,13 @@ int handle_tlsfinger(struct __sk_buff *skb)
     __u8 ihl = ip->ihl * 4;
     if (ihl < 20)
         return TC_ACT_OK;
-
-    // Parse TCP header
-    struct tcphdr *tcp = (void *)ip + ihl;
-    if ((void *)(tcp + 1) > data_end)
+    if (ihl > 60)
         return TC_ACT_OK;
+
+    // Parse TCP header — validate bounds before forming pointer
+    if ((void *)ip + ihl + sizeof(struct tcphdr) > data_end)
+        return TC_ACT_OK;
+    struct tcphdr *tcp = (void *)ip + ihl;
 
     // Filter: destination port 443
     if (tcp->dest != __builtin_bswap16(TLS_PORT))
@@ -120,13 +122,17 @@ int handle_tlsfinger(struct __sk_buff *skb)
         return TC_ACT_OK;
 
     // Cipher suites list starts after session ID
+    // Bounds check BEFORE forming pointer: need ch + 35 + sess_id_len + 2 (for cipher_list_len)
+    if ((void *)(ch + 35 + sess_id_len + 2) > data_end)
+        return TC_ACT_OK;
     __u8 *cipher_start = ch + 35 + sess_id_len;
 
-    // Need cipher suites length (2 bytes)
-    if ((void *)(cipher_start + 2) > data_end)
-        return TC_ACT_OK;
-
     __u16 cipher_list_len = ((__u16)cipher_start[0] << 8) | (__u16)cipher_start[1];
+
+    // Clamp cipher_list_len to remaining data to prevent out-of-bounds reads
+    __u32 remaining = (unsigned long)data_end - (unsigned long)(cipher_start + 2);
+    if (cipher_list_len > remaining)
+        cipher_list_len = (__u16)remaining;
     __u16 cipher_count = cipher_list_len / 2; // each cipher suite is 2 bytes
 
     // Read up to first 8 bytes (4 cipher suites) for fingerprinting
@@ -168,7 +174,7 @@ int handle_tlsfinger(struct __sk_buff *skb)
             .tls_version = tls_version,
             .cipher_count = cipher_count,
         };
-        bpf_map_update_elem(&ja3_accum, &hash, &new_val, BPF_NOEXIST);
+        bpf_map_update_elem(&ja3_accum, &hash, &new_val, BPF_ANY);
     }
 
     return TC_ACT_OK;

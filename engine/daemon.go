@@ -62,6 +62,7 @@ func RunDaemon(cfg DaemonConfig) error {
 	defer os.Remove(pidPath)
 
 	eng := NewEngine(cfg.History, int(cfg.Interval.Seconds()))
+	defer eng.Close()
 	engTicker := Ticker(eng)
 	if cfg.Metrics != nil {
 		engTicker = NewInstrumentedTicker(engTicker, cfg.Metrics)

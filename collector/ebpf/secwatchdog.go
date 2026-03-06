@@ -3,6 +3,7 @@
 package ebpf
 
 import (
+	"log"
 	"os"
 	"strings"
 	"sync"
@@ -77,10 +78,13 @@ func (sw *SecWatchdog) activateTCPFlags(now time.Time, dur time.Duration) {
 		sw.tcpflags.close()
 		sw.tcpflags = nil
 	}
-	if p, err := attachTCPFlags(sw.iface); err == nil {
-		sw.tcpflags = p
-		sw.tcpflagsExpiry = now.Add(dur)
+	p, err := attachTCPFlags(sw.iface)
+	if err != nil {
+		log.Printf("secwatchdog: tcpflags attach failed: %v", err)
+		return
 	}
+	sw.tcpflags = p
+	sw.tcpflagsExpiry = now.Add(dur)
 }
 
 // activateDNSDeep starts or refreshes the dnsdeep probe.
@@ -92,10 +96,13 @@ func (sw *SecWatchdog) activateDNSDeep(now time.Time, dur time.Duration) {
 		sw.dnsdeep.close()
 		sw.dnsdeep = nil
 	}
-	if p, err := attachDNSDeep(sw.iface); err == nil {
-		sw.dnsdeep = p
-		sw.dnsdeepExpiry = now.Add(dur)
+	p, err := attachDNSDeep(sw.iface)
+	if err != nil {
+		log.Printf("secwatchdog: dnsdeep attach failed: %v", err)
+		return
 	}
+	sw.dnsdeep = p
+	sw.dnsdeepExpiry = now.Add(dur)
 }
 
 // activateTLSFinger starts or refreshes the tlsfinger probe.
@@ -107,10 +114,13 @@ func (sw *SecWatchdog) activateTLSFinger(now time.Time, dur time.Duration) {
 		sw.tlsfinger.close()
 		sw.tlsfinger = nil
 	}
-	if p, err := attachTLSFinger(sw.iface); err == nil {
-		sw.tlsfinger = p
-		sw.tlsfingerExpiry = now.Add(dur)
+	p, err := attachTLSFinger(sw.iface)
+	if err != nil {
+		log.Printf("secwatchdog: tlsfinger attach failed: %v", err)
+		return
 	}
+	sw.tlsfinger = p
+	sw.tlsfingerExpiry = now.Add(dur)
 }
 
 // activateBeaconDetect starts or refreshes the beacondetect probe.
@@ -122,10 +132,13 @@ func (sw *SecWatchdog) activateBeaconDetect(now time.Time, dur time.Duration) {
 		sw.beacondetect.close()
 		sw.beacondetect = nil
 	}
-	if p, err := attachBeaconDetect(); err == nil {
-		sw.beacondetect = p
-		sw.beacondetectExpiry = now.Add(dur)
+	p, err := attachBeaconDetect()
+	if err != nil {
+		log.Printf("secwatchdog: beacondetect attach failed: %v", err)
+		return
 	}
+	sw.beacondetect = p
+	sw.beacondetectExpiry = now.Add(dur)
 }
 
 // Collect reads data from all active watchdog probes into SecurityMetrics.
@@ -197,14 +210,14 @@ func (sw *SecWatchdog) Collect(sec *model.SecurityMetrics) {
 	sec.ActiveWatchdogs = activeNames
 
 	// Compute threat score
-	if len(activeNames) > 0 {
+	if len(activeNames) > 0 && hasResults {
 		sec.ThreatScore = "THREAT"
+	} else if len(activeNames) > 0 {
+		sec.ThreatScore = "INVESTIGATING"
 	} else if hasResults {
 		sec.ThreatScore = "ANOMALY"
 	} else {
-		if sec.ThreatScore == "" {
-			sec.ThreatScore = "CLEAR"
-		}
+		sec.ThreatScore = "CLEAR"
 	}
 }
 

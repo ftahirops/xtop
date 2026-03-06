@@ -92,11 +92,13 @@ int handle_tcpflags(struct __sk_buff *skb)
     __u8 ihl = ip->ihl * 4;
     if (ihl < 20)
         return TC_ACT_OK;
-
-    // Parse TCP header
-    struct tcphdr *tcp = (void *)ip + ihl;
-    if ((void *)(tcp + 1) > data_end)
+    if (ihl > 60)
         return TC_ACT_OK;
+
+    // Parse TCP header — validate bounds before forming pointer
+    if ((void *)ip + ihl + sizeof(struct tcphdr) > data_end)
+        return TC_ACT_OK;
+    struct tcphdr *tcp = (void *)ip + ihl;
 
     // Extract flags from individual bitfields
     __u8 flags = extract_tcp_flags(tcp);
@@ -114,7 +116,7 @@ int handle_tcpflags(struct __sk_buff *skb)
         __sync_fetch_and_add(&val->count, 1);
     } else {
         struct flags_val new_val = { .count = 1 };
-        bpf_map_update_elem(&flags_accum, &key, &new_val, BPF_NOEXIST);
+        bpf_map_update_elem(&flags_accum, &key, &new_val, BPF_ANY);
     }
 
     return TC_ACT_OK;

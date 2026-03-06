@@ -143,6 +143,16 @@ func (e *Engine) Tick() (*model.Snapshot, *model.RateSnapshot, *model.AnalysisRe
 	return snap, rates, result
 }
 
+// Close shuts down all engine resources (sentinel probes, security watchdog).
+func (e *Engine) Close() {
+	if e.Sentinel != nil {
+		e.Sentinel.Close()
+	}
+	if e.SecWatchdog != nil {
+		e.SecWatchdog.Close()
+	}
+}
+
 // primaryDisplayName returns the best display name for the primary culprit.
 func primaryDisplayName(result *model.AnalysisResult) string {
 	if result.PrimaryAppName != "" {

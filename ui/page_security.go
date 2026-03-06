@@ -818,7 +818,8 @@ func renderSecFlowsContent(sent model.SentinelData, iw int) string {
 			if mbHrFromRate > 0 {
 				mbHr = mbHrFromRate
 			}
-			pktsPerSec := o.BytesPerSec / max64f(float64(o.TotalBytes)/float64(max64u(o.PacketCount, 1)), 1)
+			avgPktSize := max64f(float64(o.TotalBytes)/float64(max64u(o.PacketCount, 1)), 64)
+			pktsPerSec := o.BytesPerSec / avgPktSize
 			flag := ""
 			if mbHr > 100 {
 				flag = critStyle.Render("EXFIL")
@@ -979,6 +980,9 @@ func max64u(a, b uint64) uint64 {
 
 // autoExpandSecSection auto-expands sections with anomalous data.
 func autoExpandSecSection(snap *model.Snapshot, expanded *[secSecCount]bool) {
+	if snap == nil {
+		return
+	}
 	sec := snap.Global.Security
 	sent := snap.Global.Sentinel
 

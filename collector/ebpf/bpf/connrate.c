@@ -92,7 +92,7 @@ int handle_connrate(struct inet_sock_set_state_args *ctx)
             .close_count = is_close ? 1 : 0,
             .first_ns = bpf_ktime_get_ns(),
         };
-        bpf_map_update_elem(&flow_accum, &key, &new_val, BPF_NOEXIST);
+        bpf_map_update_elem(&flow_accum, &key, &new_val, BPF_ANY);
     }
 
     // Track unique destination count per PID (on connect only)
@@ -102,7 +102,7 @@ int handle_connrate(struct inet_sock_set_state_args *ctx)
             __sync_fetch_and_add(cnt, 1);
         } else {
             __u64 one = 1;
-            bpf_map_update_elem(&dest_count, &pid, &one, BPF_NOEXIST);
+            bpf_map_update_elem(&dest_count, &pid, &one, BPF_ANY);
         }
     }
 

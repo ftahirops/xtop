@@ -62,11 +62,13 @@ int handle_dnsdeep(struct __sk_buff *skb)
     __u8 ihl = ip->ihl * 4;
     if (ihl < 20)
         return TC_ACT_OK;
-
-    // Parse UDP header
-    struct udphdr *udp = (void *)ip + ihl;
-    if ((void *)(udp + 1) > data_end)
+    if (ihl > 60)
         return TC_ACT_OK;
+
+    // Parse UDP header — validate bounds before forming pointer
+    if ((void *)ip + ihl + sizeof(struct udphdr) > data_end)
+        return TC_ACT_OK;
+    struct udphdr *udp = (void *)ip + ihl;
 
     // Filter DNS: destination port 53
     if (udp->dest != __builtin_bswap16(DNS_PORT))
@@ -108,6 +110,10 @@ int handle_dnsdeep(struct __sk_buff *skb)
         name_len += 1 + label_len;
     }
 
+    // Sanity: DNS names cannot exceed 253 bytes per RFC 1035
+    if (name_len > 253)
+        return TC_ACT_OK;
+
     // After the name, read QTYPE (2 bytes)
     __u8 *qtype_ptr = qname + name_len + 1; // +1 for the terminating 0x00
     if ((void *)(qtype_ptr + 2) > data_end)
@@ -133,7 +139,7 @@ int handle_dnsdeep(struct __sk_buff *skb)
             .total_query_bytes = name_len,
             .max_name_len = name_len,
         };
-        bpf_map_update_elem(&dns_deep, &saddr, &new_val, BPF_NOEXIST);
+        bpf_map_update_elem(&dns_deep, &saddr, &new_val, BPF_ANY);
     }
 
     return TC_ACT_OK;

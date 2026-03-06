@@ -19,7 +19,7 @@ import (
 )
 
 // Version is set at build time via ldflags.
-var Version = "0.21.0"
+var Version = "0.21.1"
 
 // Config holds CLI configuration.
 type Config struct {
@@ -392,6 +392,7 @@ func Run() error {
 
 	// Create engine
 	eng := engine.NewEngine(cfg.HistorySize, intervalSec)
+	defer eng.Close()
 
 	// -json mode: single snapshot to stdout
 	if cfg.JSONMode {

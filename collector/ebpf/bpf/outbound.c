@@ -49,7 +49,7 @@ int BPF_KPROBE(handle_tcp_sendmsg_egress, struct sock *sk, struct msghdr *msg, s
             .packet_count = 1,
             .last_ns = bpf_ktime_get_ns(),
         };
-        bpf_map_update_elem(&egress_accum, &key, &new_val, BPF_NOEXIST);
+        bpf_map_update_elem(&egress_accum, &key, &new_val, BPF_ANY);
     }
 
     return 0;

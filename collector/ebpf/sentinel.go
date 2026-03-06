@@ -47,6 +47,13 @@ type SentinelManager struct {
 	prevThrottle map[uint64]uint64
 	lastRead     time.Time
 
+	// Previous values for security sentinel delta computation
+	prevSynCount  map[string]uint64 // SrcIP → previous SynCount
+	prevRSTCount  map[string]uint64 // SrcIP → previous RSTCount
+	prevDNSQuery  map[uint32]uint64 // PID → previous QueryCount
+	prevConnRate  map[string]uint64 // "PID-DstIP" → previous ConnectCount
+	prevOutBytes  map[string]uint64 // "PID-DstIP" → previous TotalBytes
+
 	// Event history buffers (retained across collection cycles)
 	execHistory   []model.ExecEventEntry
 	ptraceHistory []model.PtraceEventEntry
@@ -65,8 +72,12 @@ func NewSentinelManager() *SentinelManager {
 		prevStates:   make(map[uint32]uint64),
 		prevRetrans:  make(map[uint32]uint32),
 		prevThrottle: make(map[uint64]uint64),
+		prevSynCount: make(map[string]uint64),
+		prevRSTCount: make(map[string]uint64),
+		prevDNSQuery: make(map[uint32]uint64),
+		prevConnRate: make(map[string]uint64),
+		prevOutBytes: make(map[string]uint64),
 		selfPID:      uint32(os.Getpid()),
-		totalCount:   16,
 	}
 }
 
@@ -394,58 +405,108 @@ func (s *SentinelManager) Collect(snap *model.Snapshot) error {
 		sent.PtraceEvents = s.ptraceHistory
 	}
 
-	// Read SYN flood indicators
+	// Read SYN flood indicators (delta-based rate computation)
 	if s.synflood != nil {
 		results, err := s.synflood.read()
 		if err == nil {
+			newPrev := make(map[string]uint64, len(results))
 			for i := range results {
-				results[i].Rate = float64(results[i].SynCount) / elapsed
+				key := results[i].SrcIP
+				prev := s.prevSynCount[key]
+				total := results[i].SynCount
+				delta := total
+				if total >= prev {
+					delta = total - prev
+				}
+				results[i].Rate = float64(delta) / elapsed
+				newPrev[key] = total
 			}
+			s.prevSynCount = newPrev
 			sent.SynFlood = results
 		}
 	}
 
-	// Read port scan indicators
+	// Read port scan indicators (delta-based rate computation)
 	if s.portscan != nil {
 		results, err := s.portscan.read()
 		if err == nil {
+			newPrev := make(map[string]uint64, len(results))
 			for i := range results {
-				results[i].Rate = float64(results[i].RSTCount) / elapsed
+				key := results[i].SrcIP
+				prev := s.prevRSTCount[key]
+				total := results[i].RSTCount
+				delta := total
+				if total >= prev {
+					delta = total - prev
+				}
+				results[i].Rate = float64(delta) / elapsed
+				newPrev[key] = total
 			}
+			s.prevRSTCount = newPrev
 			sent.PortScans = results
 		}
 	}
 
-	// Read DNS anomaly indicators
+	// Read DNS anomaly indicators (delta-based rate computation)
 	if s.dnsmon != nil {
 		results, err := s.dnsmon.read()
 		if err == nil {
+			newPrev := make(map[uint32]uint64, len(results))
 			for i := range results {
-				results[i].QueriesPerSec = float64(results[i].QueryCount) / elapsed
+				pid := uint32(results[i].PID)
+				prev := s.prevDNSQuery[pid]
+				total := results[i].QueryCount
+				delta := total
+				if total >= prev {
+					delta = total - prev
+				}
+				results[i].QueriesPerSec = float64(delta) / elapsed
+				newPrev[pid] = total
 			}
+			s.prevDNSQuery = newPrev
 			sent.DNSAnomaly = results
 		}
 	}
 
-	// Read connection flow rates
+	// Read connection flow rates (delta-based rate computation)
 	if s.connrate != nil {
 		flows, destCounts, err := s.connrate.read()
 		if err == nil {
+			newPrev := make(map[string]uint64, len(flows))
 			for i := range flows {
 				flows[i].UniqueDestCount = destCounts[uint32(flows[i].PID)]
-				flows[i].Rate = float64(flows[i].ConnectCount) / elapsed
+				key := fmt.Sprintf("%d-%s", flows[i].PID, flows[i].DstIP)
+				prev := s.prevConnRate[key]
+				total := flows[i].ConnectCount
+				delta := total
+				if total >= prev {
+					delta = total - prev
+				}
+				flows[i].Rate = float64(delta) / elapsed
+				newPrev[key] = total
 			}
+			s.prevConnRate = newPrev
 			sent.FlowRates = flows
 		}
 	}
 
-	// Read outbound data transfer
+	// Read outbound data transfer (delta-based rate computation)
 	if s.outbound != nil {
 		results, err := s.outbound.read()
 		if err == nil {
+			newPrev := make(map[string]uint64, len(results))
 			for i := range results {
-				results[i].BytesPerSec = float64(results[i].TotalBytes) / elapsed
+				key := fmt.Sprintf("%d-%s", results[i].PID, results[i].DstIP)
+				prev := s.prevOutBytes[key]
+				total := results[i].TotalBytes
+				delta := total
+				if total >= prev {
+					delta = total - prev
+				}
+				results[i].BytesPerSec = float64(delta) / elapsed
+				newPrev[key] = total
 			}
+			s.prevOutBytes = newPrev
 			sent.OutboundTop = results
 		}
 	}
@@ -528,7 +589,9 @@ func (s *SentinelManager) attach() {
 	}
 
 	var errs []string
+	s.totalCount = 0
 
+	s.totalCount++
 	if p, err := attachKfreeSkb(); err != nil {
 		errs = append(errs, "kfreeskb: "+err.Error())
 	} else {
@@ -536,6 +599,7 @@ func (s *SentinelManager) attach() {
 		s.attachedCount++
 	}
 
+	s.totalCount++
 	if p, err := attachTCPReset(); err != nil {
 		errs = append(errs, "tcpreset: "+err.Error())
 	} else {
@@ -543,6 +607,7 @@ func (s *SentinelManager) attach() {
 		s.attachedCount++
 	}
 
+	s.totalCount++
 	if p, err := attachSockState(); err != nil {
 		errs = append(errs, "sockstate: "+err.Error())
 	} else {
@@ -550,6 +615,7 @@ func (s *SentinelManager) attach() {
 		s.attachedCount++
 	}
 
+	s.totalCount++
 	if p, err := attachModLoad(); err != nil {
 		errs = append(errs, "modload: "+err.Error())
 	} else {
@@ -557,6 +623,7 @@ func (s *SentinelManager) attach() {
 		s.attachedCount++
 	}
 
+	s.totalCount++
 	if p, err := attachOOMKill(); err != nil {
 		errs = append(errs, "oomkill: "+err.Error())
 	} else {
@@ -564,6 +631,7 @@ func (s *SentinelManager) attach() {
 		s.attachedCount++
 	}
 
+	s.totalCount++
 	if p, err := attachDirectReclaim(); err != nil {
 		errs = append(errs, "directreclaim: "+err.Error())
 	} else {
@@ -571,6 +639,7 @@ func (s *SentinelManager) attach() {
 		s.attachedCount++
 	}
 
+	s.totalCount++
 	if p, err := attachCgThrottle(); err != nil {
 		errs = append(errs, "cgthrottle: "+err.Error())
 	} else {
@@ -578,6 +647,7 @@ func (s *SentinelManager) attach() {
 		s.attachedCount++
 	}
 
+	s.totalCount++
 	if p, err := attachTCPRetrans(); err != nil {
 		errs = append(errs, "tcpretrans: "+err.Error())
 	} else {
@@ -585,6 +655,7 @@ func (s *SentinelManager) attach() {
 		s.attachedCount++
 	}
 
+	s.totalCount++
 	if p, err := attachTCPConnLat(); err != nil {
 		errs = append(errs, "tcpconnlat: "+err.Error())
 	} else {
@@ -592,6 +663,7 @@ func (s *SentinelManager) attach() {
 		s.attachedCount++
 	}
 
+	s.totalCount++
 	if p, err := attachExecSnoop(); err != nil {
 		errs = append(errs, "execsnoop: "+err.Error())
 	} else {
@@ -599,6 +671,7 @@ func (s *SentinelManager) attach() {
 		s.attachedCount++
 	}
 
+	s.totalCount++
 	if p, err := attachPtraceDetect(); err != nil {
 		errs = append(errs, "ptracedetect: "+err.Error())
 	} else {
@@ -606,6 +679,7 @@ func (s *SentinelManager) attach() {
 		s.attachedCount++
 	}
 
+	s.totalCount++
 	if p, err := attachSynFlood(); err != nil {
 		errs = append(errs, fmt.Sprintf("synflood: %v", err))
 	} else {
@@ -613,6 +687,7 @@ func (s *SentinelManager) attach() {
 		s.attachedCount++
 	}
 
+	s.totalCount++
 	if p, err := attachPortScan(); err != nil {
 		errs = append(errs, fmt.Sprintf("portscan: %v", err))
 	} else {
@@ -620,6 +695,7 @@ func (s *SentinelManager) attach() {
 		s.attachedCount++
 	}
 
+	s.totalCount++
 	if p, err := attachDNSMon(); err != nil {
 		errs = append(errs, fmt.Sprintf("dnsmon: %v", err))
 	} else {
@@ -627,6 +703,7 @@ func (s *SentinelManager) attach() {
 		s.attachedCount++
 	}
 
+	s.totalCount++
 	if p, err := attachConnRate(); err != nil {
 		errs = append(errs, fmt.Sprintf("connrate: %v", err))
 	} else {
@@ -634,6 +711,7 @@ func (s *SentinelManager) attach() {
 		s.attachedCount++
 	}
 
+	s.totalCount++
 	if p, err := attachOutbound(); err != nil {
 		errs = append(errs, fmt.Sprintf("outbound: %v", err))
 	} else {

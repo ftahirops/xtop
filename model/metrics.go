@@ -742,12 +742,13 @@ type TCPFlagAnomaly struct {
 
 // DNSTunnelIndicator holds BPF-detected DNS tunneling indicators per process.
 type DNSTunnelIndicator struct {
-	PID         int     `json:"pid"`
-	Comm        string  `json:"comm"`
-	DomainHash  string  `json:"domain_hash"`
+	PID         int     `json:"pid,omitempty"`
+	Comm        string  `json:"comm,omitempty"`
+	SrcIP       string  `json:"src_ip,omitempty"`
+	DomainHash  string  `json:"domain_hash,omitempty"`
 	TXTRatio    float64 `json:"txt_ratio"`
 	AvgQueryLen int     `json:"avg_query_len"`
-	QueryRate   float64 `json:"query_rate"`
+	QueryRate   float64 `json:"query_rate,omitempty"`
 }
 
 // JA3Entry holds a TLS JA3 fingerprint hash and its occurrence data.

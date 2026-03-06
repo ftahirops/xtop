@@ -941,7 +941,7 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEn
 			}
 		}
 		if maxDests > 0 {
-			ws, cs := threshold("sec.lateral", 20, 50)
+			ws, cs := threshold("sec.lateral", 5, 20)
 			r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("sec.lateral", model.DomainNetwork,
 				float64(maxDests), ws, cs, true, 0.75,
 				fmt.Sprintf("Lateral movement: %d unique destinations from single PID", maxDests), "3s",
@@ -957,7 +957,7 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEn
 			}
 		}
 		if maxEgressMBHr > 0 {
-			ws, cs := threshold("sec.outbound.exfil", 50, 500)
+			ws, cs := threshold("sec.outbound.exfil", 10, 100)
 			r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("sec.outbound.exfil", model.DomainNetwork,
 				maxEgressMBHr, ws, cs, true, 0.8,
 				fmt.Sprintf("Outbound data: %.0f MB/hr to single destination", maxEgressMBHr), "3s",
@@ -991,7 +991,7 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEn
 	if minJitter < 1.0 && len(curr.Global.Security.BeaconIndicators) > 0 {
 		// Invert: lower jitter = more suspicious = higher value for normalize
 		invertedJitter := 1.0 - minJitter
-		ws, cs := threshold("sec.beacon", 0.8, 1.0)
+		ws, cs := threshold("sec.beacon", 0.80, 0.95)
 		r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("sec.beacon", model.DomainNetwork,
 			invertedJitter, ws, cs, true, 0.85,
 			fmt.Sprintf("C2 beacon: %.1f%% jitter (regular intervals)", minJitter*100), "120s",
@@ -1017,7 +1017,14 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEn
 		v2Score = 0
 	}
 	r.Score = int(v2Score)
-	if totalDrops < 1 && retransRate < 5 {
+	hasSecEvidence := false
+	for _, e := range r.EvidenceV2 {
+		if strings.HasPrefix(e.ID, "sec.") && e.Strength >= 0.35 {
+			hasSecEvidence = true
+			break
+		}
+	}
+	if !hasSecEvidence && totalDrops < 1 && retransRate < 5 {
 		if r.Score > 25 {
 			r.Score = 25
 		}

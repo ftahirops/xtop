@@ -85,7 +85,7 @@ int BPF_KPROBE(handle_beacon_sendmsg, struct sock *sk)
             .max_interval_ns = 0,
             .send_count = 1,
         };
-        bpf_map_update_elem(&beacon_accum, &key, &new_val, BPF_NOEXIST);
+        bpf_map_update_elem(&beacon_accum, &key, &new_val, BPF_ANY);
     }
 
     return 0;

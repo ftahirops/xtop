@@ -42,6 +42,9 @@ func (p *connrateProbe) read() ([]model.FlowRateEntry, map[uint32]int, error) {
 	for dcIter.Next(&dcPID, &dcVal) {
 		destCounts[dcPID] = int(dcVal)
 	}
+	if err := dcIter.Err(); err != nil {
+		return nil, nil, fmt.Errorf("iterate dest_count: %w", err)
+	}
 
 	iter := p.objs.FlowAccum.Iterate()
 	for iter.Next(&key, &val) {

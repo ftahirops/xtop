@@ -30,6 +30,7 @@ func directCollect(intervalSec int) (*model.Snapshot, *model.RateSnapshot, *mode
 		intervalSec = 3
 	}
 	eng := engine.NewEngine(60, intervalSec)
+	defer eng.Close()
 	eng.Tick() // first tick: baseline
 	time.Sleep(time.Duration(intervalSec) * time.Second)
 	snap, rates, result := eng.Tick()

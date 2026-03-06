@@ -62,7 +62,7 @@ func (p *dnsdeepProbe) read() ([]model.DNSTunnelIndicator, error) {
 			avgQueryLen = int(val.TotalQueryBytes / val.TotalQueries)
 		}
 		results = append(results, model.DNSTunnelIndicator{
-			DomainHash:  formatIPv4(saddr), // keyed by source IP in this probe
+			SrcIP:       formatIPv4(saddr),
 			TXTRatio:    txtRatio,
 			AvgQueryLen: avgQueryLen,
 		})

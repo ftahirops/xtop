@@ -112,7 +112,7 @@ var patternLibrary = []Pattern{
 			{EvidenceID: "sec.synflood"},
 			{EvidenceID: "net.conntrack.growth"},
 		},
-		MinMatch: 1, Priority: 70, MinStr: 0.4,
+		MinMatch: 2, Priority: 70, MinStr: 0.4,
 		Narrative: "DDoS SYN flood — half-open connections exhausting resources",
 	},
 	{
@@ -121,7 +121,7 @@ var patternLibrary = []Pattern{
 			{EvidenceID: "sec.portscan"},
 			{EvidenceID: "sec.tcp.flags"},
 		},
-		MinMatch: 1, Priority: 68, MinStr: 0.4,
+		MinMatch: 2, Priority: 68, MinStr: 0.4,
 		Narrative: "Port scan attack — reconnaissance activity detected",
 	},
 	{
@@ -130,7 +130,7 @@ var patternLibrary = []Pattern{
 			{EvidenceID: "sec.beacon"},
 			{EvidenceID: "sec.outbound.exfil"},
 		},
-		MinMatch: 1, Priority: 66, MinStr: 0.4,
+		MinMatch: 2, Priority: 66, MinStr: 0.4,
 		Narrative: "Command & control beacon — periodic callbacks to external host",
 	},
 	{
@@ -148,7 +148,7 @@ var patternLibrary = []Pattern{
 			{EvidenceID: "sec.outbound.exfil"},
 			{EvidenceID: "sec.lateral"},
 		},
-		MinMatch: 1, Priority: 62, MinStr: 0.4,
+		MinMatch: 2, Priority: 62, MinStr: 0.4,
 		Narrative: "Data exfiltration — large outbound transfers to external destinations",
 	},
 	{
@@ -157,7 +157,7 @@ var patternLibrary = []Pattern{
 			{EvidenceID: "sec.portscan"},
 			{EvidenceID: "net.tcp.retrans"},
 		},
-		MinMatch: 1, Priority: 58, MinStr: 0.3,
+		MinMatch: 2, Priority: 63, MinStr: 0.3,
 		Narrative: "Network reconnaissance — scanning activity causing retransmits",
 	},
 	{
