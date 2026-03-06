@@ -41,6 +41,10 @@ func (p *portscanProbe) read() ([]model.PortScanEntry, error) {
 		if val.RstCount < 5 {
 			continue
 		}
+		// Skip loopback (127.0.0.0/8) — local RSTs are not port scans
+		if isLoopback(srcIP) {
+			continue
+		}
 		portDiversity := bits.OnesCount64(val.PortBitmap)
 		results = append(results, model.PortScanEntry{
 			SrcIP:             formatIPv4(srcIP),

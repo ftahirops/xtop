@@ -473,7 +473,12 @@ func (s *SentinelManager) Collect(snap *model.Snapshot) error {
 		flows, destCounts, err := s.connrate.read()
 		if err == nil {
 			newPrev := make(map[string]uint64, len(flows))
+			var filtered []model.FlowRateEntry
 			for i := range flows {
+				// Skip xtop's own connections (monitoring traffic is not lateral movement)
+				if uint32(flows[i].PID) == s.selfPID {
+					continue
+				}
 				flows[i].UniqueDestCount = destCounts[uint32(flows[i].PID)]
 				key := fmt.Sprintf("%d-%s", flows[i].PID, flows[i].DstIP)
 				prev := s.prevConnRate[key]
@@ -484,9 +489,10 @@ func (s *SentinelManager) Collect(snap *model.Snapshot) error {
 				}
 				flows[i].Rate = float64(delta) / elapsed
 				newPrev[key] = total
+				filtered = append(filtered, flows[i])
 			}
 			s.prevConnRate = newPrev
-			sent.FlowRates = flows
+			sent.FlowRates = filtered
 		}
 	}
 
@@ -495,7 +501,12 @@ func (s *SentinelManager) Collect(snap *model.Snapshot) error {
 		results, err := s.outbound.read()
 		if err == nil {
 			newPrev := make(map[string]uint64, len(results))
+			var filtered []model.OutboundEntry
 			for i := range results {
+				// Skip xtop's own outbound traffic
+				if uint32(results[i].PID) == s.selfPID {
+					continue
+				}
 				key := fmt.Sprintf("%d-%s", results[i].PID, results[i].DstIP)
 				prev := s.prevOutBytes[key]
 				total := results[i].TotalBytes
@@ -505,9 +516,10 @@ func (s *SentinelManager) Collect(snap *model.Snapshot) error {
 				}
 				results[i].BytesPerSec = float64(delta) / elapsed
 				newPrev[key] = total
+				filtered = append(filtered, results[i])
 			}
 			s.prevOutBytes = newPrev
-			sent.OutboundTop = results
+			sent.OutboundTop = filtered
 		}
 	}
 

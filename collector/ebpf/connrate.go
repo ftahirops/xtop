@@ -51,6 +51,10 @@ func (p *connrateProbe) read() ([]model.FlowRateEntry, map[uint32]int, error) {
 		if val.ConnectCount == 0 && val.CloseCount == 0 {
 			continue
 		}
+		// Skip loopback destinations — local connections are not lateral movement
+		if isLoopback(key.Daddr) {
+			continue
+		}
 		results = append(results, model.FlowRateEntry{
 			PID:             int(key.Pid),
 			Comm:            readComm(key.Pid),

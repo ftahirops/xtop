@@ -46,6 +46,10 @@ func (p *synfloodProbe) read() ([]model.SynFloodEntry, error) {
 		if val.SynCount == 0 && val.SynackRetrans == 0 {
 			continue
 		}
+		// Skip loopback (127.0.0.0/8) — not a real SYN flood source
+		if isLoopback(srcIP) {
+			continue
+		}
 		var ratio float64
 		if val.SynCount > 0 {
 			ratio = float64(val.SynackRetrans) / float64(val.SynCount)

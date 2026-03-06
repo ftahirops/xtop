@@ -868,10 +868,12 @@ func renderSecFlowsContent(sent model.SentinelData, iw int) string {
 		sb.WriteString("\n")
 	}
 
-	// Lateral movement (FlowRates with high unique dest counts)
+	// Lateral movement (FlowRates with high unique dest counts, deduplicated by PID)
+	seenPIDs := make(map[int]bool)
 	var lateralEntries []model.FlowRateEntry
 	for _, f := range sent.FlowRates {
-		if f.UniqueDestCount > 5 {
+		if f.UniqueDestCount > 5 && !seenPIDs[f.PID] {
+			seenPIDs[f.PID] = true
 			lateralEntries = append(lateralEntries, f)
 		}
 	}

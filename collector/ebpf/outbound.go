@@ -40,6 +40,10 @@ func (p *outboundProbe) read() ([]model.OutboundEntry, error) {
 		if val.TotalBytes == 0 {
 			continue
 		}
+		// Skip loopback destinations (127.0.0.0/8) — not exfiltration
+		if isLoopback(key.Daddr) {
+			continue
+		}
 		results = append(results, model.OutboundEntry{
 			PID:         int(key.Pid),
 			Comm:        readComm(key.Pid),

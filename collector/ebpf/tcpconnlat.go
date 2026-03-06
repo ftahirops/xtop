@@ -84,3 +84,9 @@ func formatIPv4(addr uint32) string {
 	return fmt.Sprintf("%d.%d.%d.%d",
 		addr&0xff, (addr>>8)&0xff, (addr>>16)&0xff, (addr>>24)&0xff)
 }
+
+// isLoopback returns true if the IPv4 address (in network byte order on LE)
+// is in 127.0.0.0/8. On x86, the first octet is addr&0xff.
+func isLoopback(addr uint32) bool {
+	return addr&0xff == 127
+}
