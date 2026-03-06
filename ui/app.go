@@ -490,8 +490,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.evtSelected < len(completed)-1 {
 					m.evtSelected++
 				}
-			} else if m.page == PageSecurity {
-				m.secSectionCursor = (m.secSectionCursor + 1) % secSecCount
 			} else {
 				m.scroll++
 			}
@@ -504,8 +502,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.evtSelected > 0 {
 					m.evtSelected--
 				}
-			} else if m.page == PageSecurity {
-				m.secSectionCursor = (m.secSectionCursor + secSecCount - 1) % secSecCount
 			} else if m.scroll > 0 {
 				m.scroll--
 			}
