@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/xtop-v0.21.3-00d4aa?style=for-the-badge&logo=linux&logoColor=white" alt="version"/>
+  <img src="https://img.shields.io/badge/xtop-v0.21.7-00d4aa?style=for-the-badge&logo=linux&logoColor=white" alt="version"/>
   <img src="https://img.shields.io/badge/Go-1.21+-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="go"/>
   <img src="https://img.shields.io/badge/eBPF-Powered-ff6600?style=for-the-badge&logo=linux&logoColor=white" alt="ebpf"/>
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="license"/>
@@ -116,14 +116,15 @@ The heart of xtop. Four parallel bottleneck detectors continuously score system 
 
 **Trust Gating:** A bottleneck is only reported when **2+ independent evidence groups** confirm it. This eliminates false positives from single-metric spikes. Confidence scales from 30% (2 groups) to 98% (5+ groups).
 
-### RCA Decision Engine (v0.21.3)
+### RCA Decision Engine (v0.21.7)
 
 Beyond raw signals, xtop's **decision engine** tells you EXACTLY what's wrong, why, what caused it, and what to do:
 
 - **Narrative Engine** — Human-readable root cause explanations replace raw metric names. Instead of "CPU Contention" you see *"CPU throttle cascade — cgroup limits saturating run queue"* with top evidence lines and impact summary
-- **Pattern Detection** — 12 named failure patterns (OOM Crisis, Memory-Induced IO Storm, CPU Throttle Cascade, Disk IO Saturation, VM Noisy Neighbor, Network Congestion, Socket Leak, Conntrack Exhaustion, and more) checked by priority
+- **Pattern Detection** — 18 named failure patterns (OOM Crisis, Memory-Induced IO Storm, CPU Throttle Cascade, Disk IO Saturation, VM Noisy Neighbor, Network Congestion, Socket Leak, Conntrack Exhaustion, DDoS SYN Flood, Port Scan Attack, C2 Beacon Active, Data Exfiltration, and more) checked by priority
 - **Temporal Causality** — Tracks signal onset times to identify which signal fired first and builds chains like `retransmits (T+0s) → drops (T+3s) → threads blocked (T+12s)`
 - **Blame Attribution** — Top offending processes per bottleneck domain with process-specific metrics (cpu%, threads, ctxsw, mem%, RSS, IO MB/s, CLOSE_WAIT count)
+- **Security Evidence** — BPF sentinel and watchdog probes feed security-specific evidence (SYN flood, port scan, lateral movement, data exfiltration, DNS tunneling, C2 beacon) into the RCA scoring with dedicated threat score bypass
 
 Press `e` (Explain) to see the full ROOT CAUSE → EVIDENCE → IMPACT → TEMPORAL CAUSALITY → TOP OFFENDERS breakdown.
 
@@ -138,7 +139,7 @@ Press `e` (Explain) to see the full ROOT CAUSE → EVIDENCE → IMPACT → TEMPO
 
 ---
 
-### 11 Interactive Pages
+### 15 Interactive Pages
 
 | Key | Page | What You See |
 |---|---|---|
@@ -153,6 +154,10 @@ Press `e` (Explain) to see the full ROOT CAUSE → EVIDENCE → IMPACT → TEMPO
 | `8` | **Probe** | Real-time eBPF investigation results — off-CPU analysis, IO latency histograms, lock contention, TCP retransmit tracking |
 | `9` | **Thresholds** | Live view of all RCA threshold values vs current readings — see exactly which checks are passing/failing |
 | `D` | **DiskGuard** | Filesystem space monitor with auto-contain — SIGSTOP/SIGCONT top disk writers when mounts cross critical thresholds |
+| `L` | **Security** | eBPF network security intelligence — 11 collapsible sections with threat detection, attack analysis, flow intelligence |
+| `O` | **Logs** | Live system log viewer with filtering |
+| `H` | **Services** | Active service health monitoring |
+| `W` | **Diagnostics** | System diagnostics and troubleshooting
 
 ### 4 Overview Layouts
 
@@ -186,6 +191,35 @@ When the RCA engine identifies a bottleneck but you need **process-level proof**
 - Off-CPU probe tracks only **involuntary** off-CPU time (preemption + D-state), not voluntary sleep
 - Graceful degradation: if one probe fails to attach, the others continue
 - Results boost RCA confidence when they corroborate the detected bottleneck
+
+---
+
+### eBPF Network Security Intelligence (v0.21.0+)
+
+Press `L` to open the **Security Monitor** — a dedicated page with 11 collapsible sections powered by always-on BPF sentinel probes and auto-triggered watchdog probes.
+
+**Sentinel Probes (always-on, zero-config):**
+
+| Probe | Kernel Hook | What It Detects |
+|---|---|---|
+| **SYN Flood** | `tcp_conn_request` | Distributed SYN floods — per-source-IP SYN rate and half-open ratio |
+| **Port Scan** | `tcp_v4_send_reset` | Sequential/randomized port scans — unique port diversity from single source |
+| **DNS Monitor** | `udp_sendmsg` + `udp_recvmsg` | DNS query anomalies — high query rates, unusual query lengths |
+| **Connection Rate** | `inet_sock_set_state` | Lateral movement — processes connecting to unusually many unique destinations |
+| **Outbound Volume** | `tcp_sendmsg` | Data exfiltration — large sustained outbound transfers to external IPs |
+
+**Watchdog Probes (auto-triggered when sentinels detect anomalies):**
+
+| Probe | Attachment | What It Inspects |
+|---|---|---|
+| **TCP Flags** | TC ingress classifier | XMAS, NULL, SYN+FIN — crafted packet detection |
+| **DNS Deep** | TC ingress classifier | DNS tunneling indicators — TXT ratio, query length entropy |
+| **TLS Fingerprint** | TC ingress classifier | JA3 fingerprinting — detect known C2 framework TLS signatures |
+| **Beacon Detect** | `tcp_sendmsg` | C2 beacon detection — periodic low-jitter connection patterns |
+
+**Security Page sections:** SSH/Auth, Listening Ports, SUID Anomalies, Process Executions, Ptrace Detection, Reverse Shells, Fileless Processes, Kernel Module Loads, Network Threat Overview, Attack Detection, DNS Intelligence, Flow Intelligence, TLS/Beacon Analysis.
+
+**Smart filtering:** Loopback (127.x), private IPs (10.x, 172.16-31.x, 192.168.x), and xtop's own PID are automatically excluded. Proxy-aware thresholds prevent false positives on forward proxy servers.
 
 ---
 
@@ -379,12 +413,12 @@ xtop -cron-install
 
 ```bash
 # Ubuntu/Debian (amd64)
-wget https://github.com/ftahirops/xtop/releases/download/v0.21.3/xtop_0.21.3-1_amd64.deb
-sudo dpkg -i xtop_0.21.3-1_amd64.deb
+wget https://github.com/ftahirops/xtop/releases/download/v0.21.7/xtop_0.21.7-1_amd64.deb
+sudo dpkg -i xtop_0.21.7-1_amd64.deb
 
 # RHEL/Rocky/Fedora (x86_64)
-wget https://github.com/ftahirops/xtop/releases/download/v0.21.3/xtop-0.21.3-1.x86_64.rpm
-sudo rpm -i xtop-0.21.3-1.x86_64.rpm
+wget https://github.com/ftahirops/xtop/releases/download/v0.21.7/xtop-0.21.7-1.x86_64.rpm
+sudo rpm -i xtop-0.21.7-1.x86_64.rpm
 ```
 
 ### Build from Source
@@ -392,7 +426,7 @@ sudo rpm -i xtop-0.21.3-1.x86_64.rpm
 ```bash
 git clone https://github.com/ftahirops/xtop.git
 cd xtop
-CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.21.3" -o xtop .
+CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.21.7" -o xtop .
 sudo install -m 755 xtop /usr/local/bin/xtop
 ```
 
@@ -424,15 +458,15 @@ sudo xtop -json | jq   # JSON for scripting
 ### From .deb Package (Ubuntu 22.04/24.04, Debian)
 
 ```bash
-wget https://github.com/ftahirops/xtop/releases/download/v0.21.3/xtop_0.21.3-1_amd64.deb
-sudo dpkg -i xtop_0.21.3-1_amd64.deb
+wget https://github.com/ftahirops/xtop/releases/download/v0.21.7/xtop_0.21.7-1_amd64.deb
+sudo dpkg -i xtop_0.21.7-1_amd64.deb
 ```
 
 ### From .rpm Package (Rocky Linux, RHEL, AlmaLinux, Fedora)
 
 ```bash
-wget https://github.com/ftahirops/xtop/releases/download/v0.21.3/xtop-0.21.3-1.x86_64.rpm
-sudo rpm -i xtop-0.21.3-1.x86_64.rpm
+wget https://github.com/ftahirops/xtop/releases/download/v0.21.7/xtop-0.21.7-1.x86_64.rpm
+sudo rpm -i xtop-0.21.7-1.x86_64.rpm
 ```
 
 ### From Source
@@ -440,7 +474,7 @@ sudo rpm -i xtop-0.21.3-1.x86_64.rpm
 ```bash
 git clone https://github.com/ftahirops/xtop.git
 cd xtop
-CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.21.3" -o xtop .
+CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.21.7" -o xtop .
 sudo install -m 755 xtop /usr/local/bin/xtop
 ```
 
@@ -502,6 +536,10 @@ Options:
 | Key | Action |
 |---|---|
 | `0` - `9` | Switch to page (Overview, CPU, Memory, IO, Network, Cgroups, Timeline, Events, Probe, Thresholds) |
+| `L` | Security Monitor — eBPF network threat detection |
+| `O` | System Logs viewer |
+| `H` | Active Services health |
+| `W` | Diagnostics page |
 | `D` | Open DiskGuard page |
 | `b` / `Esc` | Back to Overview |
 | `j` / `k` | Scroll down / up |
@@ -510,6 +548,10 @@ Options:
 | `F1` - `F4` | Direct layout selection |
 | `Ctrl+D` | Save current layout as default |
 | `I` | Start 10-second eBPF probe investigation |
+| `Tab` | Navigate collapsible sections (Security, Network, Probe pages) |
+| `Enter` | Expand/collapse selected section |
+| `A` / `C` | Expand all / Collapse all sections |
+| `E` | Toggle Explain side panel — metric glossary for current page |
 | `a` | Toggle auto-refresh (pause/resume) |
 | `n` | Step one frame (replay mode while paused) |
 | `S` | Save RCA snapshot to JSON file |
@@ -541,6 +583,8 @@ xtop reads from **20+ Linux kernel interfaces** — no agents, no daemons, no ex
 | `/sys/class/net/` | Interface metadata (operstate, speed, master, type) |
 | `smartctl` | SMART disk health (temperature, wear, reallocated sectors) |
 | eBPF tracepoints | `sched_switch`, `block_rq_*`, `futex`, `tcp_retransmit_skb` |
+| eBPF security sentinels | `tcp_conn_request`, `tcp_v4_send_reset`, `tcp_sendmsg`, `udp_sendmsg`, `inet_sock_set_state` |
+| eBPF security watchdogs | TC ingress classifiers (TCP flags, DNS deep, TLS fingerprint), beacon detection |
 
 ### Examples
 
@@ -710,26 +754,28 @@ sudo xtop
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                        xtop TUI / CLI                           │
-│  11 pages • 4 layouts • watch mode • doctor • shell widget      │
+│  15 pages • 6 layouts • watch mode • doctor • shell widget      │
 ├─────────────────────────────────────────────────────────────────┤
 │                       Analysis Engine                            │
 │   RCA Scoring • Evidence Gating • Anomaly Tracking               │
 │   Causal Chains • Capacity Prediction • Owner Attribution        │
+│   Security Evidence • Threat Scoring • Pattern Matching          │
 ├─────────────────────────────────────────────────────────────────┤
 │                       Doctor Engine                              │
 │   Health checks • Service detection • SSL • Alerts • Cron        │
 │   MySQL/Postgres/Redis probes • Docker • K8s • WireGuard         │
-├─────────────────────────────────────────────────────────────────┤
-│                      Rate Calculator                             │
-│   Delta computation • Per-device/interface/cgroup/process rates   │
 ├───────────────────────┬─────────────────────────────────────────┤
 │    Collector Layer     │         eBPF Probe Layer                │
-│   /proc • /sys • cgroup│   sched_switch • block_rq • futex       │
-│   smartctl • netfilter │   tcp_retransmit_skb                    │
+│   /proc • /sys • cgroup│   Deep Dive: sched_switch • block_rq    │
+│   smartctl • netfilter │     • futex • tcp_retransmit_skb        │
+│   security • auth logs │   Sentinel: synflood • portscan • dns   │
+│                        │     • connrate • outbound • exec • oom  │
+│                        │   Watchdog: tcpflags • dnsdeep           │
+│                        │     • tlsfinger • beacondetect           │
 └───────────────────────┴─────────────────────────────────────────┘
               │                          │
               ▼                          ▼
-     Linux Kernel (/proc, /sys)    eBPF Tracepoints (BTF)
+     Linux Kernel (/proc, /sys)    eBPF Tracepoints + TC (BTF)
 ```
 
 **Built with:**
