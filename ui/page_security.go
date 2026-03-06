@@ -12,6 +12,21 @@ import (
 // Security Page — Collapsible Section Architecture
 // ──────────────────────────────────────────────────────────────────────────────
 
+// isPrivateIP checks if a formatted "a.b.c.d" IP is RFC1918, link-local, or loopback.
+func isPrivateIP(ip string) bool {
+	if strings.HasPrefix(ip, "10.") || strings.HasPrefix(ip, "127.") ||
+		strings.HasPrefix(ip, "192.168.") || strings.HasPrefix(ip, "169.254.") {
+		return true
+	}
+	// 172.16.0.0/12 → 172.16.x.x through 172.31.x.x
+	if strings.HasPrefix(ip, "172.") {
+		var second int
+		fmt.Sscanf(ip, "172.%d.", &second)
+		return second >= 16 && second <= 31
+	}
+	return false
+}
+
 // Security page section constants
 const (
 	secSecAuth         = 0
@@ -846,10 +861,12 @@ func renderSecFlowsContent(sent model.SentinelData, iw int) string {
 			avgPktSize := max64f(float64(o.TotalBytes)/float64(max64u(o.PacketCount, 1)), 64)
 			pktsPerSec := o.BytesPerSec / avgPktSize
 			flag := ""
-			if mbHr > 5000 {
-				flag = critStyle.Render("EXFIL")
-			} else if mbHr > 500 {
-				flag = warnStyle.Render("HIGH")
+			if !isPrivateIP(o.DstIP) {
+				if mbHr > 5000 {
+					flag = critStyle.Render("EXFIL")
+				} else if mbHr > 500 {
+					flag = warnStyle.Render("HIGH")
+				}
 			}
 
 			sb.WriteString(fmt.Sprintf("  %s %s %s %s %s %s\n",
@@ -867,7 +884,7 @@ func renderSecFlowsContent(sent model.SentinelData, iw int) string {
 	seenPIDs := make(map[int]bool)
 	var lateralEntries []model.FlowRateEntry
 	for _, f := range sent.FlowRates {
-		if f.UniqueDestCount > 5 && !seenPIDs[f.PID] {
+		if f.UniqueDestCount > 50 && !seenPIDs[f.PID] {
 			seenPIDs[f.PID] = true
 			lateralEntries = append(lateralEntries, f)
 		}
@@ -879,7 +896,7 @@ func renderSecFlowsContent(sent model.SentinelData, iw int) string {
 		sb.WriteString(dimStyle.Render("  "+strings.Repeat("─", 60)) + "\n")
 		for _, f := range lateralEntries {
 			flag := warnStyle.Render("LATERAL")
-			if f.UniqueDestCount > 20 {
+			if f.UniqueDestCount > 200 {
 				flag = critStyle.Render("LATERAL")
 			}
 			sb.WriteString(fmt.Sprintf("  %s %s %s %s %s\n",
@@ -1042,7 +1059,7 @@ func autoExpandSecSection(snap *model.Snapshot, expanded *[secSecCount]bool) {
 	// Flows — only auto-expand when flagged entries exist
 	hasLateral := false
 	for _, f := range sent.FlowRates {
-		if f.UniqueDestCount > 5 {
+		if f.UniqueDestCount > 50 {
 			hasLateral = true
 			break
 		}
@@ -1050,7 +1067,7 @@ func autoExpandSecSection(snap *model.Snapshot, expanded *[secSecCount]bool) {
 	hasHighOutbound := false
 	for _, o := range sent.OutboundTop {
 		mbHr := o.BytesPerSec * 3600.0 / 1024.0 / 1024.0
-		if mbHr > 500 {
+		if mbHr > 500 && !isPrivateIP(o.DstIP) {
 			hasHighOutbound = true
 			break
 		}

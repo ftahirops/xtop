@@ -752,6 +752,20 @@ func analyzeCPU(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEntry 
 	return r
 }
 
+// isPrivateIPStr checks if a formatted IP is RFC1918, link-local, or loopback.
+func isPrivateIPStr(ip string) bool {
+	if strings.HasPrefix(ip, "10.") || strings.HasPrefix(ip, "127.") ||
+		strings.HasPrefix(ip, "192.168.") || strings.HasPrefix(ip, "169.254.") {
+		return true
+	}
+	if strings.HasPrefix(ip, "172.") {
+		var second int
+		fmt.Sscanf(ip, "172.%d.", &second)
+		return second >= 16 && second <= 31
+	}
+	return false
+}
+
 // ---------- Network Score ----------
 // Evidence groups: Drops, Retransmits, Conntrack, SoftIRQ, TCP state issues
 func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEntry {
@@ -940,17 +954,20 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEn
 				maxDests = fr.UniqueDestCount
 			}
 		}
-		if maxDests >= 5 {
-			ws, cs := threshold("sec.lateral", 5, 20)
+		if maxDests >= 50 {
+			ws, cs := threshold("sec.lateral", 50, 200)
 			r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("sec.lateral", model.DomainNetwork,
 				float64(maxDests), ws, cs, true, 0.75,
 				fmt.Sprintf("Lateral movement: %d unique destinations from single PID", maxDests), "3s",
 				nil, nil))
 		}
 
-		// Data exfiltration detection
+		// Data exfiltration detection — only consider non-private destinations
 		maxEgressMBHr := float64(0)
 		for _, ob := range curr.Global.Sentinel.OutboundTop {
+			if isPrivateIPStr(ob.DstIP) {
+				continue
+			}
 			mbhr := ob.BytesPerSec * 3600 / (1024 * 1024)
 			if mbhr > maxEgressMBHr {
 				maxEgressMBHr = mbhr

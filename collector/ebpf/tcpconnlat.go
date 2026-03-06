@@ -94,3 +94,23 @@ func formatIPv4(addr uint32) string {
 func isLoopback(addr uint32) bool {
 	return addr&0xff == 127
 }
+
+// isPrivateAddr returns true for RFC1918, link-local, and loopback addresses.
+// On x86 LE: first octet = addr&0xff, second = (addr>>8)&0xff.
+func isPrivateAddr(addr uint32) bool {
+	first := addr & 0xff
+	second := (addr >> 8) & 0xff
+	switch {
+	case first == 10: // 10.0.0.0/8
+		return true
+	case first == 172 && second >= 16 && second <= 31: // 172.16.0.0/12
+		return true
+	case first == 192 && second == 168: // 192.168.0.0/16
+		return true
+	case first == 169 && second == 254: // 169.254.0.0/16 link-local
+		return true
+	case first == 127: // 127.0.0.0/8
+		return true
+	}
+	return false
+}
