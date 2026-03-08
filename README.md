@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/xtop-v0.25.2-00d4aa?style=for-the-badge&logo=linux&logoColor=white" alt="version"/>
+  <img src="https://img.shields.io/badge/xtop-v0.25.3-00d4aa?style=for-the-badge&logo=linux&logoColor=white" alt="version"/>
   <img src="https://img.shields.io/badge/Go-1.21+-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="go"/>
   <img src="https://img.shields.io/badge/eBPF-Powered-ff6600?style=for-the-badge&logo=linux&logoColor=white" alt="ebpf"/>
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="license"/>
@@ -116,7 +116,7 @@ The heart of xtop. Four parallel bottleneck detectors continuously score system 
 
 **Trust Gating:** A bottleneck is only reported when **2+ independent evidence groups** confirm it. This eliminates false positives from single-metric spikes. Confidence scales from 30% (2 groups) to 98% (5+ groups).
 
-### RCA Decision Engine (v0.25.2)
+### RCA Decision Engine (v0.25.3)
 
 Beyond raw signals, xtop's **decision engine** tells you EXACTLY what's wrong, why, what caused it, and what to do:
 
@@ -417,12 +417,12 @@ xtop -cron-install
 
 ```bash
 # Ubuntu/Debian (amd64)
-wget https://github.com/ftahirops/xtop/releases/download/v0.25.2/xtop_0.25.2-1_amd64.deb
-sudo dpkg -i xtop_0.25.2-1_amd64.deb
+wget https://github.com/ftahirops/xtop/releases/download/v0.25.3/xtop_0.25.3-1_amd64.deb
+sudo dpkg -i xtop_0.25.3-1_amd64.deb
 
 # RHEL/Rocky/Fedora (x86_64)
-wget https://github.com/ftahirops/xtop/releases/download/v0.25.2/xtop-0.25.2-1.x86_64.rpm
-sudo rpm -i xtop-0.25.2-1.x86_64.rpm
+wget https://github.com/ftahirops/xtop/releases/download/v0.25.3/xtop-0.25.3-1.x86_64.rpm
+sudo rpm -i xtop-0.25.3-1.x86_64.rpm
 ```
 
 ### Build from Source
@@ -430,7 +430,7 @@ sudo rpm -i xtop-0.25.2-1.x86_64.rpm
 ```bash
 git clone https://github.com/ftahirops/xtop.git
 cd xtop
-CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.25.2" -o xtop .
+CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.25.3" -o xtop .
 sudo install -m 755 xtop /usr/local/bin/xtop
 ```
 
@@ -462,15 +462,15 @@ sudo xtop -json | jq   # JSON for scripting
 ### From .deb Package (Ubuntu 22.04/24.04, Debian)
 
 ```bash
-wget https://github.com/ftahirops/xtop/releases/download/v0.25.2/xtop_0.25.2-1_amd64.deb
-sudo dpkg -i xtop_0.25.2-1_amd64.deb
+wget https://github.com/ftahirops/xtop/releases/download/v0.25.3/xtop_0.25.3-1_amd64.deb
+sudo dpkg -i xtop_0.25.3-1_amd64.deb
 ```
 
 ### From .rpm Package (Rocky Linux, RHEL, AlmaLinux, Fedora)
 
 ```bash
-wget https://github.com/ftahirops/xtop/releases/download/v0.25.2/xtop-0.25.2-1.x86_64.rpm
-sudo rpm -i xtop-0.25.2-1.x86_64.rpm
+wget https://github.com/ftahirops/xtop/releases/download/v0.25.3/xtop-0.25.3-1.x86_64.rpm
+sudo rpm -i xtop-0.25.3-1.x86_64.rpm
 ```
 
 ### From Source
@@ -478,7 +478,7 @@ sudo rpm -i xtop-0.25.2-1.x86_64.rpm
 ```bash
 git clone https://github.com/ftahirops/xtop.git
 cd xtop
-CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.25.2" -o xtop .
+CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.25.3" -o xtop .
 sudo install -m 755 xtop /usr/local/bin/xtop
 ```
 

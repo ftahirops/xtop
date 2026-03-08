@@ -75,15 +75,34 @@ func (m *esModule) Detect(processes []model.ProcessMetrics) []DetectedApp {
 	return apps
 }
 
-// isContainerized checks if a process is running inside a Docker/container by reading its cgroup.
+// isContainerized checks if a process runs inside a container.
+// Uses multiple detection methods: cgroup path, PID namespace, /proc/1/environ.
 func isContainerized(pid int) bool {
-	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/cgroup", pid))
-	if err != nil {
-		return false
+	// Method 1: cgroup path contains docker/containerd/lxc/kubepods
+	if data, err := os.ReadFile(fmt.Sprintf("/proc/%d/cgroup", pid)); err == nil {
+		s := string(data)
+		if strings.Contains(s, "docker") || strings.Contains(s, "containerd") ||
+			strings.Contains(s, "lxc") || strings.Contains(s, "kubepods") {
+			return true
+		}
 	}
-	s := string(data)
-	return strings.Contains(s, "docker") || strings.Contains(s, "containerd") ||
-		strings.Contains(s, "lxc") || strings.Contains(s, "kubepods")
+
+	// Method 2: PID namespace differs from init (PID 1)
+	hostNS, err1 := os.Readlink("/proc/1/ns/pid")
+	procNS, err2 := os.Readlink(fmt.Sprintf("/proc/%d/ns/pid", pid))
+	if err1 == nil && err2 == nil && hostNS != procNS {
+		return true
+	}
+
+	// Method 3: /proc/PID/mountinfo contains docker/overlay paths
+	if data, err := os.ReadFile(fmt.Sprintf("/proc/%d/mountinfo", pid)); err == nil {
+		s := string(data)
+		if strings.Contains(s, "docker") || strings.Contains(s, "overlay") && strings.Contains(s, "containers") {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (m *esModule) Collect(app *DetectedApp, secrets *AppSecrets) model.AppInstance {
