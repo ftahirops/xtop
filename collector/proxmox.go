@@ -108,9 +108,18 @@ func (p *ProxmoxCollector) parseVMConfigs() []model.ProxmoxVM {
 		}
 
 		scanner := bufio.NewScanner(f)
+		inSnapshot := false
 		for scanner.Scan() {
 			line := strings.TrimSpace(scanner.Text())
 			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			// Skip [snapshot] sections — they duplicate disk/net keys
+			if strings.HasPrefix(line, "[") {
+				inSnapshot = true
+				continue
+			}
+			if inSnapshot {
 				continue
 			}
 			parts := strings.SplitN(line, ":", 2)

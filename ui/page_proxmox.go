@@ -65,16 +65,8 @@ func renderProxmoxPage(snap *model.Snapshot, rates *model.RateSnapshot, result *
 	// === HOST DISK IO ===
 	sb.WriteString(renderPveHostDiskIO(snap, rates, smartDisks, iw))
 
-	// === VM STATUS TABLE ===
-	sb.WriteString(renderPveVMTable(pve, iw))
-
-	// === Per-VM details ===
-	for _, vm := range pve.VMs {
-		if vm.Status != "running" {
-			continue
-		}
-		sb.WriteString(renderPveVMDetail(vm, iw))
-	}
+	// === VM STATUS TABLE (with full details) ===
+	sb.WriteString(renderPveVMTable(pve, snap.Global.CPU.NumCPUs, iw))
 
 	// === STORAGE POOLS ===
 	if len(pve.Storage) > 0 {
@@ -598,25 +590,27 @@ func renderPveHostDiskIO(snap *model.Snapshot, rates *model.RateSnapshot, smartD
 	return boxSection("HOST DISK & STORAGE", lines, iw)
 }
 
-// renderPveVMTable renders the VM status table
-func renderPveVMTable(pve *model.ProxmoxMetrics, iw int) string {
+// renderPveVMTable renders the VM table with full details per VM
+func renderPveVMTable(pve *model.ProxmoxMetrics, hostCPUs int, iw int) string {
 	var vmLines []string
-	hdr := fmt.Sprintf("%s %s %s %s %s %s %s %s %s",
+
+	// Header row 1: live metrics
+	hdr := fmt.Sprintf("%s %s %s %s %s %s %s %s",
 		styledPad(dimStyle.Render("VMID"), 6),
 		styledPad(dimStyle.Render("NAME"), 14),
 		styledPad(dimStyle.Render("STATUS"), 9),
+		styledPad(dimStyle.Render("vCPU"), 8),
 		styledPad(dimStyle.Render("CPU%"), 7),
-		styledPad(dimStyle.Render("MEM USED"), 12),
-		styledPad(dimStyle.Render("IO R/W"), 14),
-		styledPad(dimStyle.Render("NET R/T"), 14),
-		styledPad(dimStyle.Render("UPTIME"), 10),
-		dimStyle.Render("CONFIG"))
+		styledPad(dimStyle.Render("MEMORY"), 22),
+		styledPad(dimStyle.Render("IO R/W MB/s"), 14),
+		dimStyle.Render("NET R/T MB/s"))
 	vmLines = append(vmLines, hdr)
 
 	for _, vm := range pve.VMs {
 		vmidStr := fmt.Sprintf("%d", vm.VMID)
 		nameStr := truncate(vm.Name, 13)
 
+		// Status
 		var statusStyled string
 		switch vm.Status {
 		case "running":
@@ -629,6 +623,11 @@ func renderPveVMTable(pve *model.ProxmoxMetrics, iw int) string {
 			statusStyled = styledPad(dimStyle.Render(vm.Status), 9)
 		}
 
+		// vCPU with overcommit indicator
+		vcpu := vm.CoresAlloc * maxInt(vm.SocketsAlloc, 1)
+		vcpuStr := valueStyle.Render(fmt.Sprintf("%d", vcpu))
+
+		// CPU%
 		cpuStr := dimStyle.Render("  —  ")
 		if vm.Status == "running" {
 			cpuFmt := fmt.Sprintf("%.1f%%", vm.CPUPct)
@@ -641,11 +640,20 @@ func renderPveVMTable(pve *model.ProxmoxMetrics, iw int) string {
 			}
 		}
 
+		// Memory: used/alloc + balloon
 		memStr := dimStyle.Render("   —    ")
 		if vm.Status == "running" && vm.MemUsedMB > 0 {
 			if vm.MemAllocMB > 0 {
 				pct := float64(vm.MemUsedMB) / float64(vm.MemAllocMB) * 100
 				memFmt := fmt.Sprintf("%s/%s", fmtMB(vm.MemUsedMB), fmtMB(vm.MemAllocMB))
+				if vm.BalloonOn {
+					if vm.MemBalloonMB > 0 {
+						bPct := float64(vm.MemBalloonMB) / float64(vm.MemAllocMB) * 100
+						memFmt += fmt.Sprintf(" B:%.0f%%", bPct)
+					} else {
+						memFmt += " B:on"
+					}
+				}
 				if pct > 90 {
 					memStr = critStyle.Render(memFmt)
 				} else if pct > 70 {
@@ -656,115 +664,72 @@ func renderPveVMTable(pve *model.ProxmoxMetrics, iw int) string {
 			} else {
 				memStr = valueStyle.Render(fmtMB(vm.MemUsedMB))
 			}
+		} else if vm.Status != "running" && vm.MemAllocMB > 0 {
+			memFmt := fmtMB(vm.MemAllocMB)
+			if vm.BalloonOn {
+				memFmt += fmt.Sprintf(" B:%s", fmtMB(vm.BalloonMinMB))
+			}
+			memStr = dimStyle.Render(memFmt)
 		}
 
+		// IO
 		ioStr := dimStyle.Render("     —      ")
 		if vm.Status == "running" && (vm.IOReadMBs > 0.01 || vm.IOWriteMBs > 0.01) {
-			ioStr = fmt.Sprintf("R:%.1f W:%.1f", vm.IOReadMBs, vm.IOWriteMBs)
+			ioStr = valueStyle.Render(fmt.Sprintf("%.1f/%.1f", vm.IOReadMBs, vm.IOWriteMBs))
 		}
 
+		// Net
 		netStr := dimStyle.Render("     —      ")
 		if vm.Status == "running" && (vm.NetRxMBs > 0.001 || vm.NetTxMBs > 0.001) {
-			netStr = fmt.Sprintf("R:%.1f T:%.1f", vm.NetRxMBs, vm.NetTxMBs)
+			netStr = valueStyle.Render(fmt.Sprintf("%.1f/%.1f", vm.NetRxMBs, vm.NetTxMBs))
 		}
 
-		uptimeStr := dimStyle.Render("   —   ")
-		if vm.Status == "running" && vm.UptimeSec > 0 {
-			uptimeStr = fmtUptime(vm.UptimeSec)
-		}
-
-		configParts := []string{}
-		if vm.CoresAlloc > 0 {
-			configParts = append(configParts, fmt.Sprintf("%dC", vm.CoresAlloc))
-		}
-		if vm.MemAllocMB > 0 {
-			configParts = append(configParts, fmtMB(vm.MemAllocMB))
-		}
-		for _, d := range vm.DiskConfigs {
-			if d.SizeGB > 0 && !strings.Contains(d.Path, "iso") && d.Path != "none" {
-				configParts = append(configParts, fmt.Sprintf("%dG", d.SizeGB))
-			}
-		}
-		configStr := dimStyle.Render(strings.Join(configParts, "/"))
-
-		line := fmt.Sprintf("%s %s %s %s %s %s %s %s %s",
+		line := fmt.Sprintf("%s %s %s %s %s %s %s %s",
 			styledPad(valueStyle.Render(vmidStr), 6),
 			styledPad(nameStr, 14),
 			statusStyled,
+			styledPad(vcpuStr, 8),
 			styledPad(cpuStr, 7),
-			styledPad(memStr, 12),
+			styledPad(memStr, 22),
 			styledPad(ioStr, 14),
-			styledPad(netStr, 14),
-			styledPad(uptimeStr, 10),
-			configStr)
+			netStr)
 		vmLines = append(vmLines, line)
+
+		// Detail line: config, disks, network, uptime
+		var details []string
+		// Disk summary
+		var diskParts []string
+		for _, d := range vm.DiskConfigs {
+			if d.SizeGB > 0 && !strings.Contains(d.Path, "iso") && d.Path != "none" {
+				diskParts = append(diskParts, fmt.Sprintf("%s:%dG", d.Bus, d.SizeGB))
+			}
+		}
+		if len(diskParts) > 0 {
+			details = append(details, "disk:"+strings.Join(diskParts, "+"))
+		}
+		// Network summary
+		for _, n := range vm.NetConfigs {
+			nStr := n.Bridge
+			if n.Tag > 0 {
+				nStr += fmt.Sprintf("/vlan%d", n.Tag)
+			}
+			details = append(details, nStr)
+		}
+		// Uptime
+		if vm.Status == "running" && vm.UptimeSec > 0 {
+			details = append(details, "up:"+fmtUptime(vm.UptimeSec))
+		}
+
+		if len(details) > 0 {
+			detailLine := fmt.Sprintf("       %s", dimStyle.Render(strings.Join(details, "  ")))
+			vmLines = append(vmLines, detailLine)
+		}
 	}
 
 	if len(pve.VMs) == 0 {
 		vmLines = append(vmLines, dimStyle.Render("  no VMs configured"))
 	}
-	return boxSection("VM STATUS", vmLines, iw)
-}
-
-// renderPveVMDetail renders per-VM config and live metrics
-func renderPveVMDetail(vm model.ProxmoxVM, iw int) string {
-	var detailLines []string
-
-	// Config line
-	var cfgParts []string
-	vcpu := vm.CoresAlloc * maxInt(vm.SocketsAlloc, 1)
-	cfgParts = append(cfgParts, fmt.Sprintf("%d vCPU", vcpu))
-	if vm.MemAllocMB > 0 {
-		memCfg := fmt.Sprintf("%s RAM", fmtMB(vm.MemAllocMB))
-		if vm.BalloonOn {
-			memCfg += fmt.Sprintf(" (balloon min:%s)", fmtMB(vm.BalloonMinMB))
-		}
-		cfgParts = append(cfgParts, memCfg)
-	}
-	for _, d := range vm.DiskConfigs {
-		if d.SizeGB > 0 && !strings.Contains(d.Path, "iso") && d.Path != "none" {
-			cacheStr := ""
-			if d.Cache != "" {
-				cacheStr = " cache=" + d.Cache
-			}
-			cfgParts = append(cfgParts, fmt.Sprintf("%s %dG%s", d.Bus, d.SizeGB, cacheStr))
-		}
-	}
-	detailLines = append(detailLines,
-		dimStyle.Render("Config: ")+valueStyle.Render(strings.Join(cfgParts, ", ")))
-
-	// Network config
-	for _, n := range vm.NetConfigs {
-		netInfo := fmt.Sprintf("%s=%s bridge=%s", n.Model, n.MAC, n.Bridge)
-		if n.Tag > 0 {
-			netInfo += fmt.Sprintf(" vlan=%d", n.Tag)
-		}
-		detailLines = append(detailLines,
-			dimStyle.Render("  Net:  ")+dimStyle.Render(netInfo))
-	}
-
-	// Disk paths
-	for _, d := range vm.DiskConfigs {
-		if d.SizeGB > 0 && !strings.Contains(d.Path, "iso") && d.Path != "none" {
-			detailLines = append(detailLines,
-				dimStyle.Render(fmt.Sprintf("  Disk: %s → %s (%dG)", d.Bus, d.Path, d.SizeGB)))
-		}
-	}
-
-	// Live metrics
-	if vm.CPUPct > 0 || vm.MemUsedMB > 0 {
-		metricsLine := fmt.Sprintf("  Live: CPU=%.1f%%  Mem=%s", vm.CPUPct, fmtMB(vm.MemUsedMB))
-		if vm.BalloonOn && vm.MemBalloonMB > 0 && vm.MemAllocMB > 0 {
-			pct := float64(vm.MemBalloonMB) / float64(vm.MemAllocMB) * 100
-			metricsLine += fmt.Sprintf("  Balloon=%s(%.0f%%)", fmtMB(vm.MemBalloonMB), pct)
-		}
-		metricsLine += fmt.Sprintf("  IO R:%.1f/W:%.1f MB/s  Net RX:%.1f/TX:%.1f MB/s",
-			vm.IOReadMBs, vm.IOWriteMBs, vm.NetRxMBs, vm.NetTxMBs)
-		detailLines = append(detailLines, valueStyle.Render(metricsLine))
-	}
-
-	title := fmt.Sprintf("VM %d — %s", vm.VMID, vm.Name)
-	return boxSection(title, detailLines, iw)
+	return boxSection("VIRTUAL MACHINES", vmLines, iw)
 }
 
 // renderPveStorage renders the storage pools section
