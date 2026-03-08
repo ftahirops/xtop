@@ -50,6 +50,9 @@ var reverseShellWhitelist = map[string]bool{
 	"dbus-daemon": true, "polkitd": true, "rsyslogd": true,
 	"master": true, "postfix": true, "dovecot": true, "exim4": true,
 	"named": true, "unbound": true, "dnsmasq": true, "chronyd": true, "ntpd": true,
+	// Proxmox / virtualization
+	"qm": true, "qmtech": true, "pveproxy": true, "pvedaemon": true, "spiceproxy": true,
+	"vncproxy": true, "qemu-system-x8": true, "socat": true, "websockify": true,
 }
 
 func (s *SecurityCollector) Collect(snap *model.Snapshot) error {

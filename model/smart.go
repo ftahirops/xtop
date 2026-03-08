@@ -67,6 +67,9 @@ const (
 
 // HealthVerdict returns a human-readable health status.
 func (d *SMARTDisk) HealthVerdict() string {
+	if d.DiskType == DiskTypeVirtual {
+		return "VIRT"
+	}
 	if d.ErrorString != "" {
 		return "ERROR"
 	}

@@ -867,6 +867,7 @@ type GlobalMetrics struct {
 	DotNet         []DotNetProcessMetrics
 	Runtimes       RuntimeMetrics
 	AppIdentities  map[int]AppIdentity // PID → resolved identity
+	Proxmox        *ProxmoxMetrics     // non-nil only on Proxmox hosts
 }
 
 // CgroupMetrics holds metrics for a single cgroup.

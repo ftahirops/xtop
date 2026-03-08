@@ -35,10 +35,11 @@ const (
 	PageServices
 	PageDiag
 	PageIntel
+	PageProxmox
 	pageCount
 )
 
-var pageNames = []string{"Overview", "CPU", "Memory", "IO", "Network", "CGroups", "Timeline", "Events", "Probe", "Thresholds", "DiskGuard", "Security", "Logs", "Services", "Diagnostics", "Intel"}
+var pageNames = []string{"Overview", "CPU", "Memory", "IO", "Network", "CGroups", "Timeline", "Events", "Probe", "Thresholds", "DiskGuard", "Security", "Logs", "Services", "Diagnostics", "Intel", "Proxmox"}
 
 type tickMsg time.Time
 
@@ -780,6 +781,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.diskGuardMsgT = time.Now()
 				}
 			}
+		case "z", "Z":
+			// Navigate to Proxmox page (only if Proxmox host)
+			if m.snap != nil && m.snap.Global.Proxmox != nil && m.snap.Global.Proxmox.IsProxmoxHost {
+				m.page = PageProxmox
+				m.scroll = 0
+				m.explainScroll = 0
+			}
 		case "f", "F":
 			// Network page: toggle focus mode
 			if m.page == PageNetwork {
@@ -977,7 +985,7 @@ func (m Model) View() string {
 			if time.Since(m.diskGuardMsgT) < 10*time.Second {
 				dgMsg = m.diskGuardMsg
 			}
-			content = renderDiskGuardPage(m.snap, m.rates, m.result, m.probeManager, m.diskGuardMode, dgMsg, m.frozenPIDs, renderW, m.height)
+			content = renderDiskGuardPage(m.snap, m.rates, m.result, smartDisks, m.probeManager, m.diskGuardMode, dgMsg, m.frozenPIDs, renderW, m.height)
 		case PageSecurity:
 			content = renderSecurityPage(m.snap, m.rates, m.result, m.probeManager,
 				m.secSectionCursor, m.secSectionExpanded,
@@ -992,6 +1000,8 @@ func (m Model) View() string {
 			content = renderIntelPage(m.snap, m.rates, m.result, m.engine,
 				m.intelSectionCursor, m.intelSectionExpanded,
 				renderW, m.height)
+		case PageProxmox:
+			content = renderProxmoxPage(m.snap, m.rates, m.result, smartDisks, m.probeManager, renderW, m.height)
 		}
 	}
 
@@ -1061,6 +1071,8 @@ func (m Model) renderStatusBar(scrollInfo string) string {
 			return "W"
 		case PageIntel:
 			return "X"
+		case PageProxmox:
+			return "Z"
 		default:
 			return fmt.Sprintf("%d", i)
 		}
@@ -1086,6 +1098,12 @@ func (m Model) renderStatusBar(scrollInfo string) string {
 	buildTabs := func(tier int) string {
 		var tabs []string
 		for i, lbl := range labels {
+			// Hide Proxmox tab unless on a Proxmox host
+			if Page(i) == PageProxmox {
+				if m.snap == nil || m.snap.Global.Proxmox == nil || !m.snap.Global.Proxmox.IsProxmoxHost {
+					continue
+				}
+			}
 			var label string
 			switch tier {
 			case 0:

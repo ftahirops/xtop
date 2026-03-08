@@ -10,7 +10,7 @@ import (
 )
 
 func renderDiskGuardPage(snap *model.Snapshot, rates *model.RateSnapshot, result *model.AnalysisResult,
-	pm probeQuerier, diskGuardMode string, actionMsg string, frozen map[int]frozenProc, width, height int) string {
+	smartDisks []model.SMARTDisk, pm probeQuerier, diskGuardMode string, actionMsg string, frozen map[int]frozenProc, width, height int) string {
 
 	var sb strings.Builder
 	iw := pageInnerW(width)
@@ -81,6 +81,11 @@ func renderDiskGuardPage(snap *model.Snapshot, rates *model.RateSnapshot, result
 	}
 
 	sb.WriteString("\n")
+
+	// Section 0: DISK HEALTH (wear/life from SMART, bare metal only)
+	if snap.SysInfo.Virtualization == "Bare Metal" || snap.SysInfo.Virtualization == "" {
+		sb.WriteString(renderDiskHealth(smartDisks, iw))
+	}
 
 	// Section 1: FILESYSTEM MOUNTS
 	var mountLines []string

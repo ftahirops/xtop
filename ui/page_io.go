@@ -18,8 +18,10 @@ func renderIOPage(snap *model.Snapshot, rates *model.RateSnapshot, result *model
 	sb.WriteString(renderProbeStatusLine(pm, snap))
 	sb.WriteString("\n")
 
-	// === DISK HEALTH (at top — most critical info first) ===
-	sb.WriteString(renderDiskHealth(smartDisks, iw))
+	// === DISK HEALTH (at top — most critical info first, bare metal only) ===
+	if snap.SysInfo.Virtualization == "Bare Metal" || snap.SysInfo.Virtualization == "" {
+		sb.WriteString(renderDiskHealth(smartDisks, iw))
+	}
 
 	psi := snap.Global.PSI.IO
 
@@ -169,7 +171,7 @@ func renderDiskHealth(disks []model.SMARTDisk, iw int) string {
 	var lines []string
 
 	if len(disks) == 0 {
-		lines = append(lines, dimStyle.Render("No disk health data (needs root, physical disks)"))
+		lines = append(lines, dimStyle.Render("No block devices detected"))
 		return boxSection("DISK HEALTH", lines, iw)
 	}
 
@@ -179,6 +181,20 @@ func renderDiskHealth(disks []model.SMARTDisk, iw int) string {
 		"DEVICE", "TYPE", "VERDICT", "LIFE REMAIN", "TEMP", "WRITTEN", "EST. LEFT", "MODEL")))
 
 	for _, d := range disks {
+		if d.DiskType == model.DiskTypeVirtual {
+			mdl := d.ModelNumber
+			if d.ModelFamily != "" {
+				mdl = d.ModelFamily + " " + mdl
+			}
+			if mdl == "" {
+				mdl = "virtual disk"
+			}
+			lines = append(lines, fmt.Sprintf("%-10s %s %s %s",
+				d.Name, styledPad(dimStyle.Render("VIRT"), 5),
+				styledPad(dimStyle.Render("—"), 8),
+				dimStyle.Render("no SMART — "+mdl)))
+			continue
+		}
 		if d.ErrorString != "" {
 			lines = append(lines, fmt.Sprintf("%-10s %s", d.Name, dimStyle.Render("error: "+d.ErrorString)))
 			continue

@@ -8,6 +8,9 @@ type ImpactScore struct {
 	Service string // resolved from cgroup: k8s pod, systemd unit, or docker container
 	Cgroup  string
 
+	// Actual metrics
+	CPUPct float64 // actual CPU% from process rates
+
 	// Component scores (0-1 normalized)
 	CPUSaturation float64
 	PSIContrib    float64

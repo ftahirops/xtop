@@ -56,6 +56,7 @@ func NewRegistry() *Registry {
 			&LogsCollector{},
 			&HealthCheckCollector{},
 			&DiagCollector{interval: 15 * time.Second},
+			&ProxmoxCollector{},
 		},
 	}
 }

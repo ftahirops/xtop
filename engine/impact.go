@@ -108,6 +108,7 @@ func ComputeImpactScores(snap *model.Snapshot, rates *model.RateSnapshot, result
 			Comm:           p.Comm,
 			Service:        p.ServiceName,
 			Cgroup:         p.CgroupPath,
+			CPUPct:         p.CPUPct,
 			CPUSaturation:  cpuNorm,
 			PSIContrib:     psiNorm,
 			IOWait:         ioNorm,

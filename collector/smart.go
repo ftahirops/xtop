@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -57,12 +58,16 @@ func (s *SMARTCollector) collect() []model.SMARTDisk {
 	ioctlDisks := CollectDiskHealth()
 	for _, d := range ioctlDisks {
 		covered[d.Name] = true
+		// Also mark controller name as covered (e.g., "nvme0" for "nvme0n1")
+		covered[d.Device] = true
+		base := filepath.Base(d.Device)
+		covered[base] = true
 	}
 
 	// Layer 2: smartctl fallback for any devices not covered
 	smartctlDisks := collectSMARTctl()
 	for _, d := range smartctlDisks {
-		if !covered[d.Name] {
+		if !covered[d.Name] && !covered[d.Device] {
 			ioctlDisks = append(ioctlDisks, d)
 		}
 	}

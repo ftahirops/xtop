@@ -85,17 +85,15 @@ func collectNVMeHealth() []model.SMARTDisk {
 		return nil
 	}
 
-	// Filter to only character devices (controllers), not block devices (namespaces)
+	// Filter to only controller devices (/dev/nvme0, /dev/nvme1), not namespaces (/dev/nvme0n1)
 	var controllers []string
 	for _, m := range matches {
-		info, err := os.Stat(m)
-		if err != nil {
-			continue
+		base := filepath.Base(m) // "nvme0", "nvme0n1", etc.
+		// Controllers are "nvme" + digits only; namespaces contain "n" after the digits
+		if strings.ContainsAny(base[4:], "npP") {
+			continue // skip namespaces like nvme0n1, nvme0n1p1
 		}
-		// Character device = controller (/dev/nvme0), block device = namespace (/dev/nvme0n1)
-		if info.Mode()&os.ModeCharDevice != 0 {
-			controllers = append(controllers, m)
-		}
+		controllers = append(controllers, m)
 	}
 
 	var disks []model.SMARTDisk
@@ -108,7 +106,14 @@ func collectNVMeHealth() []model.SMARTDisk {
 	return disks
 }
 
-func readNVMeSMART(ctrlDev string) model.SMARTDisk {
+func readNVMeSMART(ctrlDev string) (disk model.SMARTDisk) {
+	// Recover from any panic in unsafe ioctl code
+	defer func() {
+		if r := recover(); r != nil {
+			disk.ErrorString = fmt.Sprintf("panic: %v", r)
+		}
+	}()
+
 	// Find the namespace block devices for this controller (e.g., nvme0n1)
 	ctrlName := filepath.Base(ctrlDev) // "nvme0"
 	nsMatches, _ := filepath.Glob("/sys/block/" + ctrlName + "n*")
@@ -117,7 +122,7 @@ func readNVMeSMART(ctrlDev string) model.SMARTDisk {
 		blockName = filepath.Base(nsMatches[0])
 	}
 
-	disk := model.SMARTDisk{
+	disk = model.SMARTDisk{
 		Device:                  ctrlDev,
 		Name:                    blockName,
 		DiskType:                model.DiskTypeNVMe,
@@ -163,9 +168,10 @@ func readNVMeSMART(ctrlDev string) model.SMARTDisk {
 		return disk
 	}
 
-	// Parse the SMART log
+	// Parse the SMART log — only copy the struct size, not the full 512-byte buffer
 	var log nvmeSMARTLog
-	copy((*[512]byte)(unsafe.Pointer(&log))[:], logBuf[:])
+	logSize := unsafe.Sizeof(log)
+	copy((*[512]byte)(unsafe.Pointer(&log))[:logSize], logBuf[:logSize])
 
 	disk.HealthOK = true
 	disk.CriticalWarning = log.CriticalWarning
@@ -228,8 +234,8 @@ func collectSATAHealth() []model.SMARTDisk {
 	var disks []model.SMARTDisk
 	for _, sysPath := range matches {
 		name := filepath.Base(sysPath)
-		// Skip virtual disks
 		if isVirtualDisk(sysPath) {
+			disks = append(disks, virtualDiskEntry(name, sysPath))
 			continue
 		}
 		disk := readSATASMART(name, sysPath)
@@ -253,8 +259,15 @@ func isVirtualDisk(sysPath string) bool {
 	return false
 }
 
-func readSATASMART(name, sysPath string) model.SMARTDisk {
-	disk := model.SMARTDisk{
+func readSATASMART(name, sysPath string) (disk model.SMARTDisk) {
+	// Recover from any panic in unsafe ioctl code
+	defer func() {
+		if r := recover(); r != nil {
+			disk.ErrorString = fmt.Sprintf("panic: %v", r)
+		}
+	}()
+
+	disk = model.SMARTDisk{
 		Device:                  "/dev/" + name,
 		Name:                    name,
 		WearLevelPct:            -1,
@@ -368,6 +381,43 @@ func readSATASMART(name, sysPath string) model.SMARTDisk {
 	return disk
 }
 
+// virtualDiskEntry creates a placeholder entry for a virtual disk.
+func virtualDiskEntry(name, sysPath string) model.SMARTDisk {
+	disk := model.SMARTDisk{
+		Device:                  "/dev/" + name,
+		Name:                    name,
+		DiskType:                model.DiskTypeVirtual,
+		WearLevelPct:            -1,
+		PercentUsed:             -1,
+		AvailableSpare:          -1,
+		AvailableSpareThreshold: -1,
+		EstLifeDays:             -1,
+		Source:                  "virtual",
+	}
+	if m, err := os.ReadFile(sysPath + "/device/model"); err == nil {
+		disk.ModelNumber = strings.TrimSpace(string(m))
+	}
+	if v, err := os.ReadFile(sysPath + "/device/vendor"); err == nil {
+		disk.ModelFamily = strings.TrimSpace(string(v))
+	}
+	disk.HealthOK = true
+	return disk
+}
+
+// collectVirtualDisks detects paravirtual block devices (xvd*, vd*) that don't
+// match the sd[a-z]* or nvme patterns.
+func collectVirtualDisks() []model.SMARTDisk {
+	var disks []model.SMARTDisk
+	for _, pattern := range []string{"/sys/block/xvd[a-z]*", "/sys/block/vd[a-z]*"} {
+		matches, _ := filepath.Glob(pattern)
+		for _, sysPath := range matches {
+			name := filepath.Base(sysPath)
+			disks = append(disks, virtualDiskEntry(name, sysPath))
+		}
+	}
+	return disks
+}
+
 // ── Life estimation ─────────────────────────────────────────────────────────
 
 func computeEstLife(disk *model.SMARTDisk) {
@@ -410,6 +460,10 @@ func CollectDiskHealth() []model.SMARTDisk {
 	// SATA devices via HDIO ioctl
 	sata := collectSATAHealth()
 	all = append(all, sata...)
+
+	// Paravirtual devices (xvd*, vd*) — no SMART, just show them
+	virt := collectVirtualDisks()
+	all = append(all, virt...)
 
 	return all
 }

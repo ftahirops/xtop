@@ -102,7 +102,7 @@ func runTop(args []string) error {
 		}
 		svc = subcmdTrunc(svc, 18)
 
-		cpuStr := colorByThreshold(s.CPUSaturation*100, tCPUWarn, tCPUCrit)
+		cpuStr := colorByThreshold(s.CPUPct, tCPUWarn, tCPUCrit)
 		ioStr := fmt.Sprintf("%.1fM/s", s.WriteMBs)
 		impactStr := colorByImpact(s.Composite)
 

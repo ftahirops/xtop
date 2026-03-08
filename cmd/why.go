@@ -80,7 +80,7 @@ func whyANSI(snap *model.Snapshot, rates *model.RateSnapshot, result *model.Anal
 				}
 				fmt.Printf("    %s#%d%s  %-16s  PID=%-6d  CPU=%.1f%%  RSS=%s  impact=%s\n",
 					D, s.Rank, R, subcmdTrunc(svc, 16), s.PID,
-					s.CPUSaturation*100, subcmdFmtBytes(s.RSS), colorByImpact(s.Composite))
+					s.CPUPct, subcmdFmtBytes(s.RSS), colorByImpact(s.Composite))
 			}
 		}
 
