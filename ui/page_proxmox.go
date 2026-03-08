@@ -606,7 +606,20 @@ func renderPveVMTable(pve *model.ProxmoxMetrics, hostCPUs int, iw int) string {
 		dimStyle.Render("NET R/T MB/s"))
 	vmLines = append(vmLines, hdr)
 
-	for _, vm := range pve.VMs {
+	// Sort: running first, then stopped
+	sorted := make([]model.ProxmoxVM, len(pve.VMs))
+	copy(sorted, pve.VMs)
+	sort.Slice(sorted, func(i, j int) bool {
+		if sorted[i].Status == "running" && sorted[j].Status != "running" {
+			return true
+		}
+		if sorted[i].Status != "running" && sorted[j].Status == "running" {
+			return false
+		}
+		return sorted[i].VMID < sorted[j].VMID
+	})
+
+	for _, vm := range sorted {
 		vmidStr := fmt.Sprintf("%d", vm.VMID)
 		nameStr := truncate(vm.Name, 13)
 
