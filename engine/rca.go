@@ -568,6 +568,42 @@ func analyzeMemory(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEnt
 		}
 	}
 
+	// Proxmox VM-level memory evidence
+	if pve := curr.Global.Proxmox; pve != nil && pve.IsProxmoxHost {
+		for _, vm := range pve.VMs {
+			if vm.Status != "running" {
+				continue
+			}
+			if vm.MemOOMKills > 0 {
+				r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("pve.vm.oom", model.DomainMemory,
+					float64(vm.MemOOMKills), 1, 3, false, 0.95,
+					fmt.Sprintf("VM %d (%s) OOM kills=%d", vm.VMID, vm.Name, vm.MemOOMKills), "cgroup",
+					nil, map[string]string{"vmid": fmt.Sprintf("%d", vm.VMID)}))
+			}
+			if vm.MemSwapMB > 100 {
+				r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("pve.vm.swap", model.DomainMemory,
+					float64(vm.MemSwapMB), 100, 1024, false, 0.8,
+					fmt.Sprintf("VM %d (%s) swap=%dMB", vm.VMID, vm.Name, vm.MemSwapMB), "cgroup",
+					nil, map[string]string{"vmid": fmt.Sprintf("%d", vm.VMID)}))
+			}
+			if vm.MemLimitMB > 0 && vm.MemUsedMB > 0 {
+				pct := float64(vm.MemUsedMB) / float64(vm.MemLimitMB) * 100
+				if pct > 80 {
+					r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("pve.vm.memlimit", model.DomainMemory,
+						pct, 85, 95, true, 0.75,
+						fmt.Sprintf("VM %d (%s) mem=%.0f%% of limit", vm.VMID, vm.Name, pct), "cgroup",
+						nil, map[string]string{"vmid": fmt.Sprintf("%d", vm.VMID)}))
+				}
+			}
+			if vm.PSIMemSome > 5 {
+				r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("pve.vm.mempsi", model.DomainMemory,
+					vm.PSIMemSome, 10, 40, true, 0.7,
+					fmt.Sprintf("VM %d (%s) mem PSI=%.1f%%", vm.VMID, vm.Name, vm.PSIMemSome), "cgroup",
+					nil, map[string]string{"vmid": fmt.Sprintf("%d", vm.VMID)}))
+			}
+		}
+	}
+
 	return r
 }
 
@@ -664,6 +700,27 @@ func analyzeCPU(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEntry 
 			}
 		}
 		break
+	}
+
+	// Proxmox VM-level CPU evidence
+	if pve := curr.Global.Proxmox; pve != nil && pve.IsProxmoxHost {
+		for _, vm := range pve.VMs {
+			if vm.Status != "running" {
+				continue
+			}
+			if vm.CPUThrottledPct > 1 {
+				r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("pve.vm.throttle", model.DomainCPU,
+					vm.CPUThrottledPct, 5, 25, true, 0.85,
+					fmt.Sprintf("VM %d (%s) throttled=%.1f%%", vm.VMID, vm.Name, vm.CPUThrottledPct), "cgroup",
+					nil, map[string]string{"vmid": fmt.Sprintf("%d", vm.VMID)}))
+			}
+			if vm.PSICPUSome > 5 {
+				r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("pve.vm.cpupsi", model.DomainCPU,
+					vm.PSICPUSome, 10, 40, true, 0.7,
+					fmt.Sprintf("VM %d (%s) CPU PSI=%.1f%%", vm.VMID, vm.Name, vm.PSICPUSome), "cgroup",
+					nil, map[string]string{"vmid": fmt.Sprintf("%d", vm.VMID)}))
+			}
+		}
 	}
 
 	// Sentinel: BPF-measured cgroup throttle events

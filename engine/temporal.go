@@ -133,6 +133,12 @@ var predefinedPairs = []crossSignalPair{
 	{"sec.portscan", "net.sentinel.resets", "Port scanning causing TCP RST responses"},
 	{"sec.dns.tunnel", "sec.dns.anomaly", "DNS tunneling causing elevated query anomaly"},
 	{"sec.beacon", "sec.outbound.exfil", "C2 beacon associated with data exfiltration"},
+
+	// Proxmox VM domain
+	{"pve.vm.throttle", "cpu.runqueue", "VM CPU throttling driving host run queue saturation"},
+	{"pve.vm.oom", "mem.available.low", "VM OOM kills depleting host available memory"},
+	{"pve.vm.memlimit", "pve.vm.swap", "VM hitting memory limit forcing swap usage"},
+	{"pve.vm.cpupsi", "pve.vm.throttle", "VM CPU pressure leading to throttle events"},
 }
 
 // BuildCrossCorrelation analyzes signal onset ordering across domains to detect
@@ -268,6 +274,12 @@ func shortLabel(id string) string {
 		"sec.lateral":                   "lateral mvmt",
 		"sec.beacon":                    "C2 beacon",
 		"sec.tcp.flags":                 "TCP flags",
+		"pve.vm.throttle":               "VM throttle",
+		"pve.vm.cpupsi":                 "VM CPU PSI",
+		"pve.vm.oom":                    "VM OOM",
+		"pve.vm.swap":                   "VM swap",
+		"pve.vm.memlimit":               "VM mem-limit",
+		"pve.vm.mempsi":                 "VM mem PSI",
 	}
 	if l, ok := labels[id]; ok {
 		return l

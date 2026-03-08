@@ -68,6 +68,12 @@ func renderProxmoxPage(snap *model.Snapshot, rates *model.RateSnapshot, result *
 	// === HOST DISK IO ===
 	sb.WriteString(renderPveHostDiskIO(snap, rates, smartDisks, iw))
 
+	// === HA / REPLICATION / FIREWALL ===
+	haLines := renderPveHARepl(pve, iw)
+	if haLines != "" {
+		sb.WriteString(haLines)
+	}
+
 	// === STORAGE POOLS ===
 	if len(pve.Storage) > 0 {
 		sb.WriteString(renderPveStorage(pve.Storage, iw))
@@ -594,16 +600,17 @@ func renderPveHostDiskIO(snap *model.Snapshot, rates *model.RateSnapshot, smartD
 func renderPveVMTable(pve *model.ProxmoxMetrics, hostCPUs int, iw int) string {
 	var vmLines []string
 
-	// Header row 1: live metrics
-	hdr := fmt.Sprintf("%s %s %s %s %s %s %s %s",
+	// Header row
+	hdr := fmt.Sprintf("%s %s %s %s %s %s %s %s %s",
 		styledPad(dimStyle.Render("VMID"), 6),
 		styledPad(dimStyle.Render("NAME"), 14),
-		styledPad(dimStyle.Render("STATUS"), 9),
-		styledPad(dimStyle.Render("vCPU"), 8),
+		styledPad(dimStyle.Render("ST"), 4),
+		styledPad(dimStyle.Render("HP"), 4),
+		styledPad(dimStyle.Render("vCPU"), 6),
 		styledPad(dimStyle.Render("CPU%"), 7),
 		styledPad(dimStyle.Render("MEMORY"), 22),
-		styledPad(dimStyle.Render("IO R/W MB/s"), 14),
-		dimStyle.Render("NET R/T MB/s"))
+		styledPad(dimStyle.Render("IO R/W"), 12),
+		dimStyle.Render("NET R/T"))
 	vmLines = append(vmLines, hdr)
 
 	// Sort: running first, then stopped
@@ -623,22 +630,37 @@ func renderPveVMTable(pve *model.ProxmoxMetrics, hostCPUs int, iw int) string {
 		vmidStr := fmt.Sprintf("%d", vm.VMID)
 		nameStr := truncate(vm.Name, 13)
 
-		// Status
+		// Status (compact)
 		var statusStyled string
 		switch vm.Status {
 		case "running":
-			statusStyled = styledPad(okStyle.Render("running"), 9)
+			statusStyled = styledPad(okStyle.Render("UP"), 4)
 		case "stopped":
-			statusStyled = styledPad(dimStyle.Render("stopped"), 9)
+			statusStyled = styledPad(dimStyle.Render("--"), 4)
 		case "paused":
-			statusStyled = styledPad(warnStyle.Render("paused"), 9)
+			statusStyled = styledPad(warnStyle.Render("PS"), 4)
 		default:
-			statusStyled = styledPad(dimStyle.Render(vm.Status), 9)
+			statusStyled = styledPad(dimStyle.Render("??"), 4)
 		}
 
-		// vCPU with overcommit indicator
+		// Health score
+		healthStr := dimStyle.Render("—")
+		if vm.Status == "running" {
+			if vm.HealthScore >= 90 {
+				healthStr = okStyle.Render(fmt.Sprintf("%d", vm.HealthScore))
+			} else if vm.HealthScore >= 60 {
+				healthStr = warnStyle.Render(fmt.Sprintf("%d", vm.HealthScore))
+			} else {
+				healthStr = critStyle.Render(fmt.Sprintf("%d", vm.HealthScore))
+			}
+		}
+
+		// vCPU
 		vcpu := vm.CoresAlloc * maxInt(vm.SocketsAlloc, 1)
 		vcpuStr := valueStyle.Render(fmt.Sprintf("%d", vcpu))
+		if vm.Status != "running" {
+			vcpuStr = dimStyle.Render(fmt.Sprintf("%d", vcpu))
+		}
 
 		// CPU%
 		cpuStr := dimStyle.Render("  —  ")
@@ -686,31 +708,87 @@ func renderPveVMTable(pve *model.ProxmoxMetrics, hostCPUs int, iw int) string {
 		}
 
 		// IO
-		ioStr := dimStyle.Render("     —      ")
+		ioStr := dimStyle.Render("   —   ")
 		if vm.Status == "running" && (vm.IOReadMBs > 0.01 || vm.IOWriteMBs > 0.01) {
 			ioStr = valueStyle.Render(fmt.Sprintf("%.1f/%.1f", vm.IOReadMBs, vm.IOWriteMBs))
 		}
 
 		// Net
-		netStr := dimStyle.Render("     —      ")
+		netStr := dimStyle.Render("   —   ")
 		if vm.Status == "running" && (vm.NetRxMBs > 0.001 || vm.NetTxMBs > 0.001) {
 			netStr = valueStyle.Render(fmt.Sprintf("%.1f/%.1f", vm.NetRxMBs, vm.NetTxMBs))
 		}
 
-		line := fmt.Sprintf("%s %s %s %s %s %s %s %s",
+		line := fmt.Sprintf("%s %s %s %s %s %s %s %s %s",
 			styledPad(valueStyle.Render(vmidStr), 6),
 			styledPad(nameStr, 14),
 			statusStyled,
-			styledPad(vcpuStr, 8),
+			styledPad(healthStr, 4),
+			styledPad(vcpuStr, 6),
 			styledPad(cpuStr, 7),
 			styledPad(memStr, 22),
-			styledPad(ioStr, 14),
+			styledPad(ioStr, 12),
 			netStr)
 		vmLines = append(vmLines, line)
 
-		// Detail line: config, disks, network, uptime
+		// Detail line: health issues, PSI, throttle, config
 		var details []string
-		// Disk summary
+
+		// Health issues (most important)
+		if vm.Status == "running" && len(vm.HealthIssues) > 0 {
+			issueStr := strings.Join(vm.HealthIssues, ", ")
+			if len(issueStr) > 60 {
+				issueStr = issueStr[:57] + "..."
+			}
+			if vm.HealthScore < 60 {
+				details = append(details, critStyle.Render(issueStr))
+			} else {
+				details = append(details, warnStyle.Render(issueStr))
+			}
+		}
+
+		// PSI per VM (if any pressure)
+		if vm.Status == "running" && (vm.PSICPUSome > 0.5 || vm.PSIMemSome > 0.5 || vm.PSIIOSome > 0.5) {
+			psiParts := []string{}
+			if vm.PSICPUSome > 0.5 {
+				psiParts = append(psiParts, "cpu="+psiStr(vm.PSICPUSome))
+			}
+			if vm.PSIMemSome > 0.5 {
+				psiParts = append(psiParts, "mem="+psiStr(vm.PSIMemSome))
+			}
+			if vm.PSIIOSome > 0.5 {
+				psiParts = append(psiParts, "io="+psiStr(vm.PSIIOSome))
+			}
+			details = append(details, dimStyle.Render("PSI:")+strings.Join(psiParts, " "))
+		}
+
+		// Throttle/swap/OOM indicators
+		if vm.Status == "running" {
+			if vm.CPUThrottledPct > 0 {
+				tStr := fmt.Sprintf("throttle:%.0f%%", vm.CPUThrottledPct)
+				if vm.CPUThrottledPct > 10 {
+					details = append(details, critStyle.Render(tStr))
+				} else {
+					details = append(details, warnStyle.Render(tStr))
+				}
+			}
+			if vm.MemSwapMB > 0 {
+				details = append(details, warnStyle.Render(fmt.Sprintf("swap:%dM", vm.MemSwapMB)))
+			}
+			if vm.MemOOMKills > 0 {
+				details = append(details, critStyle.Render(fmt.Sprintf("OOM:%d", vm.MemOOMKills)))
+			}
+			if vm.PIDCount > 0 {
+				pidStr := fmt.Sprintf("pids:%d", vm.PIDCount)
+				if vm.PIDLimit > 0 {
+					pidStr += fmt.Sprintf("/%d", vm.PIDLimit)
+				}
+				details = append(details, dimStyle.Render(pidStr))
+			}
+		}
+
+		// Config details (disks, net, uptime, features)
+		var cfgParts []string
 		var diskParts []string
 		for _, d := range vm.DiskConfigs {
 			if d.SizeGB > 0 && !strings.Contains(d.Path, "iso") && d.Path != "none" {
@@ -718,23 +796,36 @@ func renderPveVMTable(pve *model.ProxmoxMetrics, hostCPUs int, iw int) string {
 			}
 		}
 		if len(diskParts) > 0 {
-			details = append(details, "disk:"+strings.Join(diskParts, "+"))
+			cfgParts = append(cfgParts, "disk:"+strings.Join(diskParts, "+"))
 		}
-		// Network summary
 		for _, n := range vm.NetConfigs {
 			nStr := n.Bridge
 			if n.Tag > 0 {
 				nStr += fmt.Sprintf("/vlan%d", n.Tag)
 			}
-			details = append(details, nStr)
+			cfgParts = append(cfgParts, nStr)
 		}
-		// Uptime
 		if vm.Status == "running" && vm.UptimeSec > 0 {
-			details = append(details, "up:"+fmtUptime(vm.UptimeSec))
+			cfgParts = append(cfgParts, "up:"+fmtUptime(vm.UptimeSec))
+		}
+		if vm.SnapCount > 0 {
+			cfgParts = append(cfgParts, fmt.Sprintf("snaps:%d", vm.SnapCount))
+		}
+		if vm.NUMA {
+			cfgParts = append(cfgParts, "numa")
+		}
+		if len(vm.HostPCI) > 0 {
+			cfgParts = append(cfgParts, fmt.Sprintf("pci:%d", len(vm.HostPCI)))
+		}
+		if vm.Protection {
+			cfgParts = append(cfgParts, "protected")
+		}
+		if len(cfgParts) > 0 {
+			details = append(details, dimStyle.Render(strings.Join(cfgParts, "  ")))
 		}
 
 		if len(details) > 0 {
-			detailLine := fmt.Sprintf("       %s", dimStyle.Render(strings.Join(details, "  ")))
+			detailLine := fmt.Sprintf("       %s", strings.Join(details, "  "))
 			vmLines = append(vmLines, detailLine)
 		}
 	}
@@ -785,6 +876,80 @@ func renderPveStorage(storages []model.ProxmoxStorage, iw int) string {
 		storLines = append(storLines, line)
 	}
 	return boxSection("STORAGE POOLS", storLines, iw)
+}
+
+// renderPveHARepl renders HA, replication, and firewall status
+func renderPveHARepl(pve *model.ProxmoxMetrics, iw int) string {
+	var lines []string
+
+	// HA resources
+	if pve.HAEnabled && len(pve.HAResources) > 0 {
+		lines = append(lines, dimStyle.Render("HA Resources:"))
+		for _, ha := range pve.HAResources {
+			stateStr := dimStyle.Render(ha.State)
+			if ha.State == "started" {
+				stateStr = okStyle.Render("started")
+			} else if ha.State == "error" || ha.State == "fence" {
+				stateStr = critStyle.Render(ha.State)
+			}
+			haLine := fmt.Sprintf("  VM %d  %s", ha.VMID, stateStr)
+			if ha.Group != "" {
+				haLine += "  " + dimStyle.Render("group:"+ha.Group)
+			}
+			if ha.MaxRestart > 0 {
+				haLine += dimStyle.Render(fmt.Sprintf("  restart:%d relocate:%d", ha.MaxRestart, ha.MaxRelocate))
+			}
+			lines = append(lines, haLine)
+		}
+	} else {
+		lines = append(lines, dimStyle.Render("HA: not configured"))
+	}
+
+	// Replication
+	if len(pve.Replication) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, dimStyle.Render("Replication Jobs:"))
+		for _, r := range pve.Replication {
+			statusStr := dimStyle.Render(r.Status)
+			if r.Status == "ok" {
+				statusStr = okStyle.Render("ok")
+			} else if r.Status == "error" {
+				statusStr = critStyle.Render("error")
+			}
+			rLine := fmt.Sprintf("  VM %d → %s  %s", r.VMID, valueStyle.Render(r.Target), statusStr)
+			if r.Schedule != "" {
+				rLine += dimStyle.Render("  sched:" + r.Schedule)
+			}
+			if r.LastSync != "" {
+				rLine += dimStyle.Render("  last:" + r.LastSync)
+			}
+			lines = append(lines, rLine)
+		}
+	}
+
+	// Firewall
+	fwLine := dimStyle.Render("Firewall: ")
+	if pve.Firewall.ClusterEnabled {
+		fwLine += okStyle.Render("cluster:ON")
+	} else {
+		fwLine += dimStyle.Render("cluster:OFF")
+	}
+	vmFWCount := 0
+	for _, enabled := range pve.Firewall.VMFirewalls {
+		if enabled {
+			vmFWCount++
+		}
+	}
+	if vmFWCount > 0 {
+		fwLine += "  " + valueStyle.Render(fmt.Sprintf("%d VMs with firewall", vmFWCount))
+	}
+	lines = append(lines, "")
+	lines = append(lines, fwLine)
+
+	if len(lines) == 0 {
+		return ""
+	}
+	return boxSection("HA / REPLICATION / FIREWALL", lines, iw)
 }
 
 func fmtMB(mb int) string {

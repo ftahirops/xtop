@@ -19,12 +19,14 @@ import (
 
 // ProxmoxCollector gathers Proxmox VE host and VM metrics.
 type ProxmoxCollector struct {
-	detected     bool
-	checkedOnce  bool
-	prevVMCPU    map[int]uint64 // VMID → previous CPU usage (µs)
-	prevVMIO     map[int][2]uint64 // VMID → [read, write] bytes
-	prevNetBytes map[string][2]uint64 // iface → [rx, tx]
-	prevTime     time.Time
+	detected       bool
+	checkedOnce    bool
+	prevVMCPU      map[int]uint64    // VMID → previous CPU usage (µs)
+	prevVMCPUUser  map[int]uint64    // VMID → previous user CPU (µs)
+	prevVMCPUSys   map[int]uint64    // VMID → previous system CPU (µs)
+	prevVMIO       map[int][2]uint64 // VMID → [read, write] bytes
+	prevNetBytes   map[string][2]uint64 // iface → [rx, tx]
+	prevTime       time.Time
 }
 
 func (p *ProxmoxCollector) Name() string { return "proxmox" }
@@ -72,6 +74,7 @@ func (p *ProxmoxCollector) Collect(snap *model.Snapshot) error {
 	for i := range vms {
 		if vms[i].PID > 0 {
 			p.collectVMLive(&vms[i], dt)
+			p.computeVMHealth(&vms[i])
 		}
 	}
 
@@ -81,7 +84,122 @@ func (p *ProxmoxCollector) Collect(snap *model.Snapshot) error {
 	// Storage
 	pve.Storage = p.parseStorage()
 
+	// HA, Replication, Firewall
+	pve.HAResources = p.parseHA()
+	if len(pve.HAResources) > 0 {
+		pve.HAEnabled = true
+	}
+	pve.Replication = p.parseReplication()
+	pve.Firewall = p.parseFirewall(vms)
+
 	return nil
+}
+
+// cgroupPaths returns the 3-path fallback list for a cgroup file.
+func cgroupPaths(scope, file string) []string {
+	return []string{
+		fmt.Sprintf("/sys/fs/cgroup/qemu.slice/%s/%s", scope, file),
+		fmt.Sprintf("/sys/fs/cgroup/machine.slice/qemu-%s/%s", scope, file),
+		fmt.Sprintf("/sys/fs/cgroup/machine.slice/%s/%s", scope, file),
+	}
+}
+
+// readCgroupFile tries the 3-path fallback and returns the first successful read.
+func readCgroupFile(scope, file string) ([]byte, bool) {
+	for _, p := range cgroupPaths(scope, file) {
+		data, err := os.ReadFile(p)
+		if err == nil {
+			return data, true
+		}
+	}
+	return nil, false
+}
+
+// readCgroupSingleValue reads a single uint64 from a cgroup file.
+func readCgroupSingleValue(scope, file string) uint64 {
+	data, ok := readCgroupFile(scope, file)
+	if !ok {
+		return 0
+	}
+	s := strings.TrimSpace(string(data))
+	if s == "max" || s == "" {
+		return 0
+	}
+	v, _ := strconv.ParseUint(s, 10, 64)
+	return v
+}
+
+// readCgroupCPUStat parses cpu.stat for usage, user, sys, throttle metrics.
+func readCgroupCPUStat(scope string) (usageUsec, userUsec, sysUsec uint64, nrPeriods, nrThrottled, throttledUsec uint64) {
+	data, ok := readCgroupFile(scope, "cpu.stat")
+	if !ok {
+		return
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		v, _ := strconv.ParseUint(fields[1], 10, 64)
+		switch fields[0] {
+		case "usage_usec":
+			usageUsec = v
+		case "user_usec":
+			userUsec = v
+		case "system_usec":
+			sysUsec = v
+		case "nr_periods":
+			nrPeriods = v
+		case "nr_throttled":
+			nrThrottled = v
+		case "throttled_usec":
+			throttledUsec = v
+		}
+	}
+	return
+}
+
+// readCgroupPSI parses a PSI file and returns the "some avg10" value.
+func readCgroupPSI(scope, resource string) float64 {
+	file := resource + ".pressure"
+	data, ok := readCgroupFile(scope, file)
+	if !ok {
+		return 0
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "some ") {
+			// Format: "some avg10=0.00 avg60=0.00 avg300=0.00 total=0"
+			for _, field := range strings.Fields(line) {
+				if strings.HasPrefix(field, "avg10=") {
+					v, _ := strconv.ParseFloat(strings.TrimPrefix(field, "avg10="), 64)
+					return v
+				}
+			}
+		}
+	}
+	return 0
+}
+
+// readCgroupMemEvents parses memory.events for oom and oom_kill counts.
+func readCgroupMemEvents(scope string) (oom, oomKill uint64) {
+	data, ok := readCgroupFile(scope, "memory.events")
+	if !ok {
+		return
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		v, _ := strconv.ParseUint(fields[1], 10, 64)
+		switch fields[0] {
+		case "oom":
+			oom = v
+		case "oom_kill":
+			oomKill = v
+		}
+	}
+	return
 }
 
 // parseVMConfigs reads /etc/pve/qemu-server/*.conf
@@ -117,6 +235,7 @@ func (p *ProxmoxCollector) parseVMConfigs() []model.ProxmoxVM {
 			// Skip [snapshot] sections — they duplicate disk/net keys
 			if strings.HasPrefix(line, "[") {
 				inSnapshot = true
+				vm.SnapCount++
 				continue
 			}
 			if inSnapshot {
@@ -145,6 +264,24 @@ func (p *ProxmoxCollector) parseVMConfigs() []model.ProxmoxVM {
 					vm.BalloonMinMB = bval
 				}
 				// balloon: 0 means disabled explicitly
+			case "cpulimit":
+				vm.CPULimit, _ = strconv.ParseFloat(val, 64)
+			case "cpuunits":
+				vm.CPUUnits, _ = strconv.Atoi(val)
+			case "numa":
+				vm.NUMA = val == "1"
+			case "machine":
+				vm.Machine = val
+			case "bios":
+				vm.BIOS = val
+			case "protection":
+				vm.Protection = val == "1"
+			case "startup":
+				vm.StartupOrder = val
+			case "description":
+				vm.Description = val
+			case "features":
+				vm.Features = val
 			default:
 				// Disk configs: scsi0, virtio0, ide2, sata0, etc.
 				if isProxmoxDiskKey(key) {
@@ -159,6 +296,10 @@ func (p *ProxmoxCollector) parseVMConfigs() []model.ProxmoxVM {
 					if nc.ID != "" {
 						vm.NetConfigs = append(vm.NetConfigs, nc)
 					}
+				}
+				// PCI passthrough: hostpci0, hostpci1, etc.
+				if strings.HasPrefix(key, "hostpci") {
+					vm.HostPCI = append(vm.HostPCI, val)
 				}
 			}
 		}
@@ -311,6 +452,8 @@ func readBootTimeFloat() float64 {
 func (p *ProxmoxCollector) collectVMLive(vm *model.ProxmoxVM, dt time.Duration) {
 	if p.prevVMCPU == nil {
 		p.prevVMCPU = make(map[int]uint64)
+		p.prevVMCPUUser = make(map[int]uint64)
+		p.prevVMCPUSys = make(map[int]uint64)
 		p.prevVMIO = make(map[int][2]uint64)
 		p.prevNetBytes = make(map[string][2]uint64)
 	}
@@ -334,8 +477,8 @@ func (p *ProxmoxCollector) collectVMLive(vm *model.ProxmoxVM, dt time.Duration) 
 		vm.MemBalloonMB = readCgroupMemCurrent(scope)
 	}
 
-	// CPU from cgroup
-	cpuUsage := readCgroupCPU(scope)
+	// CPU from cgroup (extended cpu.stat with user/sys/throttle)
+	cpuUsage, userUsec, sysUsec, nrPeriods, nrThrottled, _ := readCgroupCPUStat(scope)
 	if cpuUsage > 0 {
 		prev := p.prevVMCPU[vm.VMID]
 		if prev > 0 && cpuUsage >= prev {
@@ -343,6 +486,94 @@ func (p *ProxmoxCollector) collectVMLive(vm *model.ProxmoxVM, dt time.Duration) 
 			vm.CPUPct = float64(delta) / dt.Seconds() / 1e6 * 100 // µs → pct
 		}
 		p.prevVMCPU[vm.VMID] = cpuUsage
+	}
+
+	// CPU user/sys delta-based percentage
+	dtSec := dt.Seconds()
+	if userUsec > 0 {
+		prevUser := p.prevVMCPUUser[vm.VMID]
+		if prevUser > 0 && userUsec >= prevUser {
+			vm.CPUUserPct = float64(userUsec-prevUser) / dtSec / 1e6 * 100
+		}
+		p.prevVMCPUUser[vm.VMID] = userUsec
+	}
+	if sysUsec > 0 {
+		prevSys := p.prevVMCPUSys[vm.VMID]
+		if prevSys > 0 && sysUsec >= prevSys {
+			vm.CPUSysPct = float64(sysUsec-prevSys) / dtSec / 1e6 * 100
+		}
+		p.prevVMCPUSys[vm.VMID] = sysUsec
+	}
+
+	// CPU throttling
+	vm.CPUThrottledPeriods = nrThrottled
+	if nrPeriods > 0 {
+		vm.CPUThrottledPct = float64(nrThrottled) / float64(nrPeriods) * 100
+	}
+
+	// CPU limits: cpu.max and cpu.weight
+	if data, ok := readCgroupFile(scope, "cpu.max"); ok {
+		vm.CPUMaxQuota = strings.TrimSpace(string(data))
+	}
+	if v := readCgroupSingleValue(scope, "cpu.weight"); v > 0 {
+		vm.CPUWeight = int(v)
+	}
+
+	// Memory peak
+	if v := readCgroupSingleValue(scope, "memory.peak"); v > 0 {
+		vm.MemPeakMB = int(v / (1024 * 1024))
+	}
+
+	// Memory swap
+	if v := readCgroupSingleValue(scope, "memory.swap.current"); v > 0 {
+		vm.MemSwapMB = int(v / (1024 * 1024))
+	}
+
+	// Memory limits: memory.max and memory.high
+	if data, ok := readCgroupFile(scope, "memory.max"); ok {
+		s := strings.TrimSpace(string(data))
+		if s != "max" && s != "" {
+			if v, err := strconv.ParseUint(s, 10, 64); err == nil && v > 0 {
+				vm.MemLimitMB = int(v / (1024 * 1024))
+			}
+		}
+	}
+	if data, ok := readCgroupFile(scope, "memory.high"); ok {
+		s := strings.TrimSpace(string(data))
+		if s != "max" && s != "" {
+			if v, err := strconv.ParseUint(s, 10, 64); err == nil && v > 0 {
+				vm.MemHighMB = int(v / (1024 * 1024))
+			}
+		}
+	}
+
+	// Memory OOM events
+	vm.MemOOMEvents, vm.MemOOMKills = readCgroupMemEvents(scope)
+
+	// Per-VM PSI
+	vm.PSICPUSome = readCgroupPSI(scope, "cpu")
+	vm.PSIMemSome = readCgroupPSI(scope, "memory")
+	vm.PSIIOSome = readCgroupPSI(scope, "io")
+
+	// PID count and limit
+	if v := readCgroupSingleValue(scope, "pids.current"); v > 0 {
+		vm.PIDCount = int(v)
+	}
+	if data, ok := readCgroupFile(scope, "pids.max"); ok {
+		s := strings.TrimSpace(string(data))
+		if s != "max" && s != "" {
+			if v, err := strconv.ParseUint(s, 10, 64); err == nil {
+				vm.PIDLimit = int(v)
+			}
+		}
+	}
+
+	// IO limits from io.max
+	if data, ok := readCgroupFile(scope, "io.max"); ok {
+		s := strings.TrimSpace(string(data))
+		if s != "" && s != "default" {
+			vm.IOMaxBps = s
+		}
 	}
 
 	// IO from cgroup
@@ -373,14 +604,72 @@ func (p *ProxmoxCollector) collectVMLive(vm *model.ProxmoxVM, dt time.Duration) 
 	p.prevNetBytes[tapName] = [2]uint64{rxBytes, txBytes}
 }
 
-func readCgroupCPU(scope string) uint64 {
-	// Try cgroup v2 first
-	paths := []string{
-		fmt.Sprintf("/sys/fs/cgroup/qemu.slice/%s/cpu.stat", scope),
-		fmt.Sprintf("/sys/fs/cgroup/machine.slice/qemu-%s/cpu.stat", scope),
-		fmt.Sprintf("/sys/fs/cgroup/machine.slice/%s/cpu.stat", scope),
+// computeVMHealth calculates a 0-100 health score and populates HealthIssues.
+func (p *ProxmoxCollector) computeVMHealth(vm *model.ProxmoxVM) {
+	score := 100
+	var issues []string
+
+	if vm.CPUThrottledPct > 10 {
+		score -= 15
+		issues = append(issues, fmt.Sprintf("CPU throttled %.0f%%", vm.CPUThrottledPct))
+	} else if vm.CPUThrottledPct > 1 {
+		score -= 5
+		issues = append(issues, "CPU throttled")
 	}
-	for _, p := range paths {
+
+	if vm.MemSwapMB > 100 {
+		score -= 20
+		issues = append(issues, fmt.Sprintf("VM swapping %dMB", vm.MemSwapMB))
+	}
+
+	if vm.MemOOMKills > 0 {
+		score -= 30
+		issues = append(issues, fmt.Sprintf("OOM kills: %d", vm.MemOOMKills))
+	}
+
+	if vm.MemLimitMB > 0 && vm.MemUsedMB > 0 {
+		pct := float64(vm.MemUsedMB) / float64(vm.MemLimitMB)
+		if pct > 0.9 {
+			score -= 15
+			issues = append(issues, fmt.Sprintf("memory near limit (%.0f%%)", pct*100))
+		}
+	}
+
+	if vm.PSICPUSome > 25 {
+		score -= 10
+		issues = append(issues, fmt.Sprintf("CPU pressure %.1f%%", vm.PSICPUSome))
+	}
+
+	if vm.PSIMemSome > 25 {
+		score -= 15
+		issues = append(issues, fmt.Sprintf("memory pressure %.1f%%", vm.PSIMemSome))
+	}
+
+	if vm.PSIIOSome > 25 {
+		score -= 10
+		issues = append(issues, fmt.Sprintf("IO pressure %.1f%%", vm.PSIIOSome))
+	}
+
+	if vm.CPUPct > 90 {
+		score -= 10
+		issues = append(issues, "high CPU usage")
+	}
+
+	if vm.IOReadMBs+vm.IOWriteMBs > 500 {
+		score -= 5
+		issues = append(issues, "high IO")
+	}
+
+	if score < 0 {
+		score = 0
+	}
+
+	vm.HealthScore = score
+	vm.HealthIssues = issues
+}
+
+func readCgroupCPU(scope string) uint64 {
+	for _, p := range cgroupPaths(scope, "cpu.stat") {
 		data, err := os.ReadFile(p)
 		if err != nil {
 			continue
@@ -396,12 +685,7 @@ func readCgroupCPU(scope string) uint64 {
 }
 
 func readCgroupMemCurrent(scope string) int {
-	paths := []string{
-		fmt.Sprintf("/sys/fs/cgroup/qemu.slice/%s/memory.current", scope),
-		fmt.Sprintf("/sys/fs/cgroup/machine.slice/qemu-%s/memory.current", scope),
-		fmt.Sprintf("/sys/fs/cgroup/machine.slice/%s/memory.current", scope),
-	}
-	for _, p := range paths {
+	for _, p := range cgroupPaths(scope, "memory.current") {
 		data, err := os.ReadFile(p)
 		if err != nil {
 			continue
@@ -415,13 +699,8 @@ func readCgroupMemCurrent(scope string) int {
 }
 
 func readCgroupIO(scope string) (uint64, uint64) {
-	paths := []string{
-		fmt.Sprintf("/sys/fs/cgroup/qemu.slice/%s/io.stat", scope),
-		fmt.Sprintf("/sys/fs/cgroup/machine.slice/qemu-%s/io.stat", scope),
-		fmt.Sprintf("/sys/fs/cgroup/machine.slice/%s/io.stat", scope),
-	}
 	var totalR, totalW uint64
-	for _, p := range paths {
+	for _, p := range cgroupPaths(scope, "io.stat") {
 		data, err := os.ReadFile(p)
 		if err != nil {
 			continue
@@ -466,6 +745,142 @@ func readTapStats(tapName string) (uint64, uint64) {
 		return rx, tx
 	}
 	return 0, 0
+}
+
+// parseHA reads /etc/pve/ha/resources.cfg and returns HA resource entries.
+func (p *ProxmoxCollector) parseHA() []model.ProxmoxHAResource {
+	data, err := os.ReadFile("/etc/pve/ha/resources.cfg")
+	if err != nil {
+		return nil
+	}
+
+	var resources []model.ProxmoxHAResource
+	var current *model.ProxmoxHAResource
+
+	for _, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+
+		// New resource block: "vm: 100"
+		if !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") && strings.Contains(trimmed, ":") {
+			if current != nil {
+				resources = append(resources, *current)
+			}
+			parts := strings.SplitN(trimmed, ":", 2)
+			if len(parts) == 2 {
+				vmid, _ := strconv.Atoi(strings.TrimSpace(parts[1]))
+				current = &model.ProxmoxHAResource{VMID: vmid}
+			}
+			continue
+		}
+
+		// Indented property lines
+		if current != nil {
+			kv := strings.Fields(trimmed)
+			if len(kv) >= 2 {
+				switch kv[0] {
+				case "state":
+					current.State = kv[1]
+				case "group":
+					current.Group = kv[1]
+				case "max_restart":
+					current.MaxRestart, _ = strconv.Atoi(kv[1])
+				case "max_relocate":
+					current.MaxRelocate, _ = strconv.Atoi(kv[1])
+				}
+			}
+		}
+	}
+	if current != nil {
+		resources = append(resources, *current)
+	}
+
+	return resources
+}
+
+// parseReplication reads /etc/pve/replication.cfg and returns replication jobs.
+func (p *ProxmoxCollector) parseReplication() []model.ProxmoxReplication {
+	data, err := os.ReadFile("/etc/pve/replication.cfg")
+	if err != nil {
+		return nil
+	}
+
+	var replications []model.ProxmoxReplication
+	var current *model.ProxmoxReplication
+
+	for _, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+
+		// New replication block: "local: 100-0"
+		if !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") && strings.Contains(trimmed, ":") {
+			if current != nil {
+				replications = append(replications, *current)
+			}
+			parts := strings.SplitN(trimmed, ":", 2)
+			if len(parts) == 2 {
+				idStr := strings.TrimSpace(parts[1])
+				// Format "100-0" → VMID 100
+				vmidStr := strings.SplitN(idStr, "-", 2)[0]
+				vmid, _ := strconv.Atoi(vmidStr)
+				current = &model.ProxmoxReplication{VMID: vmid}
+			}
+			continue
+		}
+
+		// Indented property lines
+		if current != nil {
+			kv := strings.Fields(trimmed)
+			if len(kv) >= 2 {
+				switch kv[0] {
+				case "target":
+					current.Target = kv[1]
+				case "schedule":
+					current.Schedule = kv[1]
+				}
+			}
+		}
+	}
+	if current != nil {
+		replications = append(replications, *current)
+	}
+
+	return replications
+}
+
+// parseFirewall checks cluster and per-VM firewall configuration.
+func (p *ProxmoxCollector) parseFirewall(vms []model.ProxmoxVM) model.ProxmoxFirewall {
+	fw := model.ProxmoxFirewall{
+		VMFirewalls: make(map[int]bool),
+	}
+
+	// Check cluster firewall
+	if data, err := os.ReadFile("/etc/pve/firewall/cluster.fw"); err == nil {
+		content := string(data)
+		for _, line := range strings.Split(content, "\n") {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "enable:") {
+				val := strings.TrimSpace(strings.TrimPrefix(trimmed, "enable:"))
+				if val == "1" {
+					fw.ClusterEnabled = true
+				}
+			}
+		}
+	}
+
+	// Check per-VM firewall files
+	for _, vm := range vms {
+		fwPath := fmt.Sprintf("/etc/pve/firewall/%d.fw", vm.VMID)
+		if _, err := os.Stat(fwPath); err == nil {
+			fw.VMFirewalls[vm.VMID] = true
+		}
+	}
+
+	return fw
 }
 
 // parseStorage reads /etc/pve/storage.cfg and gets usage via statvfs

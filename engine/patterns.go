@@ -249,6 +249,47 @@ var patternLibrary = []Pattern{
 		MinMatch:  2,
 		Narrative: "JVM GC storm — heap pressure driving excessive garbage collection pauses",
 	},
+	// Proxmox VM patterns
+	{
+		Name:     "VM OOM Crisis",
+		Priority: 92,
+		Conditions: []PatternCondition{
+			{EvidenceID: "pve.vm.oom"},
+		},
+		MinMatch:  1,
+		Narrative: "Proxmox VM OOM — guest VM hitting memory limit, kernel killing processes inside VM",
+	},
+	{
+		Name:     "VM CPU Throttle",
+		Priority: 65,
+		Conditions: []PatternCondition{
+			{EvidenceID: "pve.vm.throttle"},
+			{EvidenceID: "pve.vm.cpupsi"},
+		},
+		MinMatch:  1,
+		Narrative: "Proxmox VM CPU throttled — VM hitting cgroup CPU limit, tasks queuing",
+	},
+	{
+		Name:     "VM Memory Pressure",
+		Priority: 62,
+		Conditions: []PatternCondition{
+			{EvidenceID: "pve.vm.memlimit"},
+			{EvidenceID: "pve.vm.mempsi"},
+			{EvidenceID: "pve.vm.swap"},
+		},
+		MinMatch:  2,
+		Narrative: "Proxmox VM memory pressure — guest near memory limit with swap or PSI pressure",
+	},
+	{
+		Name:     "VM Noisy Neighbor",
+		Priority: 58,
+		Conditions: []PatternCondition{
+			{EvidenceID: "cpu.steal"},
+			{EvidenceID: "pve.vm.throttle"},
+		},
+		MinMatch:  2,
+		Narrative: "VM noisy neighbor — CPU steal combined with VM throttling suggests overcommitted host",
+	},
 }
 
 func init() {

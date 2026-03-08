@@ -76,6 +76,15 @@ var causalRules = []causalRule{
 	{"jvm.gc.pause", "cpu.runqueue", "jvmgcpause→runqueue", 0.7},
 	{"jvm.heap.pressure", "mem.reclaim.direct", "jvmheap→reclaim", 0.6},
 	{"jvm.heap.pressure", "jvm.gc.pause", "jvmheap→gcpause", 0.85},
+
+	// Proxmox VM domain
+	{"pve.vm.throttle", "cpu.runqueue", "vmthrottle→runqueue", 0.7},
+	{"pve.vm.oom", "mem.available.low", "vmoom→lowmem", 0.9},
+	{"pve.vm.swap", "io.psi", "vmswap→iopsi", 0.65},
+	{"pve.vm.memlimit", "pve.vm.swap", "vmmemlimit→vmswap", 0.8},
+	{"pve.vm.memlimit", "pve.vm.oom", "vmmemlimit→vmoom", 0.85},
+	{"pve.vm.cpupsi", "pve.vm.throttle", "vmcpupsi→vmthrottle", 0.7},
+	{"pve.vm.mempsi", "pve.vm.swap", "vmmempsi→vmswap", 0.6},
 }
 
 // buildCausalDAG constructs a causal DAG from fired evidence across all domains.
