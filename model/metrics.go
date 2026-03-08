@@ -866,6 +866,7 @@ type GlobalMetrics struct {
 	Sentinel       SentinelData
 	DotNet         []DotNetProcessMetrics
 	Runtimes       RuntimeMetrics
+	Apps           AppMetrics
 	AppIdentities  map[int]AppIdentity // PID → resolved identity
 	Proxmox        *ProxmoxMetrics     // non-nil only on Proxmox hosts
 }
