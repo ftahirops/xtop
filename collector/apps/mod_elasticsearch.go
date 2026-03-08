@@ -3,10 +3,12 @@
 package apps
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -23,27 +25,31 @@ func (m *esModule) DisplayName() string { return "Elasticsearch" }
 
 func (m *esModule) Detect(processes []model.ProcessMetrics) []DetectedApp {
 	var apps []DetectedApp
-	seen := make(map[int]bool) // deduplicate by port
+	seen := make(map[int]bool)
 
 	for _, p := range processes {
 		if p.Comm != "java" {
 			continue
 		}
+
+		// Skip if running inside a Docker container (cgroup contains docker/containerd)
+		if isContainerized(p.PID) {
+			continue
+		}
+
 		cmdline := readProcCmdline(p.PID)
 		if !strings.Contains(cmdline, "elasticsearch") && !strings.Contains(cmdline, "org.elasticsearch") {
 			continue
 		}
 
-		// Only detect the main ES process — skip child processes (PPID > 2 means child of another ES process)
+		// Only detect the main ES process — skip child processes
 		if p.PPID > 2 {
-			// Check if parent is also an ES java process — if so, skip this one
 			parentCmdline := readProcCmdline(p.PPID)
 			if strings.Contains(parentCmdline, "elasticsearch") || strings.Contains(parentCmdline, "org.elasticsearch") {
 				continue
 			}
 		}
 
-		// Parse port from -Ehttp.port= or default 9200
 		port := 9200
 		for _, field := range strings.Fields(cmdline) {
 			if strings.HasPrefix(field, "-Ehttp.port=") {
@@ -69,6 +75,17 @@ func (m *esModule) Detect(processes []model.ProcessMetrics) []DetectedApp {
 	return apps
 }
 
+// isContainerized checks if a process is running inside a Docker/container by reading its cgroup.
+func isContainerized(pid int) bool {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/cgroup", pid))
+	if err != nil {
+		return false
+	}
+	s := string(data)
+	return strings.Contains(s, "docker") || strings.Contains(s, "containerd") ||
+		strings.Contains(s, "lxc") || strings.Contains(s, "kubepods")
+}
+
 func (m *esModule) Collect(app *DetectedApp, secrets *AppSecrets) model.AppInstance {
 	inst := model.AppInstance{
 		AppType:     "elasticsearch",
@@ -80,14 +97,19 @@ func (m *esModule) Collect(app *DetectedApp, secrets *AppSecrets) model.AppInsta
 		DeepMetrics: make(map[string]string),
 	}
 
-	// Tier 1: process metrics
 	inst.RSSMB = readProcRSS(app.PID)
 	inst.Threads = readProcThreads(app.PID)
 	inst.FDs = readProcFDs(app.PID)
 	inst.Connections = countTCPConnections(app.Port)
 
-	// Tier 2: ES REST APIs
-	baseURL := fmt.Sprintf("http://127.0.0.1:%d", app.Port)
+	collectESMetrics(&inst, app.Port, secrets)
+
+	return inst
+}
+
+// collectESMetrics fetches all ES REST API metrics. Exported for use by Docker module too.
+func collectESMetrics(inst *model.AppInstance, port int, secrets *AppSecrets) {
+	baseURL := fmt.Sprintf("http://127.0.0.1:%d", port)
 	user := ""
 	password := ""
 	if secrets != nil && secrets.Elasticsearch != nil {
@@ -98,10 +120,20 @@ func (m *esModule) Collect(app *DetectedApp, secrets *AppSecrets) model.AppInsta
 		password = secrets.Elasticsearch.Password
 	}
 
-	client := &http.Client{Timeout: 3 * time.Second}
+	client := esHTTPClient()
 
-	// 1. Root endpoint — version + cluster name
-	if root := esGet(client, baseURL+"/", user, password); root != nil {
+	// Try HTTP first, then HTTPS if HTTP fails
+	root := esGet(client, baseURL+"/", user, password)
+	if root == nil && strings.HasPrefix(baseURL, "http://") {
+		httpsURL := "https://" + baseURL[7:]
+		root = esGet(client, httpsURL+"/", user, password)
+		if root != nil {
+			baseURL = httpsURL
+		}
+	}
+
+	// 1. Root — version
+	if root != nil {
 		if v, ok := root["version"].(map[string]interface{}); ok {
 			if num, ok := v["number"].(string); ok {
 				inst.Version = num
@@ -123,8 +155,7 @@ func (m *esModule) Collect(app *DetectedApp, secrets *AppSecrets) model.AppInsta
 			"status", "cluster_name", "number_of_nodes", "number_of_data_nodes",
 			"active_primary_shards", "active_shards", "unassigned_shards",
 			"relocating_shards", "initializing_shards", "delayed_unassigned_shards",
-			"number_of_pending_tasks", "number_of_in_flight_fetch",
-			"active_shards_percent_as_number",
+			"number_of_pending_tasks", "active_shards_percent_as_number",
 		} {
 			if v, ok := health[key]; ok {
 				inst.DeepMetrics[key] = fmt.Sprintf("%v", v)
@@ -132,7 +163,7 @@ func (m *esModule) Collect(app *DetectedApp, secrets *AppSecrets) model.AppInsta
 		}
 	}
 
-	// 3. Cluster stats — indices, docs, store size
+	// 3. Cluster stats — indices, docs, store size, JVM
 	if stats := esGet(client, baseURL+"/_cluster/stats", user, password); stats != nil {
 		inst.HasDeepMetrics = true
 		if indices, ok := stats["indices"].(map[string]interface{}); ok {
@@ -160,7 +191,6 @@ func (m *esModule) Collect(app *DetectedApp, secrets *AppSecrets) model.AppInsta
 					inst.DeepMetrics["segment_memory"] = fmtBytes(mem)
 				}
 			}
-			// Field data & query cache
 			if fd, ok := indices["fielddata"].(map[string]interface{}); ok {
 				if mem, ok := fd["memory_size_in_bytes"]; ok {
 					inst.DeepMetrics["fielddata_memory"] = fmtBytes(mem)
@@ -181,7 +211,6 @@ func (m *esModule) Collect(app *DetectedApp, secrets *AppSecrets) model.AppInsta
 				}
 			}
 		}
-		// Nodes JVM
 		if nodes, ok := stats["nodes"].(map[string]interface{}); ok {
 			if jvm, ok := nodes["jvm"].(map[string]interface{}); ok {
 				if mem, ok := jvm["mem"].(map[string]interface{}); ok {
@@ -193,18 +222,11 @@ func (m *esModule) Collect(app *DetectedApp, secrets *AppSecrets) model.AppInsta
 					}
 				}
 			}
-			if proc, ok := nodes["process"].(map[string]interface{}); ok {
-				if cpu, ok := proc["cpu"].(map[string]interface{}); ok {
-					if pct, ok := cpu["percent"]; ok {
-						inst.DeepMetrics["cpu_percent"] = fmt.Sprintf("%v%%", pct)
-					}
-				}
-			}
 		}
 	}
 
-	// 4. Node stats — local node GC, indexing, search throughput
-	if nodeStats := esGet(client, baseURL+"/_nodes/stats/jvm,indices,os,transport,http", user, password); nodeStats != nil {
+	// 4. Node stats — GC, indexing, search throughput
+	if nodeStats := esGet(client, baseURL+"/_nodes/stats/jvm,indices,os,http", user, password); nodeStats != nil {
 		if nodes, ok := nodeStats["nodes"].(map[string]interface{}); ok {
 			for _, nodeData := range nodes {
 				nd, ok := nodeData.(map[string]interface{})
@@ -236,7 +258,7 @@ func (m *esModule) Collect(app *DetectedApp, secrets *AppSecrets) model.AppInsta
 						}
 					}
 				}
-				// Indexing & Search throughput
+				// Indexing & Search
 				if indices, ok := nd["indices"].(map[string]interface{}); ok {
 					if indexing, ok := indices["indexing"].(map[string]interface{}); ok {
 						if total, ok := indexing["index_total"]; ok {
@@ -253,39 +275,18 @@ func (m *esModule) Collect(app *DetectedApp, secrets *AppSecrets) model.AppInsta
 						if ms, ok := search["query_time_in_millis"]; ok {
 							inst.DeepMetrics["search_query_time_ms"] = fmt.Sprintf("%v", ms)
 						}
-						if fetchTotal, ok := search["fetch_total"]; ok {
-							inst.DeepMetrics["search_fetch_total"] = fmtLargeNum(fetchTotal)
-						}
 					}
 					if merges, ok := indices["merges"].(map[string]interface{}); ok {
 						if total, ok := merges["total"]; ok {
 							inst.DeepMetrics["merge_total"] = fmt.Sprintf("%v", total)
 						}
-						if ms, ok := merges["total_time_in_millis"]; ok {
-							inst.DeepMetrics["merge_time_ms"] = fmt.Sprintf("%v", ms)
-						}
-					}
-					if refresh, ok := indices["refresh"].(map[string]interface{}); ok {
-						if total, ok := refresh["total"]; ok {
-							inst.DeepMetrics["refresh_total"] = fmt.Sprintf("%v", total)
-						}
-					}
-					if flush, ok := indices["flush"].(map[string]interface{}); ok {
-						if total, ok := flush["total"]; ok {
-							inst.DeepMetrics["flush_total"] = fmt.Sprintf("%v", total)
-						}
 					}
 				}
-				// OS
+				// OS CPU
 				if osData, ok := nd["os"].(map[string]interface{}); ok {
 					if cpu, ok := osData["cpu"].(map[string]interface{}); ok {
 						if pct, ok := cpu["percent"]; ok {
 							inst.DeepMetrics["os_cpu_pct"] = fmt.Sprintf("%v%%", pct)
-						}
-						if la, ok := cpu["load_average"].(map[string]interface{}); ok {
-							if v1, ok := la["1m"]; ok {
-								inst.DeepMetrics["load_1m"] = fmt.Sprintf("%.2f", v1)
-							}
 						}
 					}
 				}
@@ -294,24 +295,17 @@ func (m *esModule) Collect(app *DetectedApp, secrets *AppSecrets) model.AppInsta
 					if curr, ok := httpData["current_open"]; ok {
 						inst.DeepMetrics["http_current_open"] = fmt.Sprintf("%v", curr)
 					}
-					if total, ok := httpData["total_opened"]; ok {
-						inst.DeepMetrics["http_total_opened"] = fmtLargeNum(total)
-					}
 				}
-				// Only process first node (local)
-				break
+				break // first node only
 			}
 		}
 	}
 
-	// 5. Cat indices summary — top 10 largest
+	// 5. Index health summary
 	if catData := esGetRaw(client, baseURL+"/_cat/indices?format=json&bytes=b&s=store.size:desc&h=index,health,status,pri,rep,docs.count,store.size", user, password); catData != nil {
 		var indices []map[string]interface{}
 		if err := json.Unmarshal(catData, &indices); err == nil {
-			total := len(indices)
-			inst.DeepMetrics["total_indices"] = fmt.Sprintf("%d", total)
-
-			// Count by health
+			inst.DeepMetrics["total_indices"] = fmt.Sprintf("%d", len(indices))
 			greenCount, yellowCount, redCount := 0, 0, 0
 			for _, idx := range indices {
 				switch fmt.Sprintf("%v", idx["health"]) {
@@ -335,16 +329,15 @@ func (m *esModule) Collect(app *DetectedApp, secrets *AppSecrets) model.AppInsta
 		switch inst.DeepMetrics["status"] {
 		case "red":
 			inst.HealthScore -= 30
-			inst.HealthIssues = append(inst.HealthIssues, "cluster status RED — data loss risk or unavailability")
+			inst.HealthIssues = append(inst.HealthIssues, "cluster status RED — data loss risk")
 		case "yellow":
 			inst.HealthScore -= 10
-			inst.HealthIssues = append(inst.HealthIssues, "cluster status YELLOW — replica shards unassigned")
+			inst.HealthIssues = append(inst.HealthIssues, "cluster status YELLOW — replicas unassigned")
 		}
 		if unassigned, _ := strconv.Atoi(inst.DeepMetrics["unassigned_shards"]); unassigned > 0 {
 			inst.HealthIssues = append(inst.HealthIssues,
 				fmt.Sprintf("%d unassigned shards", unassigned))
 		}
-		// JVM heap pressure
 		if pctStr := inst.DeepMetrics["jvm_heap_used_pct"]; pctStr != "" {
 			pct, _ := strconv.ParseFloat(strings.TrimSuffix(pctStr, "%"), 64)
 			if pct > 85 {
@@ -353,13 +346,11 @@ func (m *esModule) Collect(app *DetectedApp, secrets *AppSecrets) model.AppInsta
 					fmt.Sprintf("JVM heap pressure: %s used", pctStr))
 			}
 		}
-		// Fielddata evictions
 		if ev, _ := strconv.ParseInt(inst.DeepMetrics["fielddata_evictions"], 10, 64); ev > 100 {
 			inst.HealthScore -= 10
 			inst.HealthIssues = append(inst.HealthIssues,
-				fmt.Sprintf("fielddata evictions: %d — increase fielddata cache or use doc_values", ev))
+				fmt.Sprintf("fielddata evictions: %d", ev))
 		}
-		// Red indices
 		if redCount, _ := strconv.Atoi(inst.DeepMetrics["indices_red"]); redCount > 0 {
 			inst.HealthIssues = append(inst.HealthIssues,
 				fmt.Sprintf("%d indices in RED state", redCount))
@@ -368,11 +359,17 @@ func (m *esModule) Collect(app *DetectedApp, secrets *AppSecrets) model.AppInsta
 	if inst.HealthScore < 0 {
 		inst.HealthScore = 0
 	}
-
-	return inst
 }
 
-// esGet fetches a JSON endpoint and returns parsed map.
+func esHTTPClient() *http.Client {
+	return &http.Client{
+		Timeout: 3 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
+}
+
 func esGet(client *http.Client, url, user, password string) map[string]interface{} {
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -400,7 +397,6 @@ func esGet(client *http.Client, url, user, password string) map[string]interface
 	return raw
 }
 
-// esGetRaw fetches a raw response body.
 func esGetRaw(client *http.Client, url, user, password string) []byte {
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -424,7 +420,6 @@ func esGetRaw(client *http.Client, url, user, password string) []byte {
 	return body
 }
 
-// fmtLargeNum formats a large number with K/M/B suffix.
 func fmtLargeNum(v interface{}) string {
 	var f float64
 	switch n := v.(type) {
@@ -447,7 +442,6 @@ func fmtLargeNum(v interface{}) string {
 	}
 }
 
-// fmtBytes formats byte values to human-readable.
 func fmtBytes(v interface{}) string {
 	var f float64
 	switch n := v.(type) {
@@ -460,14 +454,14 @@ func fmtBytes(v interface{}) string {
 	}
 	switch {
 	case f >= 1e12:
-		return fmt.Sprintf("%.1fTB", f/1e12)
+		return fmt.Sprintf("%.1f TB", f/1e12)
 	case f >= 1e9:
-		return fmt.Sprintf("%.1fGB", f/1e9)
+		return fmt.Sprintf("%.1f GB", f/1e9)
 	case f >= 1e6:
-		return fmt.Sprintf("%.1fMB", f/1e6)
+		return fmt.Sprintf("%.1f MB", f/1e6)
 	case f >= 1e3:
-		return fmt.Sprintf("%.1fKB", f/1e3)
+		return fmt.Sprintf("%.1f KB", f/1e3)
 	default:
-		return fmt.Sprintf("%.0fB", f)
+		return fmt.Sprintf("%.0f B", f)
 	}
 }

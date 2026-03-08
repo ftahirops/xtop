@@ -60,7 +60,7 @@ func (m *dockerModule) Collect(app *DetectedApp, _ *AppSecrets) model.AppInstanc
 
 	client := dockerClient()
 
-	// Docker API: /info
+	// Docker API: /info — daemon info
 	info := dockerInfo(client)
 	if info != nil {
 		inst.HasDeepMetrics = true
@@ -88,94 +88,148 @@ func (m *dockerModule) Collect(app *DetectedApp, _ *AppSecrets) model.AppInstanc
 		if v, ok := info["CgroupDriver"].(string); ok {
 			inst.DeepMetrics["Cgroup Driver"] = v
 		}
+		if v, ok := info["KernelVersion"].(string); ok {
+			inst.DeepMetrics["Kernel"] = v
+		}
+		if v, ok := info["OperatingSystem"].(string); ok {
+			inst.DeepMetrics["OS"] = v
+		}
+		if v, ok := info["NCPU"]; ok {
+			inst.DeepMetrics["CPUs"] = fmt.Sprintf("%.0f", toFloat(v))
+		}
+		if v, ok := info["MemTotal"]; ok {
+			inst.DeepMetrics["Total Memory"] = dockerFmtBytes(toFloat(v))
+		}
 	}
 
-	// Container list
-	containers := dockerContainerList(client)
+	// Docker API: /containers/json?all=true — container list
+	containerList := dockerContainerList(client)
 	inst.HealthScore = 100
 
-	running := 0
-	unhealthy := 0
-	crashed := 0
-
-	for i, c := range containers {
-		if i >= 30 {
+	for i, c := range containerList {
+		if i >= 50 {
 			break
 		}
 
-		name := ""
+		dc := model.AppDockerContainer{}
+
+		if id, ok := c["Id"].(string); ok {
+			dc.ID = id
+			if len(dc.ID) > 12 {
+				dc.ID = dc.ID[:12]
+			}
+		}
 		if names, ok := c["Names"].([]interface{}); ok && len(names) > 0 {
-			name = strings.TrimPrefix(fmt.Sprintf("%v", names[0]), "/")
+			dc.Name = strings.TrimPrefix(fmt.Sprintf("%v", names[0]), "/")
+		}
+		if img, ok := c["Image"].(string); ok {
+			dc.Image = img
+		}
+		if state, ok := c["State"].(string); ok {
+			dc.State = state
+		}
+		if status, ok := c["Status"].(string); ok {
+			dc.Status = status
 		}
 
-		state, _ := c["State"].(string)
-		status, _ := c["Status"].(string)
-
-		if state == "running" {
-			running++
-		}
-
-		// Container health check
-		if strings.Contains(status, "(unhealthy)") {
-			unhealthy++
+		// Health check
+		if strings.Contains(dc.Status, "(unhealthy)") {
+			dc.Health = "unhealthy"
 			inst.HealthScore -= 10
 			inst.HealthIssues = append(inst.HealthIssues,
-				fmt.Sprintf("container '%s' is unhealthy", name))
+				fmt.Sprintf("container '%s' is unhealthy", dc.Name))
+		} else if strings.Contains(dc.Status, "(healthy)") {
+			dc.Health = "healthy"
+		} else {
+			dc.Health = "—"
 		}
 
-		// Crashed containers (non-zero exit)
-		if state == "exited" && strings.Contains(status, "Exited (") {
+		// Crashed containers
+		if dc.State == "exited" {
 			var code int
-			if _, err := fmt.Sscanf(status, "Exited (%d)", &code); err == nil && code != 0 {
-				crashed++
-				inst.HealthScore -= 5
-				inst.HealthIssues = append(inst.HealthIssues,
-					fmt.Sprintf("container '%s' exited with code %d", name, code))
+			if _, err := fmt.Sscanf(dc.Status, "Exited (%d)", &code); err == nil {
+				dc.ExitCode = code
+				if code != 0 {
+					inst.HealthScore -= 5
+					inst.HealthIssues = append(inst.HealthIssues,
+						fmt.Sprintf("container '%s' exited with code %d", dc.Name, code))
+				}
 			}
 		}
 
-		// Per-container stats for running containers
-		if state == "running" {
-			if id, ok := c["Id"].(string); ok {
-				stats := dockerContainerStats(client, id)
+		// Per-container stats (running only)
+		if dc.State == "running" {
+			if fullID, ok := c["Id"].(string); ok {
+				stats := dockerContainerStats(client, fullID)
 				if stats != nil {
-					cpuPct := dockerCalcCPU(stats)
-					memUsed := 0.0
-					memLimit := 0.0
-					if memStats, ok := stats["memory_stats"].(map[string]interface{}); ok {
-						memUsed = toFloat(memStats["usage"])
-						memLimit = toFloat(memStats["limit"])
-					}
+					dc.CPUPct = dockerCalcCPU(stats)
 
-					memStr := dockerFmtBytes(memUsed)
-					if memLimit > 0 && memLimit < 1e18 { // reasonable limit (not unlimited)
-						memStr += " / " + dockerFmtBytes(memLimit)
-						pct := memUsed / memLimit * 100
-						memStr += fmt.Sprintf(" (%.0f%%)", pct)
-						if pct > 90 {
-							inst.HealthIssues = append(inst.HealthIssues,
-								fmt.Sprintf("container '%s' memory at %.0f%%", name, pct))
+					if memStats, ok := stats["memory_stats"].(map[string]interface{}); ok {
+						dc.MemUsedBytes = toFloat(memStats["usage"])
+						dc.MemLimitBytes = toFloat(memStats["limit"])
+						if dc.MemLimitBytes > 0 && dc.MemLimitBytes < 1e18 {
+							dc.MemPct = dc.MemUsedBytes / dc.MemLimitBytes * 100
+						}
+						if dc.MemPct > 90 {
 							inst.HealthScore -= 5
+							inst.HealthIssues = append(inst.HealthIssues,
+								fmt.Sprintf("container '%s' memory at %.0f%%", dc.Name, dc.MemPct))
 						}
 					}
 
-					label := fmt.Sprintf("[%s]", name)
-					inst.DeepMetrics[label+" CPU"] = fmt.Sprintf("%.1f%%", cpuPct)
-					inst.DeepMetrics[label+" Memory"] = memStr
-					inst.DeepMetrics[label+" Status"] = status
+					// Network I/O
+					if networks, ok := stats["networks"].(map[string]interface{}); ok {
+						for _, iface := range networks {
+							if nd, ok := iface.(map[string]interface{}); ok {
+								dc.NetRxBytes += toFloat(nd["rx_bytes"])
+								dc.NetTxBytes += toFloat(nd["tx_bytes"])
+							}
+						}
+					}
+
+					// Block I/O
+					if blkio, ok := stats["blkio_stats"].(map[string]interface{}); ok {
+						if entries, ok := blkio["io_service_bytes_recursive"].([]interface{}); ok {
+							for _, entry := range entries {
+								e, ok := entry.(map[string]interface{})
+								if !ok {
+									continue
+								}
+								op, _ := e["op"].(string)
+								val := toFloat(e["value"])
+								switch strings.ToLower(op) {
+								case "read":
+									dc.BlockRead += val
+								case "write":
+									dc.BlockWrite += val
+								}
+							}
+						}
+					}
+
+					// PIDs
+					if pidStats, ok := stats["pids_stats"].(map[string]interface{}); ok {
+						dc.PIDs = int(toFloat(pidStats["current"]))
+					}
 				}
 			}
-		} else {
-			label := fmt.Sprintf("[%s]", name)
-			inst.DeepMetrics[label+" Status"] = status
 		}
-	}
 
-	if unhealthy > 0 {
-		inst.DeepMetrics["Unhealthy Containers"] = fmt.Sprintf("%d", unhealthy)
-	}
-	if crashed > 0 {
-		inst.DeepMetrics["Crashed Containers"] = fmt.Sprintf("%d", crashed)
+		// Restart count from container inspect
+		if fullID, ok := c["Id"].(string); ok {
+			if inspect := dockerInspect(client, fullID); inspect != nil {
+				if state, ok := inspect["State"].(map[string]interface{}); ok {
+					if rc, ok := state["RestartCount"]; ok {
+						dc.RestartCount = int(toFloat(rc))
+					}
+				}
+				if rc, ok := inspect["RestartCount"]; ok {
+					dc.RestartCount = int(toFloat(rc))
+				}
+			}
+		}
+
+		inst.Containers = append(inst.Containers, dc)
 	}
 
 	if inst.HealthScore < 0 {
@@ -193,13 +247,12 @@ func dockerClient() *http.Client {
 				return net.Dial("unix", "/var/run/docker.sock")
 			},
 		},
-		Timeout: 10 * time.Second,
+		Timeout: 15 * time.Second,
 	}
 }
 
-// dockerInfo calls GET /info on the Docker API.
-func dockerInfo(client *http.Client) map[string]interface{} {
-	resp, err := client.Get("http://localhost/info")
+func dockerGet(client *http.Client, path string) map[string]interface{} {
+	resp, err := client.Get("http://localhost" + path)
 	if err != nil {
 		return nil
 	}
@@ -207,7 +260,7 @@ func dockerInfo(client *http.Client) map[string]interface{} {
 	if resp.StatusCode != 200 {
 		return nil
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
 	if err != nil {
 		return nil
 	}
@@ -216,6 +269,16 @@ func dockerInfo(client *http.Client) map[string]interface{} {
 		return nil
 	}
 	return result
+}
+
+// dockerInfo calls GET /info on the Docker API.
+func dockerInfo(client *http.Client) map[string]interface{} {
+	return dockerGet(client, "/info")
+}
+
+// dockerInspect calls GET /containers/{id}/json.
+func dockerInspect(client *http.Client, id string) map[string]interface{} {
+	return dockerGet(client, fmt.Sprintf("/containers/%s/json", id))
 }
 
 // dockerContainerList calls GET /containers/json?all=true.
@@ -241,23 +304,7 @@ func dockerContainerList(client *http.Client) []map[string]interface{} {
 
 // dockerContainerStats calls GET /containers/{id}/stats?stream=false.
 func dockerContainerStats(client *http.Client, id string) map[string]interface{} {
-	resp, err := client.Get(fmt.Sprintf("http://localhost/containers/%s/stats?stream=false", id))
-	if err != nil {
-		return nil
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		return nil
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
-	if err != nil {
-		return nil
-	}
-	var result map[string]interface{}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil
-	}
-	return result
+	return dockerGet(client, fmt.Sprintf("/containers/%s/stats?stream=false", id))
 }
 
 // dockerCalcCPU calculates CPU% from Docker stats response.
@@ -270,7 +317,6 @@ func dockerCalcCPU(stats map[string]interface{}) float64 {
 	if !ok {
 		return 0
 	}
-
 	cpuUsage, ok := cpuStats["cpu_usage"].(map[string]interface{})
 	if !ok {
 		return 0
@@ -282,7 +328,6 @@ func dockerCalcCPU(stats map[string]interface{}) float64 {
 
 	cpuDelta := toFloat(cpuUsage["total_usage"]) - toFloat(preCPUUsage["total_usage"])
 	sysDelta := toFloat(cpuStats["system_cpu_usage"]) - toFloat(preCPUStats["system_cpu_usage"])
-
 	if sysDelta <= 0 || cpuDelta < 0 {
 		return 0
 	}
@@ -293,7 +338,6 @@ func dockerCalcCPU(stats map[string]interface{}) float64 {
 			numCPU = v
 		}
 	}
-
 	return (cpuDelta / sysDelta) * numCPU * 100.0
 }
 

@@ -29,6 +29,30 @@ type AppInstance struct {
 	// Config
 	ConfigPath string `json:"config_path,omitempty"`
 	NeedsCreds bool   `json:"needs_creds"`
+
+	// Docker containers (only for Docker app type)
+	Containers []AppDockerContainer `json:"containers,omitempty"`
+}
+
+// AppDockerContainer holds per-container stats.
+type AppDockerContainer struct {
+	ID            string  `json:"id"`
+	Name          string  `json:"name"`
+	Image         string  `json:"image"`
+	State         string  `json:"state"`          // running, exited, paused, etc.
+	Status        string  `json:"status"`         // "Up 7 weeks", "Exited (0) 12 months ago"
+	Health        string  `json:"health"`         // healthy, unhealthy, none
+	CPUPct        float64 `json:"cpu_pct"`
+	MemUsedBytes  float64 `json:"mem_used_bytes"`
+	MemLimitBytes float64 `json:"mem_limit_bytes"`
+	MemPct        float64 `json:"mem_pct"`
+	NetRxBytes    float64 `json:"net_rx_bytes"`
+	NetTxBytes    float64 `json:"net_tx_bytes"`
+	BlockRead     float64 `json:"block_read"`
+	BlockWrite    float64 `json:"block_write"`
+	PIDs          int     `json:"pids"`
+	RestartCount  int     `json:"restart_count"`
+	ExitCode      int     `json:"exit_code"`
 }
 
 // AppMetrics holds all detected application instances.
