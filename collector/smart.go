@@ -11,7 +11,8 @@ import (
 	"github.com/ftahirops/xtop/model"
 )
 
-// SMARTCollector runs smartctl periodically and caches results.
+// SMARTCollector runs disk health collection periodically and caches results.
+// It tries direct kernel ioctls first (NVMe, SATA), then falls back to smartctl.
 type SMARTCollector struct {
 	mu       sync.RWMutex
 	disks    []model.SMARTDisk
@@ -24,7 +25,7 @@ func NewSMARTCollector(interval time.Duration) *SMARTCollector {
 	return &SMARTCollector{interval: interval}
 }
 
-// Get returns cached SMART data, refreshing if stale.
+// Get returns cached disk health data, refreshing if stale.
 func (s *SMARTCollector) Get() []model.SMARTDisk {
 	s.mu.RLock()
 	if time.Since(s.lastRun) < s.interval && len(s.disks) > 0 {
@@ -43,10 +44,33 @@ func (s *SMARTCollector) Get() []model.SMARTDisk {
 		return s.disks
 	}
 
-	s.disks = collectSMART()
+	s.disks = s.collect()
 	s.lastRun = time.Now()
 	return s.disks
 }
+
+func (s *SMARTCollector) collect() []model.SMARTDisk {
+	// Track which devices were already covered by ioctl
+	covered := make(map[string]bool)
+
+	// Layer 1: Direct ioctl (no external tools needed)
+	ioctlDisks := CollectDiskHealth()
+	for _, d := range ioctlDisks {
+		covered[d.Name] = true
+	}
+
+	// Layer 2: smartctl fallback for any devices not covered
+	smartctlDisks := collectSMARTctl()
+	for _, d := range smartctlDisks {
+		if !covered[d.Name] {
+			ioctlDisks = append(ioctlDisks, d)
+		}
+	}
+
+	return ioctlDisks
+}
+
+// ── smartctl fallback ───────────────────────────────────────────────────────
 
 // smartctlJSON is the relevant subset of smartctl --json output.
 type smartctlJSON struct {
@@ -58,6 +82,7 @@ type smartctlJSON struct {
 	} `json:"device"`
 	ModelFamily string `json:"model_family"`
 	ModelName   string `json:"model_name"`
+	SerialNumber string `json:"serial_number"`
 	SmartStatus struct {
 		Passed bool `json:"passed"`
 	} `json:"smart_status"`
@@ -73,24 +98,31 @@ type smartctlJSON struct {
 			Name  string `json:"name"`
 			Value int    `json:"value"`
 			Raw   struct {
-				Value int `json:"value"`
+				Value int    `json:"value"`
+				Str   string `json:"string"`
 			} `json:"raw"`
 		} `json:"table"`
 	} `json:"ata_smart_attributes"`
 	NVMeSmartHealthLog struct {
-		PercentageUsed int `json:"percentage_used"`
-		Temperature    int `json:"temperature"`
+		PercentageUsed        int `json:"percentage_used"`
+		Temperature           int `json:"temperature"`
+		AvailableSpare        int `json:"available_spare"`
+		AvailableSpareThreshold int `json:"available_spare_threshold"`
+		MediaErrors           int `json:"media_errors"`
+		DataUnitsWritten      int `json:"data_units_written"`
+		DataUnitsRead         int `json:"data_units_read"`
+		PowerOnHours          int `json:"power_on_hours"`
+		UnsafeShutdowns       int `json:"unsafe_shutdowns"`
+		CriticalWarning       int `json:"critical_warning"`
 	} `json:"nvme_smart_health_information_log"`
 }
 
-func collectSMART() []model.SMARTDisk {
-	// Check if smartctl exists
+func collectSMARTctl() []model.SMARTDisk {
 	path, err := exec.LookPath("smartctl")
 	if err != nil {
 		return nil
 	}
 
-	// Scan for devices (with timeout)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	scanOut, err := exec.CommandContext(ctx, path, "--scan", "--json").Output()
@@ -121,11 +153,15 @@ func collectSMART() []model.SMARTDisk {
 
 func querySMARTDevice(smartctlPath, device, devType string) model.SMARTDisk {
 	disk := model.SMARTDisk{
-		Device:       device,
-		WearLevelPct: -1,
+		Device:                  device,
+		WearLevelPct:            -1,
+		PercentUsed:             -1,
+		AvailableSpare:          -1,
+		AvailableSpareThreshold: -1,
+		EstLifeDays:             -1,
+		Source:                  "smartctl",
 	}
 
-	// Extract short name: /dev/sda -> sda, /dev/nvme0n1 -> nvme0n1
 	parts := strings.Split(device, "/")
 	disk.Name = parts[len(parts)-1]
 
@@ -138,7 +174,6 @@ func querySMARTDevice(smartctlPath, device, devType string) model.SMARTDisk {
 	defer cancel()
 	out, err := exec.CommandContext(ctx, smartctlPath, args...).Output()
 	if err != nil {
-		// smartctl returns non-zero for many non-error reasons
 		if len(out) == 0 {
 			disk.ErrorString = err.Error()
 			return disk
@@ -154,40 +189,97 @@ func querySMARTDevice(smartctlPath, device, devType string) model.SMARTDisk {
 	disk.HealthOK = data.SmartStatus.Passed
 	disk.ModelFamily = data.ModelFamily
 	disk.ModelNumber = data.ModelName
+	disk.SerialNum = data.SerialNumber
 	disk.Temperature = data.Temperature.Current
 	disk.PowerOnHours = data.PowerOnTime.Hours
 
+	// Classify disk type
+	switch {
+	case strings.Contains(strings.ToLower(data.Device.Protocol), "nvme"):
+		disk.DiskType = model.DiskTypeNVMe
+	case strings.Contains(strings.ToLower(data.Device.Type), "scsi"):
+		disk.DiskType = model.DiskTypeSCSI
+	default:
+		disk.DiskType = model.DiskTypeUnknown
+	}
+
 	// NVMe specific
-	if data.NVMeSmartHealthLog.PercentageUsed > 0 || data.NVMeSmartHealthLog.Temperature > 0 {
-		pctUsed := data.NVMeSmartHealthLog.PercentageUsed
-		if pctUsed < 0 {
-			pctUsed = 0
-		} else if pctUsed > 100 {
-			pctUsed = 100
+	nvme := data.NVMeSmartHealthLog
+	if nvme.PercentageUsed > 0 || nvme.Temperature > 0 || nvme.AvailableSpare > 0 {
+		disk.DiskType = model.DiskTypeNVMe
+		disk.PercentUsed = nvme.PercentageUsed
+		if disk.PercentUsed >= 0 && disk.PercentUsed <= 100 {
+			disk.WearLevelPct = 100 - disk.PercentUsed
 		}
-		disk.WearLevelPct = 100 - pctUsed
+		disk.AvailableSpare = nvme.AvailableSpare
+		disk.AvailableSpareThreshold = nvme.AvailableSpareThreshold
+		disk.CriticalWarning = uint8(nvme.CriticalWarning)
+		disk.MediaErrors = uint64(nvme.MediaErrors)
+		disk.UnsafeShutdowns = uint64(nvme.UnsafeShutdowns)
+		disk.DataUnitsWritten = uint64(nvme.DataUnitsWritten)
+		disk.TotalBytesWritten = disk.DataUnitsWritten * 1000 * 512
+		disk.TotalBytesRead = uint64(nvme.DataUnitsRead) * 1000 * 512
 		if disk.Temperature == 0 {
-			disk.Temperature = data.NVMeSmartHealthLog.Temperature
+			disk.Temperature = nvme.Temperature
+		}
+		if nvme.PowerOnHours > 0 {
+			disk.PowerOnHours = nvme.PowerOnHours
 		}
 	}
 
 	// ATA SMART attributes
 	for _, attr := range data.ATASmartAttributes.Table {
 		switch attr.ID {
-		case 5: // Reallocated_Sector_Ct
+		case 5:
 			disk.ReallocSectors = attr.Raw.Value
-		case 197: // Current_Pending_Sector
-			disk.PendingSectors = attr.Raw.Value
-		case 177, 231: // Wear_Leveling_Count / SSD_Life_Left
+		case 9:
+			if disk.PowerOnHours == 0 {
+				disk.PowerOnHours = attr.Raw.Value
+			}
+		case 177, 231:
 			if attr.Value > 0 && attr.Value <= 100 {
 				disk.WearLevelPct = attr.Value
+				disk.PercentUsed = 100 - attr.Value
+				if disk.DiskType == model.DiskTypeUnknown {
+					disk.DiskType = model.DiskTypeSATASSD
+				}
 			}
-		case 194: // Temperature_Celsius
+		case 233:
+			if attr.Value > 0 && attr.Value <= 100 && disk.WearLevelPct < 0 {
+				disk.WearLevelPct = attr.Value
+				disk.PercentUsed = 100 - attr.Value
+				if disk.DiskType == model.DiskTypeUnknown {
+					disk.DiskType = model.DiskTypeSATASSD
+				}
+			}
+		case 194:
 			if disk.Temperature == 0 {
-				disk.Temperature = attr.Raw.Value
+				disk.Temperature = attr.Raw.Value & 0xFF
 			}
+		case 197:
+			disk.PendingSectors = attr.Raw.Value
+		case 241:
+			disk.TotalBytesWritten = uint64(attr.Raw.Value) * 512
+		case 242:
+			disk.TotalBytesRead = uint64(attr.Raw.Value) * 512
 		}
 	}
+
+	// Classify HDD if no SSD attributes found and type still unknown
+	if disk.DiskType == model.DiskTypeUnknown && disk.WearLevelPct < 0 {
+		disk.DiskType = model.DiskTypeSATAHDD
+	}
+
+	// Compute write stats
+	if disk.TotalBytesWritten > 0 {
+		disk.WriteTBW = float64(disk.TotalBytesWritten) / (1024.0 * 1024 * 1024 * 1024)
+	}
+	if disk.PowerOnHours > 0 && disk.WriteTBW > 0 {
+		hoursPerYear := 365.25 * 24
+		disk.WriteRateTBPerYear = disk.WriteTBW / (float64(disk.PowerOnHours) / hoursPerYear)
+	}
+
+	computeEstLife(&disk)
 
 	return disk
 }
