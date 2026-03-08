@@ -7,6 +7,7 @@ import (
 	"github.com/ftahirops/xtop/collector"
 	cgcollector "github.com/ftahirops/xtop/collector/cgroup"
 	bpf "github.com/ftahirops/xtop/collector/ebpf"
+	"github.com/ftahirops/xtop/collector/apps"
 	rt "github.com/ftahirops/xtop/collector/runtime"
 	"github.com/ftahirops/xtop/model"
 )
@@ -45,6 +46,24 @@ func NewEngine(historySize, intervalSec int) *Engine {
 	rtm.Register(rt.NewNodeModule())
 	rtm.Register(rt.NewGoModule())
 	reg.Add(rtm)
+
+	// App diagnostics — auto-detect and monitor running applications
+	appm := apps.NewManager()
+	appm.Register(apps.NewNginxModule())
+	appm.Register(apps.NewApacheModule())
+	appm.Register(apps.NewHAProxyModule())
+	appm.Register(apps.NewCaddyModule())
+	appm.Register(apps.NewTraefikModule())
+	appm.Register(apps.NewMySQLModule())
+	appm.Register(apps.NewPostgreSQLModule())
+	appm.Register(apps.NewMongoModule())
+	appm.Register(apps.NewRedisModule())
+	appm.Register(apps.NewMemcachedModule())
+	appm.Register(apps.NewESModule())
+	appm.Register(apps.NewRabbitMQModule())
+	appm.Register(apps.NewKafkaModule())
+	appm.Register(apps.NewDockerModule())
+	reg.Add(appm)
 
 	return &Engine{
 		registry:      reg,

@@ -145,6 +145,18 @@ var securityGlossary = []ExplainEntry{
 	{"Module Load", "Kernel module loaded at runtime. Rootkits use this for persistence.", "0", "> 0"},
 }
 
+var appsGlossary = []ExplainEntry{
+	{"Health Score", "Composite health rating for detected application.", "100", "< 50"},
+	{"Deep Metrics", "Protocol-level metrics from connecting to the app.", "enabled", "needs creds"},
+	{"Hit Ratio", "Cache hit rate for Redis/Memcached.", "> 90%", "< 80%"},
+	{"Evictions", "Keys evicted from cache due to memory pressure.", "0", "> 0"},
+	{"Connections", "Active TCP connections to the application port.", "normal", "near limit"},
+	{"Workers", "Child/worker processes (Nginx, Apache, HAProxy).", "configured", "fewer than expected"},
+	{"Blocked Clients", "Redis clients blocked on BLPOP/BRPOP/WAIT.", "0", "> 0"},
+	{"Replication", "Database replication lag or status.", "synced", "lagging/broken"},
+	{"Secrets File", "Credentials file at ~/.config/xtop/secrets.json.", "configured", "missing"},
+}
+
 // glossaryForPage returns the appropriate glossary for the current page.
 func glossaryForPage(page Page) []ExplainEntry {
 	switch page {
@@ -166,6 +178,8 @@ func glossaryForPage(page Page) []ExplainEntry {
 		return intelGlossary
 	case PageSecurity:
 		return securityGlossary
+	case PageApps:
+		return appsGlossary
 	default:
 		return nil
 	}

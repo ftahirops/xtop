@@ -36,10 +36,11 @@ const (
 	PageDiag
 	PageIntel
 	PageProxmox
+	PageApps
 	pageCount
 )
 
-var pageNames = []string{"Overview", "CPU", "Memory", "IO", "Network", "CGroups", "Timeline", "Events", "Probe", "Thresholds", "DiskGuard", "Security", "Logs", "Services", "Diagnostics", "Intel", "Proxmox"}
+var pageNames = []string{"Overview", "CPU", "Memory", "IO", "Network", "CGroups", "Timeline", "Events", "Probe", "Thresholds", "DiskGuard", "Security", "Logs", "Services", "Diagnostics", "Intel", "Proxmox", "Apps"}
 
 type tickMsg time.Time
 
@@ -177,6 +178,10 @@ type Model struct {
 	probeSectionCursor   int       // 0-12: highlighted section
 	probeSectionExpanded [13]bool  // which sections are expanded
 	probeAutoExpanded    bool      // auto-expand done after probe completes
+
+	// Apps page
+	appsSelectedIdx int  // cursor in app list
+	appsDetailMode  bool // true = drill-down detail view
 
 	// Network page collapsible sections
 	netSectionCursor   int      // 0-5: highlighted section
@@ -478,7 +483,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.scroll = 0
 			m.explainScroll = 0
 		case "j", "down":
-			if m.page == PageCgroups {
+			if m.page == PageApps && !m.appsDetailMode {
+				if m.snap != nil && len(m.snap.Global.Apps.Instances) > 0 {
+					m.appsSelectedIdx = (m.appsSelectedIdx + 1) % len(m.snap.Global.Apps.Instances)
+				}
+			} else if m.page == PageCgroups {
 				maxIdx := 0
 				if m.snap != nil && len(m.snap.Cgroups) > 0 {
 					maxIdx = len(m.snap.Cgroups) - 1
@@ -495,7 +504,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.scroll++
 			}
 		case "k", "up":
-			if m.page == PageCgroups {
+			if m.page == PageApps && !m.appsDetailMode {
+				if m.snap != nil && len(m.snap.Global.Apps.Instances) > 0 {
+					m.appsSelectedIdx = (m.appsSelectedIdx + len(m.snap.Global.Apps.Instances) - 1) % len(m.snap.Global.Apps.Instances)
+				}
+			} else if m.page == PageApps && m.appsDetailMode {
+				// Esc-like: go back to list
+				m.appsDetailMode = false
+				m.scroll = 0
+			} else if m.page == PageCgroups {
 				if m.cgSelected > 0 {
 					m.cgSelected--
 				}
@@ -537,6 +554,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "f6":
 			m.layoutMode = LayoutBtop
 		case "enter":
+			// Apps page: drill into detail
+			if m.page == PageApps && !m.appsDetailMode {
+				if m.snap != nil && m.appsSelectedIdx < len(m.snap.Global.Apps.Instances) {
+					m.appsDetailMode = true
+					m.scroll = 0
+				}
+				return m, nil
+			}
 			// Network page: expand/collapse section
 			if m.page == PageNetwork && !m.netFocusMode {
 				cur := m.netSectionCursor
@@ -610,6 +635,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "tab":
 			if m.explainPanelOpen {
 				m.explainFocused = !m.explainFocused
+			} else if m.page == PageApps && !m.appsDetailMode {
+				if m.snap != nil && len(m.snap.Global.Apps.Instances) > 0 {
+					m.appsSelectedIdx = (m.appsSelectedIdx + 1) % len(m.snap.Global.Apps.Instances)
+				}
 			} else if m.page == PageNetwork && !m.netFocusMode {
 				m.netSectionCursor = (m.netSectionCursor + 1) % 6
 			} else if m.page == PageProbe && m.probeManager != nil && m.probeManager.State() == engine.ProbeDone {
@@ -788,6 +817,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.scroll = 0
 				m.explainScroll = 0
 			}
+		case "y", "Y":
+			// Navigate to Apps Diagnostics page
+			m.page = PageApps
+			m.scroll = 0
+			m.appsDetailMode = false
 		case "f", "F":
 			// Network page: toggle focus mode
 			if m.page == PageNetwork {
@@ -1002,6 +1036,8 @@ func (m Model) View() string {
 				renderW, m.height)
 		case PageProxmox:
 			content = renderProxmoxPage(m.snap, m.rates, m.result, smartDisks, m.probeManager, renderW, m.height)
+		case PageApps:
+			content = renderAppsPage(m.snap, m.appsSelectedIdx, m.appsDetailMode, renderW, m.height)
 		}
 	}
 
@@ -1073,6 +1109,8 @@ func (m Model) renderStatusBar(scrollInfo string) string {
 			return "X"
 		case PageProxmox:
 			return "Z"
+		case PageApps:
+			return "Y"
 		default:
 			return fmt.Sprintf("%d", i)
 		}
