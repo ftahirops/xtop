@@ -54,106 +54,128 @@ func (m *dockerModule) Collect(app *DetectedApp, _ *AppSecrets) model.AppInstanc
 		DeepMetrics: make(map[string]string),
 	}
 
-	// Tier 1: process metrics
 	inst.RSSMB = readProcRSS(app.PID)
 	inst.Threads = readProcThreads(app.PID)
 	inst.FDs = readProcFDs(app.PID)
 
 	client := dockerClient()
 
-	// Tier 2: Docker API via unix socket
+	// Docker API: /info
 	info := dockerInfo(client)
 	if info != nil {
 		inst.HasDeepMetrics = true
 		if v, ok := info["ServerVersion"]; ok {
 			inst.Version = fmt.Sprintf("%v", v)
-			inst.DeepMetrics["version"] = inst.Version
 		}
-		for _, key := range []string{"Containers", "ContainersRunning", "ContainersStopped", "Images"} {
-			if v, ok := info[key]; ok {
-				short := strings.ToLower(strings.TrimPrefix(key, "Containers"))
-				if short == "" {
-					short = "container_count"
-				}
-				inst.DeepMetrics[short] = fmt.Sprintf("%.0f", toFloat(v))
-			}
+		if v, ok := info["Containers"]; ok {
+			inst.DeepMetrics["Total Containers"] = fmt.Sprintf("%.0f", toFloat(v))
+		}
+		if v, ok := info["ContainersRunning"]; ok {
+			inst.DeepMetrics["Running"] = fmt.Sprintf("%.0f", toFloat(v))
+		}
+		if v, ok := info["ContainersStopped"]; ok {
+			inst.DeepMetrics["Stopped"] = fmt.Sprintf("%.0f", toFloat(v))
+		}
+		if v, ok := info["ContainersPaused"]; ok {
+			inst.DeepMetrics["Paused"] = fmt.Sprintf("%.0f", toFloat(v))
+		}
+		if v, ok := info["Images"]; ok {
+			inst.DeepMetrics["Images"] = fmt.Sprintf("%.0f", toFloat(v))
+		}
+		if v, ok := info["Driver"].(string); ok {
+			inst.DeepMetrics["Storage Driver"] = v
+		}
+		if v, ok := info["CgroupDriver"].(string); ok {
+			inst.DeepMetrics["Cgroup Driver"] = v
 		}
 	}
 
-	// Fetch container list
+	// Container list
 	containers := dockerContainerList(client)
-	inst.DeepMetrics["container_list_count"] = fmt.Sprintf("%d", len(containers))
-
 	inst.HealthScore = 100
+
+	running := 0
+	unhealthy := 0
+	crashed := 0
+
 	for i, c := range containers {
-		if i >= 50 {
-			break // cap to avoid huge metric maps
+		if i >= 30 {
+			break
 		}
-		prefix := fmt.Sprintf("c_%d_", i)
 
 		name := ""
 		if names, ok := c["Names"].([]interface{}); ok && len(names) > 0 {
-			name = fmt.Sprintf("%v", names[0])
-			name = strings.TrimPrefix(name, "/")
+			name = strings.TrimPrefix(fmt.Sprintf("%v", names[0]), "/")
 		}
-		inst.DeepMetrics[prefix+"name"] = name
 
-		state := ""
-		if v, ok := c["State"].(string); ok {
-			state = v
+		state, _ := c["State"].(string)
+		status, _ := c["Status"].(string)
+
+		if state == "running" {
+			running++
 		}
-		inst.DeepMetrics[prefix+"state"] = state
 
-		status := ""
-		if v, ok := c["Status"].(string); ok {
-			status = v
+		// Container health check
+		if strings.Contains(status, "(unhealthy)") {
+			unhealthy++
+			inst.HealthScore -= 10
+			inst.HealthIssues = append(inst.HealthIssues,
+				fmt.Sprintf("container '%s' is unhealthy", name))
 		}
-		inst.DeepMetrics[prefix+"status"] = status
 
-		// Health from container inspect if available
-		health := ""
-		if v, ok := c["Status"].(string); ok {
-			if strings.Contains(v, "(unhealthy)") {
-				health = "unhealthy"
-				inst.HealthScore -= 10
-				inst.HealthIssues = append(inst.HealthIssues,
-					fmt.Sprintf("container %s is unhealthy", name))
-			} else if strings.Contains(v, "(healthy)") {
-				health = "healthy"
-			}
-		}
-		inst.DeepMetrics[prefix+"health"] = health
-
-		// Flag non-zero exit codes
+		// Crashed containers (non-zero exit)
 		if state == "exited" && strings.Contains(status, "Exited (") {
-			// Parse exit code from "Exited (N) ..."
 			var code int
 			if _, err := fmt.Sscanf(status, "Exited (%d)", &code); err == nil && code != 0 {
+				crashed++
 				inst.HealthScore -= 5
 				inst.HealthIssues = append(inst.HealthIssues,
-					fmt.Sprintf("container %s exited with code %d", name, code))
+					fmt.Sprintf("container '%s' exited with code %d", name, code))
 			}
 		}
 
-		// Fetch per-container CPU/memory stats for running containers
+		// Per-container stats for running containers
 		if state == "running" {
 			if id, ok := c["Id"].(string); ok {
 				stats := dockerContainerStats(client, id)
 				if stats != nil {
 					cpuPct := dockerCalcCPU(stats)
-					inst.DeepMetrics[prefix+"cpu_pct"] = fmt.Sprintf("%.1f", cpuPct)
-
+					memUsed := 0.0
+					memLimit := 0.0
 					if memStats, ok := stats["memory_stats"].(map[string]interface{}); ok {
-						if usage, ok := memStats["usage"]; ok {
-							inst.DeepMetrics[prefix+"mem_bytes"] = fmt.Sprintf("%.0f", toFloat(usage))
-						}
-						if limit, ok := memStats["limit"]; ok {
-							inst.DeepMetrics[prefix+"mem_limit"] = fmt.Sprintf("%.0f", toFloat(limit))
+						memUsed = toFloat(memStats["usage"])
+						memLimit = toFloat(memStats["limit"])
+					}
+
+					memStr := dockerFmtBytes(memUsed)
+					if memLimit > 0 && memLimit < 1e18 { // reasonable limit (not unlimited)
+						memStr += " / " + dockerFmtBytes(memLimit)
+						pct := memUsed / memLimit * 100
+						memStr += fmt.Sprintf(" (%.0f%%)", pct)
+						if pct > 90 {
+							inst.HealthIssues = append(inst.HealthIssues,
+								fmt.Sprintf("container '%s' memory at %.0f%%", name, pct))
+							inst.HealthScore -= 5
 						}
 					}
+
+					label := fmt.Sprintf("[%s]", name)
+					inst.DeepMetrics[label+" CPU"] = fmt.Sprintf("%.1f%%", cpuPct)
+					inst.DeepMetrics[label+" Memory"] = memStr
+					inst.DeepMetrics[label+" Status"] = status
 				}
 			}
+		} else {
+			label := fmt.Sprintf("[%s]", name)
+			inst.DeepMetrics[label+" Status"] = status
 		}
+	}
+
+	if unhealthy > 0 {
+		inst.DeepMetrics["Unhealthy Containers"] = fmt.Sprintf("%d", unhealthy)
+	}
+	if crashed > 0 {
+		inst.DeepMetrics["Crashed Containers"] = fmt.Sprintf("%d", crashed)
 	}
 
 	if inst.HealthScore < 0 {
@@ -171,7 +193,7 @@ func dockerClient() *http.Client {
 				return net.Dial("unix", "/var/run/docker.sock")
 			},
 		},
-		Timeout: 5 * time.Second,
+		Timeout: 10 * time.Second,
 	}
 }
 
@@ -275,7 +297,7 @@ func dockerCalcCPU(stats map[string]interface{}) float64 {
 	return (cpuDelta / sysDelta) * numCPU * 100.0
 }
 
-// toFloat converts a JSON number (float64) to float64 safely.
+// toFloat converts a JSON number to float64 safely.
 func toFloat(v interface{}) float64 {
 	switch n := v.(type) {
 	case float64:
@@ -286,4 +308,20 @@ func toFloat(v interface{}) float64 {
 		return float64(n)
 	}
 	return 0
+}
+
+// dockerFmtBytes formats byte values to human-readable.
+func dockerFmtBytes(b float64) string {
+	switch {
+	case b >= 1e12:
+		return fmt.Sprintf("%.1f TB", b/1e12)
+	case b >= 1e9:
+		return fmt.Sprintf("%.1f GB", b/1e9)
+	case b >= 1e6:
+		return fmt.Sprintf("%.1f MB", b/1e6)
+	case b >= 1e3:
+		return fmt.Sprintf("%.1f KB", b/1e3)
+	default:
+		return fmt.Sprintf("%.0f B", b)
+	}
 }

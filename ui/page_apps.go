@@ -50,7 +50,7 @@ func renderAppsPage(snap *model.Snapshot, selectedIdx int, detailMode bool, widt
 
 	// Table
 	colNum := 3
-	colApp := 14
+	colApp := 18
 	colPID := 8
 	colPort := 7
 	colRSS := 8
