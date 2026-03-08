@@ -105,7 +105,7 @@ func renderPveHostOverview(snap *model.Snapshot, rates *model.RateSnapshot, iw i
 	}
 
 	// CPU overview
-	cpuLine := dimStyle.Render("CPU: ")
+	cpuLine := dimStyle.Render("CPU:   ")
 	if rates != nil {
 		busyPct := rates.CPUBusyPct
 		cpuVal := fmt.Sprintf("%.1f%% busy", busyPct)
@@ -116,14 +116,27 @@ func renderPveHostOverview(snap *model.Snapshot, rates *model.RateSnapshot, iw i
 		} else {
 			cpuLine += valueStyle.Render(cpuVal)
 		}
-		cpuLine += dimStyle.Render(fmt.Sprintf("  (usr:%.0f%% sys:%.0f%% iow:%.0f%% steal:%.0f%%)",
-			rates.CPUUserPct, rates.CPUSystemPct, rates.CPUIOWaitPct, rates.CPUStealPct))
+		cpuLine += "  " + bar(busyPct, 12)
+		cpuLine += dimStyle.Render(fmt.Sprintf("  usr:%.0f%% sys:%.0f%% iow:%.0f%%",
+			rates.CPUUserPct, rates.CPUSystemPct, rates.CPUIOWaitPct))
+		// Steal — prominent if > 0
+		if rates.CPUStealPct > 0 {
+			stealStr := fmt.Sprintf("%.1f%%", rates.CPUStealPct)
+			cpuLine += "  "
+			if rates.CPUStealPct > 5 {
+				cpuLine += critStyle.Render("STEAL:" + stealStr)
+			} else if rates.CPUStealPct > 1 {
+				cpuLine += warnStyle.Render("steal:" + stealStr)
+			} else {
+				cpuLine += dimStyle.Render("steal:" + stealStr)
+			}
+		}
 	}
 	cpuLine += dimStyle.Render(fmt.Sprintf("  %d cores", cpu.NumCPUs))
 	lines = append(lines, cpuLine)
 
 	// Load average
-	loadLine := dimStyle.Render("Load: ")
+	loadLine := dimStyle.Render("Load:  ")
 	loadLine += valueStyle.Render(fmt.Sprintf("%.2f %.2f %.2f", cpu.LoadAvg.Load1, cpu.LoadAvg.Load5, cpu.LoadAvg.Load15))
 	loadLine += dimStyle.Render(fmt.Sprintf("  (%d running / %d total)", cpu.LoadAvg.Running, cpu.LoadAvg.Total))
 	lines = append(lines, loadLine)
@@ -182,27 +195,87 @@ func renderPveHostOverview(snap *model.Snapshot, rates *model.RateSnapshot, iw i
 	// VM resource allocation summary
 	totalVCPU := 0
 	totalAllocMB := 0
+	totalBalloonMinMB := 0
 	totalDiskGB := 0
+	balloonVMs := 0
 	for _, vm := range snap.Global.Proxmox.VMs {
-		totalVCPU += vm.CoresAlloc
+		totalVCPU += vm.CoresAlloc * maxInt(vm.SocketsAlloc, 1)
 		totalAllocMB += vm.MemAllocMB
+		if vm.BalloonOn {
+			balloonVMs++
+			totalBalloonMinMB += vm.BalloonMinMB
+		}
 		for _, d := range vm.DiskConfigs {
 			if d.SizeGB > 0 && !strings.Contains(d.Path, "iso") && d.Path != "none" {
 				totalDiskGB += d.SizeGB
 			}
 		}
 	}
-	allocLine := dimStyle.Render("Alloc: ")
-	allocLine += valueStyle.Render(fmt.Sprintf("%d vCPU", totalVCPU))
-	allocLine += dimStyle.Render(fmt.Sprintf(" / %d physical", cpu.NumCPUs))
-	allocLine += "  "
-	allocLine += valueStyle.Render(fmtMB(totalAllocMB))
-	allocLine += dimStyle.Render(fmt.Sprintf(" / %.1fG physical", totalGB))
-	if totalDiskGB > 0 {
-		allocLine += "  "
-		allocLine += valueStyle.Render(fmt.Sprintf("%dG disk", totalDiskGB))
+
+	// vCPU overcommit line
+	vcpuLine := dimStyle.Render("vCPU:  ")
+	vcpuLine += valueStyle.Render(fmt.Sprintf("%d allocated", totalVCPU))
+	vcpuLine += dimStyle.Render(fmt.Sprintf(" / %d physical", cpu.NumCPUs))
+	if cpu.NumCPUs > 0 {
+		ratio := float64(totalVCPU) / float64(cpu.NumCPUs)
+		ratioStr := fmt.Sprintf("%.1f:1", ratio)
+		vcpuLine += "  "
+		if ratio > 4 {
+			vcpuLine += critStyle.Render("overcommit " + ratioStr)
+		} else if ratio > 2 {
+			vcpuLine += warnStyle.Render("overcommit " + ratioStr)
+		} else if ratio > 1 {
+			vcpuLine += valueStyle.Render("overcommit " + ratioStr)
+		} else {
+			vcpuLine += okStyle.Render("no overcommit " + ratioStr)
+		}
 	}
-	lines = append(lines, allocLine)
+	lines = append(lines, vcpuLine)
+
+	// Memory allocation line
+	memAllocLine := dimStyle.Render("Alloc: ")
+	memAllocLine += valueStyle.Render(fmtMB(totalAllocMB))
+	memAllocLine += dimStyle.Render(fmt.Sprintf(" / %.1fG physical", totalGB))
+	if totalGB > 0 {
+		memCommitPct := float64(totalAllocMB) / (totalGB * 1024) * 100
+		commitStr := fmt.Sprintf("(%.0f%%)", memCommitPct)
+		memAllocLine += " "
+		if memCommitPct > 100 {
+			memAllocLine += critStyle.Render("overcommit " + commitStr)
+		} else if memCommitPct > 85 {
+			memAllocLine += warnStyle.Render(commitStr)
+		} else {
+			memAllocLine += valueStyle.Render(commitStr)
+		}
+	}
+	if totalDiskGB > 0 {
+		memAllocLine += "  " + valueStyle.Render(fmt.Sprintf("%dG disk", totalDiskGB))
+	}
+	lines = append(lines, memAllocLine)
+
+	// Balloon status
+	if balloonVMs > 0 {
+		balloonLine := dimStyle.Render("Balloon: ")
+		balloonLine += valueStyle.Render(fmt.Sprintf("%d/%d VMs", balloonVMs, len(snap.Global.Proxmox.VMs)))
+		balloonLine += dimStyle.Render("  min: ") + valueStyle.Render(fmtMB(totalBalloonMinMB))
+		balloonLine += dimStyle.Render("  max: ") + valueStyle.Render(fmtMB(totalAllocMB))
+		// Show per-VM balloon if any are running
+		for _, vm := range snap.Global.Proxmox.VMs {
+			if vm.BalloonOn && vm.Status == "running" && vm.MemBalloonMB > 0 {
+				pct := float64(vm.MemBalloonMB) / float64(vm.MemAllocMB) * 100
+				balloonLine += dimStyle.Render(fmt.Sprintf("  %s:", vm.Name))
+				bStr := fmt.Sprintf("%s/%.0f%%", fmtMB(vm.MemBalloonMB), pct)
+				if pct > 90 {
+					balloonLine += warnStyle.Render(bStr)
+				} else {
+					balloonLine += valueStyle.Render(bStr)
+				}
+			}
+		}
+		lines = append(lines, balloonLine)
+	} else {
+		lines = append(lines, dimStyle.Render("Balloon: disabled (all VMs use fixed memory)"))
+	}
 
 	return boxSection("HOST OVERVIEW", lines, iw)
 }
@@ -639,9 +712,14 @@ func renderPveVMDetail(vm model.ProxmoxVM, iw int) string {
 
 	// Config line
 	var cfgParts []string
-	cfgParts = append(cfgParts, fmt.Sprintf("%d vCPU", vm.CoresAlloc))
+	vcpu := vm.CoresAlloc * maxInt(vm.SocketsAlloc, 1)
+	cfgParts = append(cfgParts, fmt.Sprintf("%d vCPU", vcpu))
 	if vm.MemAllocMB > 0 {
-		cfgParts = append(cfgParts, fmt.Sprintf("%s RAM", fmtMB(vm.MemAllocMB)))
+		memCfg := fmt.Sprintf("%s RAM", fmtMB(vm.MemAllocMB))
+		if vm.BalloonOn {
+			memCfg += fmt.Sprintf(" (balloon min:%s)", fmtMB(vm.BalloonMinMB))
+		}
+		cfgParts = append(cfgParts, memCfg)
 	}
 	for _, d := range vm.DiskConfigs {
 		if d.SizeGB > 0 && !strings.Contains(d.Path, "iso") && d.Path != "none" {
@@ -675,8 +753,13 @@ func renderPveVMDetail(vm model.ProxmoxVM, iw int) string {
 
 	// Live metrics
 	if vm.CPUPct > 0 || vm.MemUsedMB > 0 {
-		metricsLine := fmt.Sprintf("  Live: CPU=%.1f%%  Mem=%s  IO R:%.1f/W:%.1f MB/s  Net RX:%.1f/TX:%.1f MB/s",
-			vm.CPUPct, fmtMB(vm.MemUsedMB), vm.IOReadMBs, vm.IOWriteMBs, vm.NetRxMBs, vm.NetTxMBs)
+		metricsLine := fmt.Sprintf("  Live: CPU=%.1f%%  Mem=%s", vm.CPUPct, fmtMB(vm.MemUsedMB))
+		if vm.BalloonOn && vm.MemBalloonMB > 0 && vm.MemAllocMB > 0 {
+			pct := float64(vm.MemBalloonMB) / float64(vm.MemAllocMB) * 100
+			metricsLine += fmt.Sprintf("  Balloon=%s(%.0f%%)", fmtMB(vm.MemBalloonMB), pct)
+		}
+		metricsLine += fmt.Sprintf("  IO R:%.1f/W:%.1f MB/s  Net RX:%.1f/TX:%.1f MB/s",
+			vm.IOReadMBs, vm.IOWriteMBs, vm.NetRxMBs, vm.NetTxMBs)
 		detailLines = append(detailLines, valueStyle.Render(metricsLine))
 	}
 

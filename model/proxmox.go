@@ -17,19 +17,23 @@ type ProxmoxVM struct {
 	PID    int    // KVM process PID (0 if stopped)
 
 	// Config (from .conf)
-	CoresAlloc  int
-	MemAllocMB  int
-	DiskConfigs []ProxmoxDiskConf
-	NetConfigs  []ProxmoxNetConf
+	CoresAlloc   int
+	SocketsAlloc int // CPU sockets
+	MemAllocMB   int
+	BalloonMinMB int // balloon minimum (0 = ballooning disabled)
+	BalloonOn    bool
+	DiskConfigs  []ProxmoxDiskConf
+	NetConfigs   []ProxmoxNetConf
 
 	// Live metrics (from cgroups + /proc)
-	CPUPct     float64 // current CPU% of total host
-	MemUsedMB  int     // current RSS
-	IOReadMBs  float64
-	IOWriteMBs float64
-	NetRxMBs   float64
-	NetTxMBs   float64
-	UptimeSec  int64
+	CPUPct       float64 // current CPU% of total host
+	MemUsedMB    int     // current RSS
+	MemBalloonMB int     // actual memory after ballooning (from cgroup limit or QMP)
+	IOReadMBs    float64
+	IOWriteMBs   float64
+	NetRxMBs     float64
+	NetTxMBs     float64
+	UptimeSec    int64
 }
 
 // ProxmoxDiskConf holds VM disk configuration.

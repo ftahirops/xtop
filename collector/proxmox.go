@@ -125,8 +125,17 @@ func (p *ProxmoxCollector) parseVMConfigs() []model.ProxmoxVM {
 				vm.Name = val
 			case "cores":
 				vm.CoresAlloc, _ = strconv.Atoi(val)
+			case "sockets":
+				vm.SocketsAlloc, _ = strconv.Atoi(val)
 			case "memory":
 				vm.MemAllocMB, _ = strconv.Atoi(val)
+			case "balloon":
+				bval, _ := strconv.Atoi(val)
+				if bval > 0 {
+					vm.BalloonOn = true
+					vm.BalloonMinMB = bval
+				}
+				// balloon: 0 means disabled explicitly
 			default:
 				// Disk configs: scsi0, virtio0, ide2, sata0, etc.
 				if isProxmoxDiskKey(key) {
@@ -310,8 +319,13 @@ func (p *ProxmoxCollector) collectVMLive(vm *model.ProxmoxVM, dt time.Duration) 
 		}
 	}
 
-	// CPU from cgroup
+	// Balloon memory from cgroup memory.current (actual memory assigned after ballooning)
 	scope := fmt.Sprintf("%d.scope", vm.VMID)
+	if vm.BalloonOn {
+		vm.MemBalloonMB = readCgroupMemCurrent(scope)
+	}
+
+	// CPU from cgroup
 	cpuUsage := readCgroupCPU(scope)
 	if cpuUsage > 0 {
 		prev := p.prevVMCPU[vm.VMID]
@@ -367,6 +381,25 @@ func readCgroupCPU(scope string) uint64 {
 				v, _ := strconv.ParseUint(strings.Fields(line)[1], 10, 64)
 				return v
 			}
+		}
+	}
+	return 0
+}
+
+func readCgroupMemCurrent(scope string) int {
+	paths := []string{
+		fmt.Sprintf("/sys/fs/cgroup/qemu.slice/%s/memory.current", scope),
+		fmt.Sprintf("/sys/fs/cgroup/machine.slice/qemu-%s/memory.current", scope),
+		fmt.Sprintf("/sys/fs/cgroup/machine.slice/%s/memory.current", scope),
+	}
+	for _, p := range paths {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		v, _ := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
+		if v > 0 {
+			return int(v / (1024 * 1024)) // bytes → MB
 		}
 	}
 	return 0
