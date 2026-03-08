@@ -354,21 +354,6 @@ func pageInnerW(termWidth int) int {
 	return w
 }
 
-func healthBadge(h fmt.Stringer, score int) string {
-	s := h.String()
-	switch s {
-	case "OK":
-		return okStyle.Render("OK")
-	case "INCONCLUSIVE":
-		return orangeStyle.Render("INCONCLUSIVE")
-	case "DEGRADED":
-		return warnStyle.Render("DEGRADED")
-	case "CRITICAL":
-		return critStyle.Render("CRITICAL")
-	}
-	return s
-}
-
 // pageFooter renders a consistent key-hint footer line.
 // pageKeys: page-specific bindings (can be ""). Universal keys always appended.
 func pageFooter(pageKeys string) string {

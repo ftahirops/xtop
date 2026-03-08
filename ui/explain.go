@@ -167,7 +167,7 @@ func glossaryForPage(page Page) []ExplainEntry {
 	case PageSecurity:
 		return securityGlossary
 	default:
-		return overviewGlossary
+		return nil
 	}
 }
 
@@ -201,6 +201,13 @@ func renderExplainSidePanel(page Page, result *model.AnalysisResult, width, heig
 
 	// Build all content lines first for scrolling
 	var contentLines []string
+
+	if len(glossary) == 0 {
+		msg := "No glossary for this page."
+		padded := msg + strings.Repeat(" ", maxInt(innerW-lipgloss.Width(msg), 0))
+		contentLines = append(contentLines,
+			borderStyle.Render("\u2502")+" "+dimStyle.Render(padded)+" "+borderStyle.Render("\u2502"))
+	}
 
 	for i, entry := range glossary {
 		if i > 0 {

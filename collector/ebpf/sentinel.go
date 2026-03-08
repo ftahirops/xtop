@@ -438,7 +438,7 @@ func (s *SentinelManager) Collect(snap *model.Snapshot) error {
 				key := results[i].SrcIP
 				prev := s.prevSynCount[key]
 				total := results[i].SynCount
-				delta := total
+				var delta uint64
 				if total >= prev {
 					delta = total - prev
 				}
@@ -459,7 +459,7 @@ func (s *SentinelManager) Collect(snap *model.Snapshot) error {
 				key := results[i].SrcIP
 				prev := s.prevRSTCount[key]
 				total := results[i].RSTCount
-				delta := total
+				var delta uint64
 				if total >= prev {
 					delta = total - prev
 				}
@@ -484,7 +484,7 @@ func (s *SentinelManager) Collect(snap *model.Snapshot) error {
 				}
 				prev := s.prevDNSQuery[pid]
 				total := results[i].QueryCount
-				delta := total
+				var delta uint64
 				if total >= prev {
 					delta = total - prev
 				}
@@ -512,7 +512,7 @@ func (s *SentinelManager) Collect(snap *model.Snapshot) error {
 				key := fmt.Sprintf("%d-%s", flows[i].PID, flows[i].DstIP)
 				prev := s.prevConnRate[key]
 				total := flows[i].ConnectCount
-				delta := total
+				var delta uint64
 				if total >= prev {
 					delta = total - prev
 				}
@@ -539,7 +539,7 @@ func (s *SentinelManager) Collect(snap *model.Snapshot) error {
 				key := fmt.Sprintf("%d-%s", results[i].PID, results[i].DstIP)
 				prev := s.prevOutBytes[key]
 				total := results[i].TotalBytes
-				delta := total
+				var delta uint64
 				if total >= prev {
 					delta = total - prev
 				}

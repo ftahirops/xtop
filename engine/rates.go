@@ -50,7 +50,9 @@ func computeCPURates(prev, curr *model.Snapshot, r *model.RateSnapshot) {
 	r.CPUIRQPct = pct(pt.IRQ, ct.IRQ)
 	r.CPUStealPct = pct(pt.Steal, ct.Steal)
 	r.CPUNicePct = pct(pt.Nice, ct.Nice)
-	r.CPUBusyPct = float64(ct.Active()-pt.Active()) / float64(dtotal) * 100
+	if ct.Active() >= pt.Active() {
+		r.CPUBusyPct = float64(ct.Active()-pt.Active()) / float64(dtotal) * 100
+	}
 
 	// Estimate ctx switch rate from processes
 	var prevCtx, currCtx uint64

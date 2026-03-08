@@ -661,7 +661,7 @@ func renderSecModLoadsContent(sent model.SentinelData, iw int) string {
 }
 
 func renderSecSessionsContent(iw int) string {
-	return dimStyle.Render("  Session tracking not yet implemented") + "\n"
+	return ""
 }
 
 // ── New Section 9: NETWORK THREAT OVERVIEW ──────────────────────────────────

@@ -126,7 +126,7 @@ func renderCgroupPage(snap *model.Snapshot, rates *model.RateSnapshot, result *m
 	}
 	sb.WriteString(boxSection("ALL CGROUPS", tblLines, iw))
 
-	sb.WriteString(dimStyle.Render("  [Enter] drilldown processes   [s] cycle sort   [j/k] scroll"))
+	sb.WriteString(pageFooter("s:sort j/k:scroll"))
 
 	return sb.String()
 }

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/xtop-v0.21.7-00d4aa?style=for-the-badge&logo=linux&logoColor=white" alt="version"/>
+  <img src="https://img.shields.io/badge/xtop-v0.21.8-00d4aa?style=for-the-badge&logo=linux&logoColor=white" alt="version"/>
   <img src="https://img.shields.io/badge/Go-1.21+-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="go"/>
   <img src="https://img.shields.io/badge/eBPF-Powered-ff6600?style=for-the-badge&logo=linux&logoColor=white" alt="ebpf"/>
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="license"/>
@@ -80,7 +80,7 @@ Instead of 50+ fragmented tools, xtop gives you **one unified console** that:
 | Raw metrics across 12+ tools | **Unified dashboard** — all subsystems in one view |
 | You manually correlate signals | **Automatic RCA engine** — correlates CPU, memory, IO, network, cgroups |
 | "CPU is 80%" | **"CPU Contention: api-server throttled 34% in user.slice — Confidence: 72%"** |
-| Read man pages for thresholds | **Evidence-based scoring** — 21 evidence checks, weighted formulas |
+| Read man pages for thresholds | **Evidence-based scoring** — 47+ evidence checks, weighted formulas |
 | Guess who's causing it | **Culprit attribution** — pinpoints the cgroup and PID responsible |
 | Google for remediation | **Actionable suggestions** — tells you what commands to run |
 | Lose context between snapshots | **Anomaly tracking** — "Started 62s ago, triggered by IO PSI spike" |
@@ -105,7 +105,7 @@ Instead of 50+ fragmented tools, xtop gives you **one unified console** that:
 
 ### Root-Cause Analysis Engine
 
-The heart of xtop. Four parallel bottleneck detectors continuously score system health using **21 evidence checks** across **4 independent signal groups**:
+The heart of xtop. Four parallel bottleneck detectors continuously score system health using **47+ evidence checks** across **4 independent signal groups**:
 
 | Bottleneck | Evidence Groups | What It Detects |
 |---|---|---|
@@ -116,12 +116,12 @@ The heart of xtop. Four parallel bottleneck detectors continuously score system 
 
 **Trust Gating:** A bottleneck is only reported when **2+ independent evidence groups** confirm it. This eliminates false positives from single-metric spikes. Confidence scales from 30% (2 groups) to 98% (5+ groups).
 
-### RCA Decision Engine (v0.21.7)
+### RCA Decision Engine (v0.21.8)
 
 Beyond raw signals, xtop's **decision engine** tells you EXACTLY what's wrong, why, what caused it, and what to do:
 
 - **Narrative Engine** — Human-readable root cause explanations replace raw metric names. Instead of "CPU Contention" you see *"CPU throttle cascade — cgroup limits saturating run queue"* with top evidence lines and impact summary
-- **Pattern Detection** — 18 named failure patterns (OOM Crisis, Memory-Induced IO Storm, CPU Throttle Cascade, Disk IO Saturation, VM Noisy Neighbor, Network Congestion, Socket Leak, Conntrack Exhaustion, DDoS SYN Flood, Port Scan Attack, C2 Beacon Active, Data Exfiltration, and more) checked by priority
+- **Pattern Detection** — 23 named failure patterns (OOM Crisis, Memory-Induced IO Storm, CPU Throttle Cascade, Disk IO Saturation, VM Noisy Neighbor, Network Congestion, Socket Leak, Conntrack Exhaustion, DDoS SYN Flood, Port Scan Attack, C2 Beacon Active, Data Exfiltration, and more) checked by priority
 - **Temporal Causality** — Tracks signal onset times to identify which signal fired first and builds chains like `retransmits (T+0s) → drops (T+3s) → threads blocked (T+12s)`
 - **Blame Attribution** — Top offending processes per bottleneck domain with process-specific metrics (cpu%, threads, ctxsw, mem%, RSS, IO MB/s, CLOSE_WAIT count)
 - **Security Evidence** — BPF sentinel and watchdog probes feed security-specific evidence (SYN flood, port scan, lateral movement, data exfiltration, DNS tunneling, C2 beacon) into the RCA scoring with dedicated threat score bypass
@@ -139,7 +139,7 @@ Press `e` (Explain) to see the full ROOT CAUSE → EVIDENCE → IMPACT → TEMPO
 
 ---
 
-### 15 Interactive Pages
+### 16 Interactive Pages
 
 | Key | Page | What You See |
 |---|---|---|
@@ -154,14 +154,15 @@ Press `e` (Explain) to see the full ROOT CAUSE → EVIDENCE → IMPACT → TEMPO
 | `8` | **Probe** | Real-time eBPF investigation results — off-CPU analysis, IO latency histograms, lock contention, TCP retransmit tracking |
 | `9` | **Thresholds** | Live view of all RCA threshold values vs current readings — see exactly which checks are passing/failing |
 | `D` | **DiskGuard** | Filesystem space monitor with auto-contain — SIGSTOP/SIGCONT top disk writers when mounts cross critical thresholds |
-| `L` | **Security** | eBPF network security intelligence — 11 collapsible sections with threat detection, attack analysis, flow intelligence |
+| `L` | **Security** | eBPF network security intelligence — 14 collapsible sections with threat detection, attack analysis, flow intelligence |
 | `O` | **Logs** | Live system log viewer with filtering |
 | `H` | **Services** | Active service health monitoring |
-| `W` | **Diagnostics** | System diagnostics and troubleshooting
+| `W` | **Diagnostics** | System diagnostics and troubleshooting |
+| `X` | **Intel** | Impact scores, cross-signal correlation, runtime detection, SLO status, autopilot actions, incident history |
 
-### 4 Overview Layouts
+### 6 Overview Layouts
 
-Switch instantly with `v` / `V` / `F1-F4`:
+Switch instantly with `v` / `V` / `F1-F6`:
 
 | Layout | Style | Best For |
 |---|---|---|
@@ -169,8 +170,10 @@ Switch instantly with `v` / `V` / `F1-F4`:
 | **Compact** (F2) | Dense single-column summary | Narrow terminals, quick glance |
 | **Adaptive** (F3) | Healthy=1 line, unhealthy=expanded | Busy systems with mixed health |
 | **Grid** (F4) | 2x2 subsystem dashboard | Executive overview, presentations |
+| **htop** (F5) | htop-style process list | Familiar process monitoring |
+| **btop** (F6) | btop-style resource dashboard | System resource overview |
 
-Press `D` to save your preferred layout as the default.
+Press `Ctrl+D` to save your preferred layout as the default.
 
 ---
 
@@ -196,7 +199,7 @@ When the RCA engine identifies a bottleneck but you need **process-level proof**
 
 ### eBPF Network Security Intelligence (v0.21.0+)
 
-Press `L` to open the **Security Monitor** — a dedicated page with 11 collapsible sections powered by always-on BPF sentinel probes and auto-triggered watchdog probes.
+Press `L` to open the **Security Monitor** — a dedicated page with 14 collapsible sections powered by always-on BPF sentinel probes and auto-triggered watchdog probes.
 
 **Sentinel Probes (always-on, zero-config):**
 
@@ -413,12 +416,12 @@ xtop -cron-install
 
 ```bash
 # Ubuntu/Debian (amd64)
-wget https://github.com/ftahirops/xtop/releases/download/v0.21.7/xtop_0.21.7-1_amd64.deb
-sudo dpkg -i xtop_0.21.7-1_amd64.deb
+wget https://github.com/ftahirops/xtop/releases/download/v0.21.8/xtop_0.21.8-1_amd64.deb
+sudo dpkg -i xtop_0.21.8-1_amd64.deb
 
 # RHEL/Rocky/Fedora (x86_64)
-wget https://github.com/ftahirops/xtop/releases/download/v0.21.7/xtop-0.21.7-1.x86_64.rpm
-sudo rpm -i xtop-0.21.7-1.x86_64.rpm
+wget https://github.com/ftahirops/xtop/releases/download/v0.21.8/xtop-0.21.8-1.x86_64.rpm
+sudo rpm -i xtop-0.21.8-1.x86_64.rpm
 ```
 
 ### Build from Source
@@ -426,7 +429,7 @@ sudo rpm -i xtop-0.21.7-1.x86_64.rpm
 ```bash
 git clone https://github.com/ftahirops/xtop.git
 cd xtop
-CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.21.7" -o xtop .
+CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.21.8" -o xtop .
 sudo install -m 755 xtop /usr/local/bin/xtop
 ```
 
@@ -458,15 +461,15 @@ sudo xtop -json | jq   # JSON for scripting
 ### From .deb Package (Ubuntu 22.04/24.04, Debian)
 
 ```bash
-wget https://github.com/ftahirops/xtop/releases/download/v0.21.7/xtop_0.21.7-1_amd64.deb
-sudo dpkg -i xtop_0.21.7-1_amd64.deb
+wget https://github.com/ftahirops/xtop/releases/download/v0.21.8/xtop_0.21.8-1_amd64.deb
+sudo dpkg -i xtop_0.21.8-1_amd64.deb
 ```
 
 ### From .rpm Package (Rocky Linux, RHEL, AlmaLinux, Fedora)
 
 ```bash
-wget https://github.com/ftahirops/xtop/releases/download/v0.21.7/xtop-0.21.7-1.x86_64.rpm
-sudo rpm -i xtop-0.21.7-1.x86_64.rpm
+wget https://github.com/ftahirops/xtop/releases/download/v0.21.8/xtop-0.21.8-1.x86_64.rpm
+sudo rpm -i xtop-0.21.8-1.x86_64.rpm
 ```
 
 ### From Source
@@ -474,7 +477,7 @@ sudo rpm -i xtop-0.21.7-1.x86_64.rpm
 ```bash
 git clone https://github.com/ftahirops/xtop.git
 cd xtop
-CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.21.7" -o xtop .
+CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.21.8" -o xtop .
 sudo install -m 755 xtop /usr/local/bin/xtop
 ```
 
@@ -518,8 +521,8 @@ Shell Widget:
   -tmux-status      Output tmux-formatted status segment
 
 Options:
-  -interval N       Collection interval in seconds (default: 1)
-  -history N        Snapshots to keep in ring buffer (default: 300)
+  -interval N       Collection interval in seconds (default: 3)
+  -history N        Snapshots to keep in ring buffer (default: 600)
   -section NAME     Section for -watch mode (overview,cpu,mem,io,net,cgroup,rca)
   -count N          Iterations for -watch and -doctor -watch (0 = infinite)
   -datadir PATH     Data directory for daemon mode (default: ~/.xtop/)

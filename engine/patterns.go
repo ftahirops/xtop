@@ -188,7 +188,7 @@ var patternLibrary = []Pattern{
 			{EvidenceID: "net.conntrack"},
 			{EvidenceID: "net.drops"},
 		},
-		MinMatch:  1,
+		MinMatch:  2,
 		Narrative: "Conntrack exhaustion — connection tracking table saturated",
 	},
 	{

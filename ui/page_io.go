@@ -48,7 +48,7 @@ func renderIOPage(snap *model.Snapshot, rates *model.RateSnapshot, result *model
 			"DEVICE", "READ MB/s", "WRITE MB/s", "R IOPS", "W IOPS", "AWAIT", "UTIL%", "QDEP")))
 
 		for _, d := range rates.DiskRates {
-			utilBar := bar(d.UtilPct, 8)
+			utilBar := styledPad(bar(d.UtilPct, 8), 8)
 			row := fmt.Sprintf("%-8s %9.1f %10.1f %8.0f %8.0f %7.1fms %s %5d",
 				d.Name, d.ReadMBs, d.WriteMBs, d.ReadIOPS, d.WriteIOPS, d.AvgAwaitMs, utilBar, d.QueueDepth)
 			if d.UtilPct > 90 || d.AvgAwaitMs > 50 {

@@ -112,7 +112,7 @@ func renderEventsPage(active *model.Event, completed []model.Event, selected int
 	}
 
 	sb.WriteString("\n")
-	sb.WriteString(dimStyle.Render("  j/k: navigate  Enter: jump to bottleneck page  E: export markdown"))
+	sb.WriteString(pageFooter("j/k:navigate Enter:jump E:export"))
 
 	return sb.String()
 }

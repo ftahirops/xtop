@@ -212,6 +212,9 @@ func RunProbeCtx(ctx context.Context, duration time.Duration) (*ProbeResults, er
 				}
 				// Sort by average RTT descending
 				sort.Slice(r, func(i, j int) bool {
+					if r[i].Count == 0 || r[j].Count == 0 {
+						return r[i].Count > r[j].Count
+					}
 					avgI := float64(r[i].SumUs) / float64(r[i].Count)
 					avgJ := float64(r[j].SumUs) / float64(r[j].Count)
 					return avgI > avgJ
@@ -247,6 +250,9 @@ func RunProbeCtx(ctx context.Context, duration time.Duration) (*ProbeResults, er
 				}
 				// Sort by average latency descending
 				sort.Slice(filtered, func(i, j int) bool {
+					if filtered[i].Count == 0 || filtered[j].Count == 0 {
+						return filtered[i].Count > filtered[j].Count
+					}
 					avgI := float64(filtered[i].TotalNs) / float64(filtered[i].Count)
 					avgJ := float64(filtered[j].TotalNs) / float64(filtered[j].Count)
 					return avgI > avgJ
