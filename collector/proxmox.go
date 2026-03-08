@@ -604,60 +604,59 @@ func (p *ProxmoxCollector) collectVMLive(vm *model.ProxmoxVM, dt time.Duration) 
 	p.prevNetBytes[tapName] = [2]uint64{rxBytes, txBytes}
 }
 
-// computeVMHealth calculates a 0-100 health score and populates HealthIssues.
+// computeVMHealth calculates a 0-100 health score based on ACTUAL DEGRADATION only.
+// Normal operations (swap usage, ballooning, memory near limit) are NOT flagged
+// unless they cause measurable performance impact (PSI pressure, OOM, throttling).
 func (p *ProxmoxCollector) computeVMHealth(vm *model.ProxmoxVM) {
 	score := 100
 	var issues []string
 
-	if vm.CPUThrottledPct > 10 {
-		score -= 15
-		issues = append(issues, fmt.Sprintf("CPU throttled %.0f%%", vm.CPUThrottledPct))
-	} else if vm.CPUThrottledPct > 1 {
-		score -= 5
-		issues = append(issues, "CPU throttled")
-	}
-
-	if vm.MemSwapMB > 100 {
-		score -= 20
-		issues = append(issues, fmt.Sprintf("VM swapping %dMB", vm.MemSwapMB))
-	}
-
+	// OOM kills — always critical, processes are dying
 	if vm.MemOOMKills > 0 {
 		score -= 30
-		issues = append(issues, fmt.Sprintf("OOM kills: %d", vm.MemOOMKills))
+		issues = append(issues, fmt.Sprintf("OOM killed %d processes — workload exceeds memory", vm.MemOOMKills))
 	}
 
-	if vm.MemLimitMB > 0 && vm.MemUsedMB > 0 {
-		pct := float64(vm.MemUsedMB) / float64(vm.MemLimitMB)
-		if pct > 0.9 {
-			score -= 15
-			issues = append(issues, fmt.Sprintf("memory near limit (%.0f%%)", pct*100))
+	// CPU throttling — only flag if significant (>10% = tasks are waiting)
+	if vm.CPUThrottledPct > 10 {
+		score -= 15
+		issues = append(issues, fmt.Sprintf("CPU throttled %.0f%% — tasks delayed by cgroup limit", vm.CPUThrottledPct))
+	}
+
+	// PSI pressure — the definitive signal that performance is degraded
+	if vm.PSICPUSome > 25 {
+		score -= 10
+		issues = append(issues, fmt.Sprintf("CPU stalled %.1f%% — processes waiting for CPU", vm.PSICPUSome))
+	}
+	if vm.PSIMemSome > 25 {
+		score -= 15
+		issues = append(issues, fmt.Sprintf("memory stalled %.1f%% — reclaim or swap causing delays", vm.PSIMemSome))
+	}
+	if vm.PSIIOSome > 25 {
+		score -= 10
+		issues = append(issues, fmt.Sprintf("IO stalled %.1f%% — disk bottleneck", vm.PSIIOSome))
+	}
+
+	// Swap is ONLY a problem if combined with memory pressure (PSI > 5)
+	// Swap alone = normal guest memory management, not an issue
+	if vm.MemSwapMB > 100 && vm.PSIMemSome > 5 {
+		score -= 10
+		issues = append(issues, fmt.Sprintf("swap %s with memory pressure — workload needs more RAM", fmtMBCollector(vm.MemSwapMB)))
+	}
+
+	// Memory near limit is ONLY a problem if OOM events are happening
+	if vm.MemLimitMB > 0 && vm.MemUsedMB > 0 && vm.MemOOMEvents > 0 {
+		pct := float64(vm.MemUsedMB) / float64(vm.MemLimitMB) * 100
+		if pct > 90 {
+			score -= 10
+			issues = append(issues, fmt.Sprintf("memory at %.0f%% of limit with OOM pressure", pct))
 		}
 	}
 
-	if vm.PSICPUSome > 25 {
-		score -= 10
-		issues = append(issues, fmt.Sprintf("CPU pressure %.1f%%", vm.PSICPUSome))
-	}
-
-	if vm.PSIMemSome > 25 {
-		score -= 15
-		issues = append(issues, fmt.Sprintf("memory pressure %.1f%%", vm.PSIMemSome))
-	}
-
-	if vm.PSIIOSome > 25 {
-		score -= 10
-		issues = append(issues, fmt.Sprintf("IO pressure %.1f%%", vm.PSIIOSome))
-	}
-
-	if vm.CPUPct > 90 {
-		score -= 10
-		issues = append(issues, "high CPU usage")
-	}
-
-	if vm.IOReadMBs+vm.IOWriteMBs > 500 {
+	// CPU saturation — only if PSI confirms it's causing delays
+	if vm.CPUPct > 95 && vm.PSICPUSome > 5 {
 		score -= 5
-		issues = append(issues, "high IO")
+		issues = append(issues, "CPU saturated — may need more vCPUs")
 	}
 
 	if score < 0 {
@@ -666,6 +665,13 @@ func (p *ProxmoxCollector) computeVMHealth(vm *model.ProxmoxVM) {
 
 	vm.HealthScore = score
 	vm.HealthIssues = issues
+}
+
+func fmtMBCollector(mb int) string {
+	if mb >= 1024 {
+		return fmt.Sprintf("%.1fG", float64(mb)/1024)
+	}
+	return fmt.Sprintf("%dM", mb)
 }
 
 func readCgroupCPU(scope string) uint64 {

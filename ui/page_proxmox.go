@@ -735,57 +735,12 @@ func renderPveVMTable(pve *model.ProxmoxMetrics, hostCPUs int, iw int) string {
 	return boxSection("VIRTUAL MACHINES", vmLines, iw)
 }
 
-// vmRootCause generates a concise root-cause explanation for a VM's health issues
+// vmRootCause returns the health issues as a single line (already computed with root cause context)
 func vmRootCause(vm model.ProxmoxVM) string {
-	// Prioritized root cause analysis — explain WHY, not just WHAT
-	var causes []string
-
-	if vm.MemOOMKills > 0 {
-		causes = append(causes, fmt.Sprintf("OOM: kernel killed %d processes — VM needs more memory or has a leak", vm.MemOOMKills))
+	if len(vm.HealthIssues) > 2 {
+		return strings.Join(vm.HealthIssues[:2], "; ")
 	}
-
-	if vm.MemSwapMB > 500 {
-		causes = append(causes, fmt.Sprintf("heavy swap (%s) — VM memory exhausted, increase allocation or reduce workload",
-			fmtMB(vm.MemSwapMB)))
-	} else if vm.MemSwapMB > 0 {
-		causes = append(causes, fmt.Sprintf("swapping %s — balloon or allocation too tight for workload",
-			fmtMB(vm.MemSwapMB)))
-	}
-
-	if vm.CPUThrottledPct > 10 {
-		causes = append(causes, fmt.Sprintf("CPU throttled %.0f%% — cgroup limit too low for workload", vm.CPUThrottledPct))
-	}
-
-	if vm.MemLimitMB > 0 && vm.MemUsedMB > 0 {
-		pct := float64(vm.MemUsedMB) / float64(vm.MemLimitMB) * 100
-		if pct > 90 {
-			causes = append(causes, fmt.Sprintf("memory at %.0f%% of limit — approaching OOM threshold", pct))
-		}
-	}
-
-	if vm.PSICPUSome > 25 {
-		causes = append(causes, fmt.Sprintf("CPU stalled %.1f%% — tasks waiting for CPU time", vm.PSICPUSome))
-	}
-	if vm.PSIMemSome > 25 {
-		causes = append(causes, fmt.Sprintf("memory pressure %.1f%% — reclaim or swap activity", vm.PSIMemSome))
-	}
-	if vm.PSIIOSome > 25 {
-		causes = append(causes, fmt.Sprintf("IO stalled %.1f%% — disk bottleneck", vm.PSIIOSome))
-	}
-
-	if vm.CPUPct > 90 {
-		causes = append(causes, "CPU saturated — may need more vCPUs")
-	}
-
-	if len(causes) == 0 {
-		return strings.Join(vm.HealthIssues, ", ")
-	}
-
-	// Show top 2 causes max for clarity
-	if len(causes) > 2 {
-		causes = causes[:2]
-	}
-	return strings.Join(causes, "; ")
+	return strings.Join(vm.HealthIssues, "; ")
 }
 
 // renderPveStorage renders the storage pools section

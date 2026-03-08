@@ -568,36 +568,40 @@ func analyzeMemory(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEnt
 		}
 	}
 
-	// Proxmox VM-level memory evidence
+	// Proxmox VM-level memory evidence — only emit when actual degradation is measured
 	if pve := curr.Global.Proxmox; pve != nil && pve.IsProxmoxHost {
 		for _, vm := range pve.VMs {
 			if vm.Status != "running" {
 				continue
 			}
+			// OOM kills — always evidence of a real problem
 			if vm.MemOOMKills > 0 {
 				r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("pve.vm.oom", model.DomainMemory,
 					float64(vm.MemOOMKills), 1, 3, false, 0.95,
 					fmt.Sprintf("VM %d (%s) OOM kills=%d", vm.VMID, vm.Name, vm.MemOOMKills), "cgroup",
 					nil, map[string]string{"vmid": fmt.Sprintf("%d", vm.VMID)}))
 			}
-			if vm.MemSwapMB > 100 {
+			// Swap only matters if PSI confirms degradation
+			if vm.MemSwapMB > 100 && vm.PSIMemSome > 5 {
 				r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("pve.vm.swap", model.DomainMemory,
 					float64(vm.MemSwapMB), 100, 1024, false, 0.8,
-					fmt.Sprintf("VM %d (%s) swap=%dMB", vm.VMID, vm.Name, vm.MemSwapMB), "cgroup",
+					fmt.Sprintf("VM %d (%s) swap=%dMB with pressure", vm.VMID, vm.Name, vm.MemSwapMB), "cgroup",
 					nil, map[string]string{"vmid": fmt.Sprintf("%d", vm.VMID)}))
 			}
-			if vm.MemLimitMB > 0 && vm.MemUsedMB > 0 {
+			// Memory near limit only matters if OOM events are happening
+			if vm.MemLimitMB > 0 && vm.MemUsedMB > 0 && vm.MemOOMEvents > 0 {
 				pct := float64(vm.MemUsedMB) / float64(vm.MemLimitMB) * 100
 				if pct > 80 {
 					r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("pve.vm.memlimit", model.DomainMemory,
 						pct, 85, 95, true, 0.75,
-						fmt.Sprintf("VM %d (%s) mem=%.0f%% of limit", vm.VMID, vm.Name, pct), "cgroup",
+						fmt.Sprintf("VM %d (%s) mem=%.0f%% of limit with OOM events", vm.VMID, vm.Name, pct), "cgroup",
 						nil, map[string]string{"vmid": fmt.Sprintf("%d", vm.VMID)}))
 				}
 			}
-			if vm.PSIMemSome > 5 {
+			// Memory PSI — direct proof of degradation
+			if vm.PSIMemSome > 10 {
 				r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("pve.vm.mempsi", model.DomainMemory,
-					vm.PSIMemSome, 10, 40, true, 0.7,
+					vm.PSIMemSome, 15, 40, true, 0.7,
 					fmt.Sprintf("VM %d (%s) mem PSI=%.1f%%", vm.VMID, vm.Name, vm.PSIMemSome), "cgroup",
 					nil, map[string]string{"vmid": fmt.Sprintf("%d", vm.VMID)}))
 			}
