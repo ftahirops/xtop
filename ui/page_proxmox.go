@@ -59,14 +59,14 @@ func renderProxmoxPage(snap *model.Snapshot, rates *model.RateSnapshot, result *
 	// === HOST OVERVIEW ===
 	sb.WriteString(renderPveHostOverview(snap, rates, iw))
 
+	// === VM STATUS TABLE (with full details) ===
+	sb.WriteString(renderPveVMTable(pve, snap.Global.CPU.NumCPUs, iw))
+
 	// === HOST NETWORK ===
 	sb.WriteString(renderPveHostNetwork(snap, rates, iw))
 
 	// === HOST DISK IO ===
 	sb.WriteString(renderPveHostDiskIO(snap, rates, smartDisks, iw))
-
-	// === VM STATUS TABLE (with full details) ===
-	sb.WriteString(renderPveVMTable(pve, snap.Global.CPU.NumCPUs, iw))
 
 	// === STORAGE POOLS ===
 	if len(pve.Storage) > 0 {
