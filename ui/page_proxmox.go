@@ -596,24 +596,23 @@ func renderPveHostDiskIO(snap *model.Snapshot, rates *model.RateSnapshot, smartD
 	return boxSection("HOST DISK & STORAGE", lines, iw)
 }
 
-// renderPveVMTable renders the VM table with full details per VM
+// renderPveVMTable renders a clean VM table — issues only shown when present with root cause
 func renderPveVMTable(pve *model.ProxmoxMetrics, hostCPUs int, iw int) string {
 	var vmLines []string
 
-	// Header row
-	hdr := fmt.Sprintf("%s %s %s %s %s %s %s %s %s",
-		styledPad(dimStyle.Render("VMID"), 6),
-		styledPad(dimStyle.Render("NAME"), 14),
-		styledPad(dimStyle.Render("ST"), 4),
-		styledPad(dimStyle.Render("HP"), 4),
-		styledPad(dimStyle.Render("vCPU"), 6),
-		styledPad(dimStyle.Render("CPU%"), 7),
-		styledPad(dimStyle.Render("MEMORY"), 22),
-		styledPad(dimStyle.Render("IO R/W"), 12),
-		dimStyle.Render("NET R/T"))
+	// Clean header
+	hdr := fmt.Sprintf(" %s %s %s %s %s %s %s %s",
+		styledPad(dimStyle.Render("VMID"), 5),
+		styledPad(dimStyle.Render("NAME"), 16),
+		styledPad(dimStyle.Render("vCPU"), 5),
+		styledPad(dimStyle.Render("CPU%"), 6),
+		styledPad(dimStyle.Render("MEMORY"), 16),
+		styledPad(dimStyle.Render("IO"), 10),
+		styledPad(dimStyle.Render("NET"), 10),
+		dimStyle.Render("HEALTH"))
 	vmLines = append(vmLines, hdr)
 
-	// Sort: running first, then stopped
+	// Sort: running first, then by VMID
 	sorted := make([]model.ProxmoxVM, len(pve.VMs))
 	copy(sorted, pve.VMs)
 	sort.Slice(sorted, func(i, j int) bool {
@@ -627,206 +626,106 @@ func renderPveVMTable(pve *model.ProxmoxMetrics, hostCPUs int, iw int) string {
 	})
 
 	for _, vm := range sorted {
+		// === Main row: essential metrics only ===
 		vmidStr := fmt.Sprintf("%d", vm.VMID)
-		nameStr := truncate(vm.Name, 13)
-
-		// Status (compact)
-		var statusStyled string
-		switch vm.Status {
-		case "running":
-			statusStyled = styledPad(okStyle.Render("UP"), 4)
-		case "stopped":
-			statusStyled = styledPad(dimStyle.Render("--"), 4)
-		case "paused":
-			statusStyled = styledPad(warnStyle.Render("PS"), 4)
-		default:
-			statusStyled = styledPad(dimStyle.Render("??"), 4)
-		}
-
-		// Health score
-		healthStr := dimStyle.Render("—")
-		if vm.Status == "running" {
-			if vm.HealthScore >= 90 {
-				healthStr = okStyle.Render(fmt.Sprintf("%d", vm.HealthScore))
-			} else if vm.HealthScore >= 60 {
-				healthStr = warnStyle.Render(fmt.Sprintf("%d", vm.HealthScore))
-			} else {
-				healthStr = critStyle.Render(fmt.Sprintf("%d", vm.HealthScore))
-			}
-		}
 
 		// vCPU
 		vcpu := vm.CoresAlloc * maxInt(vm.SocketsAlloc, 1)
-		vcpuStr := valueStyle.Render(fmt.Sprintf("%d", vcpu))
+
+		// Stopped VMs: single dim line
 		if vm.Status != "running" {
-			vcpuStr = dimStyle.Render(fmt.Sprintf("%d", vcpu))
+			// Total disk
+			totalDisk := 0
+			for _, d := range vm.DiskConfigs {
+				if d.SizeGB > 0 && !strings.Contains(d.Path, "iso") && d.Path != "none" {
+					totalDisk += d.SizeGB
+				}
+			}
+			stoppedLine := fmt.Sprintf(" %s %s %s %s %s %s %s %s",
+				styledPad(dimStyle.Render(vmidStr), 5),
+				styledPad(dimStyle.Render(truncate(vm.Name, 15)), 16),
+				styledPad(dimStyle.Render(fmt.Sprintf("%d", vcpu)), 5),
+				styledPad(dimStyle.Render("—"), 6),
+				styledPad(dimStyle.Render(fmtMB(vm.MemAllocMB)), 16),
+				styledPad(dimStyle.Render("—"), 10),
+				styledPad(dimStyle.Render("—"), 10),
+				dimStyle.Render("stopped"))
+			if totalDisk > 0 {
+				stoppedLine += dimStyle.Render(fmt.Sprintf("  %dG disk", totalDisk))
+			}
+			vmLines = append(vmLines, stoppedLine)
+			continue
 		}
 
 		// CPU%
-		cpuStr := dimStyle.Render("  —  ")
-		if vm.Status == "running" {
-			cpuFmt := fmt.Sprintf("%.1f%%", vm.CPUPct)
-			if vm.CPUPct > 80 {
-				cpuStr = critStyle.Render(cpuFmt)
-			} else if vm.CPUPct > 50 {
-				cpuStr = warnStyle.Render(cpuFmt)
-			} else {
-				cpuStr = valueStyle.Render(cpuFmt)
-			}
+		cpuStr := valueStyle.Render(fmt.Sprintf("%.1f%%", vm.CPUPct))
+		if vm.CPUPct > 80 {
+			cpuStr = critStyle.Render(fmt.Sprintf("%.1f%%", vm.CPUPct))
+		} else if vm.CPUPct > 50 {
+			cpuStr = warnStyle.Render(fmt.Sprintf("%.1f%%", vm.CPUPct))
 		}
 
-		// Memory: used/alloc + balloon
-		memStr := dimStyle.Render("   —    ")
-		if vm.Status == "running" && vm.MemUsedMB > 0 {
-			if vm.MemAllocMB > 0 {
-				pct := float64(vm.MemUsedMB) / float64(vm.MemAllocMB) * 100
-				memFmt := fmt.Sprintf("%s/%s", fmtMB(vm.MemUsedMB), fmtMB(vm.MemAllocMB))
-				if vm.BalloonOn {
-					if vm.MemBalloonMB > 0 {
-						bPct := float64(vm.MemBalloonMB) / float64(vm.MemAllocMB) * 100
-						memFmt += fmt.Sprintf(" B:%.0f%%", bPct)
-					} else {
-						memFmt += " B:on"
-					}
-				}
-				if pct > 90 {
-					memStr = critStyle.Render(memFmt)
-				} else if pct > 70 {
-					memStr = warnStyle.Render(memFmt)
-				} else {
-					memStr = valueStyle.Render(memFmt)
-				}
-			} else {
-				memStr = valueStyle.Render(fmtMB(vm.MemUsedMB))
-			}
-		} else if vm.Status != "running" && vm.MemAllocMB > 0 {
-			memFmt := fmtMB(vm.MemAllocMB)
-			if vm.BalloonOn {
-				memFmt += fmt.Sprintf(" B:%s", fmtMB(vm.BalloonMinMB))
-			}
-			memStr = dimStyle.Render(memFmt)
+		// Memory: compact used/alloc
+		memFmt := fmt.Sprintf("%s/%s", fmtMB(vm.MemUsedMB), fmtMB(vm.MemAllocMB))
+		memPct := 0.0
+		if vm.MemAllocMB > 0 {
+			memPct = float64(vm.MemUsedMB) / float64(vm.MemAllocMB) * 100
+		}
+		memStr := valueStyle.Render(memFmt)
+		if memPct > 90 {
+			memStr = critStyle.Render(memFmt)
+		} else if memPct > 70 {
+			memStr = warnStyle.Render(memFmt)
 		}
 
-		// IO
-		ioStr := dimStyle.Render("   —   ")
-		if vm.Status == "running" && (vm.IOReadMBs > 0.01 || vm.IOWriteMBs > 0.01) {
+		// IO: only show if active
+		ioStr := dimStyle.Render("—")
+		if vm.IOReadMBs > 0.01 || vm.IOWriteMBs > 0.01 {
 			ioStr = valueStyle.Render(fmt.Sprintf("%.1f/%.1f", vm.IOReadMBs, vm.IOWriteMBs))
 		}
 
-		// Net
-		netStr := dimStyle.Render("   —   ")
-		if vm.Status == "running" && (vm.NetRxMBs > 0.001 || vm.NetTxMBs > 0.001) {
+		// Net: only show if active
+		netStr := dimStyle.Render("—")
+		if vm.NetRxMBs > 0.001 || vm.NetTxMBs > 0.001 {
 			netStr = valueStyle.Render(fmt.Sprintf("%.1f/%.1f", vm.NetRxMBs, vm.NetTxMBs))
 		}
 
-		line := fmt.Sprintf("%s %s %s %s %s %s %s %s %s",
-			styledPad(valueStyle.Render(vmidStr), 6),
-			styledPad(nameStr, 14),
-			statusStyled,
-			styledPad(healthStr, 4),
-			styledPad(vcpuStr, 6),
-			styledPad(cpuStr, 7),
-			styledPad(memStr, 22),
-			styledPad(ioStr, 12),
-			netStr)
+		// Health badge
+		healthBadge := okStyle.Render(fmt.Sprintf("● %d", vm.HealthScore))
+		if vm.HealthScore < 60 {
+			healthBadge = critStyle.Render(fmt.Sprintf("● %d", vm.HealthScore))
+		} else if vm.HealthScore < 90 {
+			healthBadge = warnStyle.Render(fmt.Sprintf("● %d", vm.HealthScore))
+		}
+
+		// Uptime (compact)
+		uptimeStr := ""
+		if vm.UptimeSec > 0 {
+			uptimeStr = "  " + dimStyle.Render(fmtUptime(vm.UptimeSec))
+		}
+
+		line := fmt.Sprintf(" %s %s %s %s %s %s %s %s%s",
+			styledPad(valueStyle.Render(vmidStr), 5),
+			styledPad(truncate(vm.Name, 15), 16),
+			styledPad(valueStyle.Render(fmt.Sprintf("%d", vcpu)), 5),
+			styledPad(cpuStr, 6),
+			styledPad(memStr, 16),
+			styledPad(ioStr, 10),
+			styledPad(netStr, 10),
+			healthBadge,
+			uptimeStr)
 		vmLines = append(vmLines, line)
 
-		// Detail line: health issues, PSI, throttle, config
-		var details []string
-
-		// Health issues (most important)
-		if vm.Status == "running" && len(vm.HealthIssues) > 0 {
-			issueStr := strings.Join(vm.HealthIssues, ", ")
-			if len(issueStr) > 60 {
-				issueStr = issueStr[:57] + "..."
-			}
+		// === Issue line: ONLY if health < 100 — show WHY ===
+		if len(vm.HealthIssues) > 0 {
+			why := vmRootCause(vm)
+			issueStyle := warnStyle
 			if vm.HealthScore < 60 {
-				details = append(details, critStyle.Render(issueStr))
-			} else {
-				details = append(details, warnStyle.Render(issueStr))
+				issueStyle = critStyle
 			}
-		}
-
-		// PSI per VM (if any pressure)
-		if vm.Status == "running" && (vm.PSICPUSome > 0.5 || vm.PSIMemSome > 0.5 || vm.PSIIOSome > 0.5) {
-			psiParts := []string{}
-			if vm.PSICPUSome > 0.5 {
-				psiParts = append(psiParts, "cpu="+psiStr(vm.PSICPUSome))
-			}
-			if vm.PSIMemSome > 0.5 {
-				psiParts = append(psiParts, "mem="+psiStr(vm.PSIMemSome))
-			}
-			if vm.PSIIOSome > 0.5 {
-				psiParts = append(psiParts, "io="+psiStr(vm.PSIIOSome))
-			}
-			details = append(details, dimStyle.Render("PSI:")+strings.Join(psiParts, " "))
-		}
-
-		// Throttle/swap/OOM indicators
-		if vm.Status == "running" {
-			if vm.CPUThrottledPct > 0 {
-				tStr := fmt.Sprintf("throttle:%.0f%%", vm.CPUThrottledPct)
-				if vm.CPUThrottledPct > 10 {
-					details = append(details, critStyle.Render(tStr))
-				} else {
-					details = append(details, warnStyle.Render(tStr))
-				}
-			}
-			if vm.MemSwapMB > 0 {
-				details = append(details, warnStyle.Render(fmt.Sprintf("swap:%dM", vm.MemSwapMB)))
-			}
-			if vm.MemOOMKills > 0 {
-				details = append(details, critStyle.Render(fmt.Sprintf("OOM:%d", vm.MemOOMKills)))
-			}
-			if vm.PIDCount > 0 {
-				pidStr := fmt.Sprintf("pids:%d", vm.PIDCount)
-				if vm.PIDLimit > 0 {
-					pidStr += fmt.Sprintf("/%d", vm.PIDLimit)
-				}
-				details = append(details, dimStyle.Render(pidStr))
-			}
-		}
-
-		// Config details (disks, net, uptime, features)
-		var cfgParts []string
-		var diskParts []string
-		for _, d := range vm.DiskConfigs {
-			if d.SizeGB > 0 && !strings.Contains(d.Path, "iso") && d.Path != "none" {
-				diskParts = append(diskParts, fmt.Sprintf("%s:%dG", d.Bus, d.SizeGB))
-			}
-		}
-		if len(diskParts) > 0 {
-			cfgParts = append(cfgParts, "disk:"+strings.Join(diskParts, "+"))
-		}
-		for _, n := range vm.NetConfigs {
-			nStr := n.Bridge
-			if n.Tag > 0 {
-				nStr += fmt.Sprintf("/vlan%d", n.Tag)
-			}
-			cfgParts = append(cfgParts, nStr)
-		}
-		if vm.Status == "running" && vm.UptimeSec > 0 {
-			cfgParts = append(cfgParts, "up:"+fmtUptime(vm.UptimeSec))
-		}
-		if vm.SnapCount > 0 {
-			cfgParts = append(cfgParts, fmt.Sprintf("snaps:%d", vm.SnapCount))
-		}
-		if vm.NUMA {
-			cfgParts = append(cfgParts, "numa")
-		}
-		if len(vm.HostPCI) > 0 {
-			cfgParts = append(cfgParts, fmt.Sprintf("pci:%d", len(vm.HostPCI)))
-		}
-		if vm.Protection {
-			cfgParts = append(cfgParts, "protected")
-		}
-		if len(cfgParts) > 0 {
-			details = append(details, dimStyle.Render(strings.Join(cfgParts, "  ")))
-		}
-
-		if len(details) > 0 {
-			detailLine := fmt.Sprintf("       %s", strings.Join(details, "  "))
-			vmLines = append(vmLines, detailLine)
+			vmLines = append(vmLines, fmt.Sprintf("       %s %s",
+				issueStyle.Render("└─"),
+				issueStyle.Render(why)))
 		}
 	}
 
@@ -834,6 +733,59 @@ func renderPveVMTable(pve *model.ProxmoxMetrics, hostCPUs int, iw int) string {
 		vmLines = append(vmLines, dimStyle.Render("  no VMs configured"))
 	}
 	return boxSection("VIRTUAL MACHINES", vmLines, iw)
+}
+
+// vmRootCause generates a concise root-cause explanation for a VM's health issues
+func vmRootCause(vm model.ProxmoxVM) string {
+	// Prioritized root cause analysis — explain WHY, not just WHAT
+	var causes []string
+
+	if vm.MemOOMKills > 0 {
+		causes = append(causes, fmt.Sprintf("OOM: kernel killed %d processes — VM needs more memory or has a leak", vm.MemOOMKills))
+	}
+
+	if vm.MemSwapMB > 500 {
+		causes = append(causes, fmt.Sprintf("heavy swap (%s) — VM memory exhausted, increase allocation or reduce workload",
+			fmtMB(vm.MemSwapMB)))
+	} else if vm.MemSwapMB > 0 {
+		causes = append(causes, fmt.Sprintf("swapping %s — balloon or allocation too tight for workload",
+			fmtMB(vm.MemSwapMB)))
+	}
+
+	if vm.CPUThrottledPct > 10 {
+		causes = append(causes, fmt.Sprintf("CPU throttled %.0f%% — cgroup limit too low for workload", vm.CPUThrottledPct))
+	}
+
+	if vm.MemLimitMB > 0 && vm.MemUsedMB > 0 {
+		pct := float64(vm.MemUsedMB) / float64(vm.MemLimitMB) * 100
+		if pct > 90 {
+			causes = append(causes, fmt.Sprintf("memory at %.0f%% of limit — approaching OOM threshold", pct))
+		}
+	}
+
+	if vm.PSICPUSome > 25 {
+		causes = append(causes, fmt.Sprintf("CPU stalled %.1f%% — tasks waiting for CPU time", vm.PSICPUSome))
+	}
+	if vm.PSIMemSome > 25 {
+		causes = append(causes, fmt.Sprintf("memory pressure %.1f%% — reclaim or swap activity", vm.PSIMemSome))
+	}
+	if vm.PSIIOSome > 25 {
+		causes = append(causes, fmt.Sprintf("IO stalled %.1f%% — disk bottleneck", vm.PSIIOSome))
+	}
+
+	if vm.CPUPct > 90 {
+		causes = append(causes, "CPU saturated — may need more vCPUs")
+	}
+
+	if len(causes) == 0 {
+		return strings.Join(vm.HealthIssues, ", ")
+	}
+
+	// Show top 2 causes max for clarity
+	if len(causes) > 2 {
+		causes = causes[:2]
+	}
+	return strings.Join(causes, "; ")
 }
 
 // renderPveStorage renders the storage pools section

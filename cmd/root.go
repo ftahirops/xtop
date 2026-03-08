@@ -19,7 +19,7 @@ import (
 )
 
 // Version is set at build time via ldflags.
-var Version = "0.24.0"
+var Version = "0.24.1"
 
 // Config holds CLI configuration.
 type Config struct {
