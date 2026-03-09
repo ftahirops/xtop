@@ -479,9 +479,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case "b", "esc":
-			m.page = PageOverview
-			m.scroll = 0
-			m.explainScroll = 0
+			if m.page == PageApps && m.appsDetailMode {
+				m.appsDetailMode = false
+				m.scroll = 0
+			} else {
+				m.page = PageOverview
+				m.scroll = 0
+				m.explainScroll = 0
+			}
 		case "j", "down":
 			if m.page == PageApps && !m.appsDetailMode {
 				if m.snap != nil && len(m.snap.Global.Apps.Instances) > 0 {
@@ -509,9 +514,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.appsSelectedIdx = (m.appsSelectedIdx + len(m.snap.Global.Apps.Instances) - 1) % len(m.snap.Global.Apps.Instances)
 				}
 			} else if m.page == PageApps && m.appsDetailMode {
-				// Esc-like: go back to list
-				m.appsDetailMode = false
-				m.scroll = 0
+				if m.scroll > 0 {
+					m.scroll--
+				}
 			} else if m.page == PageCgroups {
 				if m.cgSelected > 0 {
 					m.cgSelected--
