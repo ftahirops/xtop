@@ -916,17 +916,18 @@ func renderNetProcessesContent(snap *model.Snapshot, rates *model.RateSnapshot, 
 		sb.WriteString(boxSection("TOP PROCESSES BY FD USAGE", fdLines, iw))
 	}
 
-	// Top consumers by IO
+	// Top processes by connection count (from /proc/PID/net data)
 	{
 		var consLines []string
-		consLines = append(consLines, dimStyle.Render(fmt.Sprintf("%-20s %6s %10s %10s %10s %s",
-			"PROCESS", "PID", "READ", "WRITE", "TOTAL", "CGROUP")))
+		consLines = append(consLines, dimStyle.Render(fmt.Sprintf("%-20s %6s %8s %8s %10s",
+			"PROCESS", "PID", "FDs", "THREADS", "RSS")))
 
-		if rates != nil && len(rates.ProcessRates) > 0 {
-			procs := make([]model.ProcessRate, len(rates.ProcessRates))
-			copy(procs, rates.ProcessRates)
+		if snap != nil && len(snap.Processes) > 0 {
+			// Sort by FD count descending — high FD = likely network-heavy
+			procs := make([]model.ProcessMetrics, len(snap.Processes))
+			copy(procs, snap.Processes)
 			sort.Slice(procs, func(i, j int) bool {
-				return (procs[i].ReadMBs + procs[i].WriteMBs) > (procs[j].ReadMBs + procs[j].WriteMBs)
+				return procs[i].FDCount > procs[j].FDCount
 			})
 
 			shown := 0
@@ -935,8 +936,7 @@ func renderNetProcessesContent(snap *model.Snapshot, rates *model.RateSnapshot, 
 				if shown >= 5 {
 					break
 				}
-				totalIO := p.ReadMBs + p.WriteMBs
-				if totalIO < 0.001 {
+				if p.FDCount < 10 {
 					break
 				}
 				key := p.Comm
@@ -949,17 +949,14 @@ func renderNetProcessesContent(snap *model.Snapshot, rates *model.RateSnapshot, 
 				if len(name) > 20 {
 					name = name[:17] + "..."
 				}
-				cg := p.CgroupPath
-				if len(cg) > 25 {
-					cg = "..." + cg[len(cg)-22:]
-				}
-				consLines = append(consLines, fmt.Sprintf("%-20s %6d %10s %10s %10s %s",
-					name, p.PID, fmtRate(p.ReadMBs), fmtRate(p.WriteMBs), fmtRate(totalIO), cg))
+				rss := fmt.Sprintf("%.1f MB", float64(p.RSS)/(1024*1024))
+				consLines = append(consLines, fmt.Sprintf("%-20s %6d %8d %8d %10s",
+					name, p.PID, p.FDCount, p.NumThreads, rss))
 				shown++
 			}
 		}
 		consLines = padTo(consLines, 6)
-		sb.WriteString(boxSection("TOP CONSUMERS (by process IO)", consLines, iw))
+		sb.WriteString(boxSection("TOP PROCESSES (by open FDs)", consLines, iw))
 	}
 
 	return sb.String()
