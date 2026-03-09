@@ -128,6 +128,48 @@ func (m *dockerModule) Collect(app *DetectedApp, _ *AppSecrets) model.AppInstanc
 		}
 	}
 
+	// Docker API: /system/df — disk usage (containers, images, volumes)
+	if du := dockerGet(m.client, "http://localhost/system/df"); du != nil {
+		// Images total size
+		if imgs, ok := du["Images"].([]interface{}); ok {
+			var totalSize, sharedSize float64
+			for _, img := range imgs {
+				if m, ok := img.(map[string]interface{}); ok {
+					totalSize += toFloat(m["Size"])
+					sharedSize += toFloat(m["SharedSize"])
+				}
+			}
+			inst.DeepMetrics["images_total_size"] = dockerFmtBytes(totalSize)
+			inst.DeepMetrics["images_shared_size"] = dockerFmtBytes(sharedSize)
+		}
+		// Volumes
+		if vols, ok := du["Volumes"].([]interface{}); ok {
+			var volSize float64
+			for _, v := range vols {
+				if m, ok := v.(map[string]interface{}); ok {
+					volSize += toFloat(m["UsageData"].(map[string]interface{})["Size"])
+				}
+			}
+			inst.DeepMetrics["volumes_count"] = fmt.Sprintf("%d", len(vols))
+			inst.DeepMetrics["volumes_size"] = dockerFmtBytes(volSize)
+		}
+		// Build cache
+		if bc, ok := du["BuildCache"].([]interface{}); ok {
+			var bcSize float64
+			for _, b := range bc {
+				if m, ok := b.(map[string]interface{}); ok {
+					bcSize += toFloat(m["Size"])
+				}
+			}
+			inst.DeepMetrics["buildcache_size"] = dockerFmtBytes(bcSize)
+		}
+	}
+
+	// Docker API: /networks — network count
+	if nets := dockerGetList(m.client, "http://localhost/networks"); nets != nil {
+		inst.DeepMetrics["networks_count"] = fmt.Sprintf("%d", len(nets))
+	}
+
 	// Docker API: /containers/json?all=true — container list
 	containerList := dockerContainerList(m.client)
 	inst.HealthScore = 100
@@ -348,6 +390,27 @@ func dockerGetCtx(ctx context.Context, client *http.Client, path string) map[str
 // dockerInfo calls GET /info on the Docker API.
 func dockerInfo(client *http.Client) map[string]interface{} {
 	return dockerGet(client, "/info")
+}
+
+// dockerGetList calls a Docker API endpoint that returns a JSON array.
+func dockerGetList(client *http.Client, path string) []map[string]interface{} {
+	resp, err := client.Get(path)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
+	if err != nil {
+		return nil
+	}
+	var result []map[string]interface{}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil
+	}
+	return result
 }
 
 // dockerContainerList calls GET /containers/json?all=true.

@@ -581,33 +581,86 @@ func redisFmtSec(s string) string {
 
 func renderDockerDetail(app model.AppInstance, iw int) string {
 	var sb strings.Builder
+	dm := app.DeepMetrics
 
 	sb.WriteString(appDetailHeader(app))
 
-	// Daemon Info
-	sb.WriteString(appSection("DOCKER DAEMON", iw, []kv{
-		{Key: "PID", Val: fmt.Sprintf("%d", app.PID)},
-		{Key: "Version", Val: appFmtDash(app.Version)},
-		{Key: "Uptime", Val: fmtUptime(app.UptimeSec)},
-		{Key: "RSS", Val: appFmtMem(app.RSSMB)},
-		{Key: "Threads", Val: fmt.Sprintf("%d", app.Threads)},
-		{Key: "File Descriptors", Val: fmt.Sprintf("%d", app.FDs)},
-		{Key: "Storage Driver", Val: app.DeepMetrics["Storage Driver"]},
-		{Key: "Cgroup Driver", Val: app.DeepMetrics["Cgroup Driver"]},
-		{Key: "OS", Val: app.DeepMetrics["OS"]},
-		{Key: "Kernel", Val: app.DeepMetrics["Kernel"]},
-		{Key: "CPUs", Val: app.DeepMetrics["CPUs"]},
-		{Key: "Total Memory", Val: app.DeepMetrics["Total Memory"]},
-	}))
+	// Compact side-by-side: Daemon Info (left) | Summary + Disk (right)
+	leftW := iw/2 - 1
+	rightW := iw - leftW - 3
 
-	// Container Summary
-	sb.WriteString(appSection("CONTAINER SUMMARY", iw, []kv{
-		{Key: "Total", Val: app.DeepMetrics["Total Containers"]},
-		{Key: "Running", Val: app.DeepMetrics["Running"]},
-		{Key: "Stopped", Val: app.DeepMetrics["Stopped"]},
-		{Key: "Paused", Val: app.DeepMetrics["Paused"]},
-		{Key: "Images", Val: app.DeepMetrics["Images"]},
-	}))
+	// Build left column: DAEMON
+	var left strings.Builder
+	left.WriteString(dimStyle.Render("DOCKER DAEMON") + "\n")
+	dkvs := []kv{
+		{"Version", appFmtDash(app.Version)},
+		{"PID", fmt.Sprintf("%d", app.PID)},
+		{"Uptime", fmtUptime(app.UptimeSec)},
+		{"RSS", appFmtMem(app.RSSMB)},
+		{"Threads", fmt.Sprintf("%d", app.Threads)},
+		{"FDs", fmt.Sprintf("%d", app.FDs)},
+		{"Storage", dm["Storage Driver"]},
+		{"Cgroup", dm["Cgroup Driver"]},
+		{"OS", dm["OS"]},
+		{"Kernel", dm["Kernel"]},
+		{"CPUs", dm["CPUs"]},
+		{"Memory", dm["Total Memory"]},
+	}
+	for _, item := range dkvs {
+		if item.Val == "" {
+			continue
+		}
+		left.WriteString(fmt.Sprintf(" %-10s %s\n", item.Key+":", valueStyle.Render(item.Val)))
+	}
+
+	// Build right column: SUMMARY + DISK USAGE
+	var right strings.Builder
+	right.WriteString(dimStyle.Render("CONTAINERS") + "\n")
+	running := dm["Running"]
+	stopped := dm["Stopped"]
+	paused := dm["Paused"]
+	total := dm["Total Containers"]
+	right.WriteString(fmt.Sprintf(" Total: %s  Run: %s  Stop: %s  Pause: %s\n",
+		valueStyle.Render(total), okStyle.Render(running),
+		func() string {
+			if stopped != "" && stopped != "0" {
+				return warnStyle.Render(stopped)
+			}
+			return dimStyle.Render(stopped)
+		}(),
+		func() string {
+			if paused != "" && paused != "0" {
+				return warnStyle.Render(paused)
+			}
+			return dimStyle.Render(paused)
+		}()))
+	right.WriteString(fmt.Sprintf(" Images: %s\n", valueStyle.Render(dm["Images"])))
+	right.WriteString("\n")
+
+	right.WriteString(dimStyle.Render("DISK USAGE") + "\n")
+	if dm["images_total_size"] != "" {
+		right.WriteString(fmt.Sprintf(" Images:      %s\n", valueStyle.Render(dm["images_total_size"])))
+	}
+	if dm["volumes_count"] != "" {
+		right.WriteString(fmt.Sprintf(" Volumes:     %s  (%s vols)\n",
+			valueStyle.Render(dm["volumes_size"]), valueStyle.Render(dm["volumes_count"])))
+	}
+	if dm["buildcache_size"] != "" {
+		right.WriteString(fmt.Sprintf(" Build Cache: %s\n", valueStyle.Render(dm["buildcache_size"])))
+	}
+	if dm["networks_count"] != "" {
+		right.WriteString(fmt.Sprintf(" Networks:    %s\n", valueStyle.Render(dm["networks_count"])))
+	}
+
+	sb.WriteString(boxTop(iw) + "\n")
+	combined := joinColumns(left.String(), right.String(), leftW, " \u2502 ")
+	for _, line := range strings.Split(combined, "\n") {
+		if line != "" {
+			sb.WriteString(boxRow(line, iw) + "\n")
+		}
+	}
+	sb.WriteString(boxBot(iw) + "\n")
+	_ = rightW
 
 	// Per-container table — single row per container
 	if len(app.Containers) > 0 {
