@@ -488,7 +488,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.explainScroll = 0
 			}
 		case "j", "down":
-			if m.page == PageApps && !m.appsDetailMode {
+			if m.page == PageNetwork {
+				m.netSectionCursor = (m.netSectionCursor + 1) % 6
+				m.netManualOverride = true
+			} else if m.page == PageApps && !m.appsDetailMode {
 				if m.snap != nil && len(m.snap.Global.Apps.Instances) > 0 {
 					m.appsSelectedIdx = (m.appsSelectedIdx + 1) % len(m.snap.Global.Apps.Instances)
 				}
@@ -509,7 +512,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.scroll++
 			}
 		case "k", "up":
-			if m.page == PageApps && !m.appsDetailMode {
+			if m.page == PageNetwork {
+				m.netSectionCursor = (m.netSectionCursor + 5) % 6
+				m.netManualOverride = true
+			} else if m.page == PageApps && !m.appsDetailMode {
 				if m.snap != nil && len(m.snap.Global.Apps.Instances) > 0 {
 					m.appsSelectedIdx = (m.appsSelectedIdx + len(m.snap.Global.Apps.Instances) - 1) % len(m.snap.Global.Apps.Instances)
 				}

@@ -104,38 +104,43 @@ func findListeningPort(pid int) int {
 
 	// Scan /proc/net/tcp for LISTEN sockets matching our inodes
 	for _, path := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
-		f, err := os.Open(path)
-		if err != nil {
+		if port := scanTCPForInode(path, inodes); port > 0 {
+			return port
+		}
+	}
+	return 0
+}
+
+// scanTCPForInode scans a /proc/net/tcp file for LISTEN sockets matching given inodes.
+func scanTCPForInode(path string, inodes map[string]bool) int {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	scanner.Scan() // skip header
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) < 10 {
 			continue
 		}
-		defer f.Close()
-		scanner := bufio.NewScanner(f)
-		scanner.Scan() // skip header
-		for scanner.Scan() {
-			fields := strings.Fields(scanner.Text())
-			if len(fields) < 10 {
-				continue
-			}
-			// state 0A = LISTEN
-			if fields[3] != "0A" {
-				continue
-			}
-			// inode is field[9]
-			if inodes[fields[9]] {
-				localParts := strings.Split(fields[1], ":")
-				if len(localParts) == 2 {
-					portBytes, err := hex.DecodeString(localParts[1])
-					if err == nil && len(portBytes) == 2 {
-						port := int(portBytes[0])<<8 | int(portBytes[1])
-						if port > 0 {
-							return port
-						}
+		if fields[3] != "0A" {
+			continue
+		}
+		if inodes[fields[9]] {
+			localParts := strings.Split(fields[1], ":")
+			if len(localParts) == 2 {
+				portBytes, err := hex.DecodeString(localParts[1])
+				if err == nil && len(portBytes) == 2 {
+					port := int(portBytes[0])<<8 | int(portBytes[1])
+					if port > 0 {
+						return port
 					}
-					// Try parsing as integer directly
-					p, err := strconv.ParseInt(localParts[1], 16, 32)
-					if err == nil && p > 0 {
-						return int(p)
-					}
+				}
+				p, err := strconv.ParseInt(localParts[1], 16, 32)
+				if err == nil && p > 0 {
+					return int(p)
 				}
 			}
 		}

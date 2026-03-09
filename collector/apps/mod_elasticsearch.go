@@ -188,9 +188,6 @@ func collectESMetrics(client *http.Client, inst *model.AppInstance, port int, se
 	if stats := esGet(client, baseURL+"/_cluster/stats", user, password); stats != nil {
 		inst.HasDeepMetrics = true
 		if indices, ok := stats["indices"].(map[string]interface{}); ok {
-			if count, ok := indices["count"]; ok {
-				inst.DeepMetrics["index_count"] = fmt.Sprintf("%v", count)
-			}
 			if docs, ok := indices["docs"].(map[string]interface{}); ok {
 				if c, ok := docs["count"]; ok {
 					inst.DeepMetrics["doc_count"] = fmtLargeNum(c)

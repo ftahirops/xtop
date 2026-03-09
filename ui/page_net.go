@@ -53,17 +53,8 @@ func renderNetPage(snap *model.Snapshot, rates *model.RateSnapshot,
 	// RCA Summary box (always visible)
 	sb.WriteString(renderNetRCASummary(snap, rates, result, pinnedSummary, resolvedAgo, iw))
 
-	// Network Intelligence Summary (always visible — full correlation engine)
-	if pinnedSummary != "" {
-		sb.WriteString(pinnedSummary)
-		if resolvedAgo > 0 {
-			remaining := 60 - resolvedAgo
-			if remaining > 0 {
-				sb.WriteString(dimStyle.Render(fmt.Sprintf(
-					"  Pinned %ds ago \u2014 holding for review (%ds remaining)", resolvedAgo, remaining)) + "\n")
-			}
-		}
-	} else if netHasFindings(snap, rates) {
+	// Network Intelligence Summary (only when live findings, not pinned — pinned is in RCA box)
+	if pinnedSummary == "" && netHasFindings(snap, rates) {
 		sb.WriteString(buildNetIntelligenceSummary(snap, rates, result, iw))
 	}
 

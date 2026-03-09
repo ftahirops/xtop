@@ -103,8 +103,11 @@ func (m *redisModule) Collect(app *DetectedApp, secrets *AppSecrets) model.AppIn
 	if info == nil && password != "" {
 		info = redisINFO(host, port, "")
 	}
-	if info == nil && password == "" {
-		inst.NeedsCreds = true
+	if info == nil {
+		if password == "" {
+			inst.NeedsCreds = true
+		}
+		// else: creds provided but connection failed (wrong password or server issue)
 	}
 
 	if info != nil {
