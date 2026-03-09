@@ -670,80 +670,6 @@ func renderDockerDetail(app model.AppInstance, iw int) string {
 	sb.WriteString(boxBot(iw) + "\n")
 	_ = rightW
 
-	// IMAGES table
-	if dm["images_count"] != "" {
-		var imgLines []string
-		imgLines = append(imgLines, dimStyle.Render(fmt.Sprintf(" %-40s %10s %s", "REPOSITORY:TAG", "SIZE", "CONTAINERS")))
-		for i := 0; i < 10; i++ {
-			name := dm[fmt.Sprintf("img_%d_name", i)]
-			if name == "" {
-				break
-			}
-			size := dm[fmt.Sprintf("img_%d_size", i)]
-			ctrs := dm[fmt.Sprintf("img_%d_containers", i)]
-			imgLines = append(imgLines, fmt.Sprintf(" %-40s %10s %s",
-				func() string {
-					if len(name) > 40 {
-						return name[:37] + "..."
-					}
-					return name
-				}(),
-				valueStyle.Render(size),
-				valueStyle.Render(ctrs)))
-		}
-		sb.WriteString(boxSection("IMAGES ("+dm["images_count"]+" total, "+dm["images_total_size"]+")", imgLines, iw))
-	}
-
-	// NETWORKS table
-	if dm["networks_count"] != "" {
-		var netLines []string
-		netLines = append(netLines, dimStyle.Render(fmt.Sprintf(" %-24s %-12s %s", "NAME", "DRIVER", "SCOPE")))
-		for i := 0; i < 10; i++ {
-			name := dm[fmt.Sprintf("net_%d_name", i)]
-			if name == "" {
-				break
-			}
-			driver := dm[fmt.Sprintf("net_%d_driver", i)]
-			scope := dm[fmt.Sprintf("net_%d_scope", i)]
-			netLines = append(netLines, fmt.Sprintf(" %-24s %-12s %s", name, valueStyle.Render(driver), dimStyle.Render(scope)))
-		}
-		sb.WriteString(boxSection("NETWORKS", netLines, iw))
-	}
-
-	// HEALTH DIAGNOSTICS
-	{
-		var issues []string
-		// Check for stopped/paused containers
-		if s := dm["Stopped"]; s != "" && s != "0" {
-			issues = append(issues, warnStyle.Render("!! "+s+" stopped containers"))
-		}
-		if s := dm["Paused"]; s != "" && s != "0" {
-			issues = append(issues, warnStyle.Render("!! "+s+" paused containers"))
-		}
-		// Check per-container health
-		for _, c := range app.Containers {
-			if c.Health == "unhealthy" {
-				issues = append(issues, critStyle.Render("!! "+c.Name+" is UNHEALTHY"))
-			}
-			if c.RestartCount > 0 {
-				issues = append(issues, warnStyle.Render(fmt.Sprintf("!! %s has %d restarts", c.Name, c.RestartCount)))
-			}
-			if c.State == "exited" && c.ExitCode != 0 {
-				issues = append(issues, critStyle.Render(fmt.Sprintf("!! %s exited with code %d", c.Name, c.ExitCode)))
-			}
-			if c.MemPct > 90 {
-				issues = append(issues, warnStyle.Render(fmt.Sprintf("!! %s memory at %.0f%%", c.Name, c.MemPct)))
-			}
-			if c.CPUPct > 80 {
-				issues = append(issues, warnStyle.Render(fmt.Sprintf("!! %s CPU at %.1f%%", c.Name, c.CPUPct)))
-			}
-		}
-		if len(issues) == 0 {
-			issues = append(issues, okStyle.Render(" All containers healthy"))
-		}
-		sb.WriteString(boxSection("HEALTH DIAGNOSTICS", issues, iw))
-	}
-
 	// Per-container table — single row per container
 	if len(app.Containers) > 0 {
 		sb.WriteString("  " + titleStyle.Render("CONTAINERS") + "\n")
@@ -849,6 +775,75 @@ func renderDockerDetail(app model.AppInstance, iw int) string {
 			sb.WriteString(boxRow(row, iw) + "\n")
 		}
 		sb.WriteString(boxBot(iw) + "\n\n")
+	}
+
+	// IMAGES table
+	if dm["images_count"] != "" {
+		var imgLines []string
+		imgLines = append(imgLines, dimStyle.Render(fmt.Sprintf(" %-40s %10s %s", "REPOSITORY:TAG", "SIZE", "CONTAINERS")))
+		for i := 0; i < 10; i++ {
+			iname := dm[fmt.Sprintf("img_%d_name", i)]
+			if iname == "" {
+				break
+			}
+			size := dm[fmt.Sprintf("img_%d_size", i)]
+			ctrs := dm[fmt.Sprintf("img_%d_containers", i)]
+			dispName := iname
+			if len(dispName) > 40 {
+				dispName = dispName[:37] + "..."
+			}
+			imgLines = append(imgLines, fmt.Sprintf(" %-40s %10s %s",
+				dispName, valueStyle.Render(size), valueStyle.Render(ctrs)))
+		}
+		sb.WriteString(boxSection("IMAGES ("+dm["images_count"]+" total, "+dm["images_total_size"]+")", imgLines, iw))
+	}
+
+	// NETWORKS table
+	if dm["networks_count"] != "" {
+		var netLines []string
+		netLines = append(netLines, dimStyle.Render(fmt.Sprintf(" %-24s %-12s %s", "NAME", "DRIVER", "SCOPE")))
+		for i := 0; i < 10; i++ {
+			nname := dm[fmt.Sprintf("net_%d_name", i)]
+			if nname == "" {
+				break
+			}
+			driver := dm[fmt.Sprintf("net_%d_driver", i)]
+			scope := dm[fmt.Sprintf("net_%d_scope", i)]
+			netLines = append(netLines, fmt.Sprintf(" %-24s %-12s %s", nname, valueStyle.Render(driver), dimStyle.Render(scope)))
+		}
+		sb.WriteString(boxSection("NETWORKS", netLines, iw))
+	}
+
+	// HEALTH DIAGNOSTICS
+	{
+		var hissues []string
+		if s := dm["Stopped"]; s != "" && s != "0" {
+			hissues = append(hissues, warnStyle.Render("!! "+s+" stopped containers"))
+		}
+		if s := dm["Paused"]; s != "" && s != "0" {
+			hissues = append(hissues, warnStyle.Render("!! "+s+" paused containers"))
+		}
+		for _, c := range app.Containers {
+			if c.Health == "unhealthy" {
+				hissues = append(hissues, critStyle.Render("!! "+c.Name+" is UNHEALTHY"))
+			}
+			if c.RestartCount > 0 {
+				hissues = append(hissues, warnStyle.Render(fmt.Sprintf("!! %s has %d restarts", c.Name, c.RestartCount)))
+			}
+			if c.State == "exited" && c.ExitCode != 0 {
+				hissues = append(hissues, critStyle.Render(fmt.Sprintf("!! %s exited with code %d", c.Name, c.ExitCode)))
+			}
+			if c.MemPct > 90 {
+				hissues = append(hissues, warnStyle.Render(fmt.Sprintf("!! %s memory at %.0f%%", c.Name, c.MemPct)))
+			}
+			if c.CPUPct > 80 {
+				hissues = append(hissues, warnStyle.Render(fmt.Sprintf("!! %s CPU at %.1f%%", c.Name, c.CPUPct)))
+			}
+		}
+		if len(hissues) == 0 {
+			hissues = append(hissues, okStyle.Render(" All containers healthy"))
+		}
+		sb.WriteString(boxSection("HEALTH DIAGNOSTICS", hissues, iw))
 	}
 
 	if len(app.HealthIssues) > 0 {
