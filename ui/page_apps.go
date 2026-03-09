@@ -5,6 +5,7 @@ package ui
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/ftahirops/xtop/model"
@@ -168,6 +169,8 @@ func renderAppDeepMetrics(app model.AppInstance, iw int) string {
 	switch app.AppType {
 	case "elasticsearch":
 		return renderESDeepMetrics(app, iw)
+	case "redis":
+		return renderRedisDeepMetrics(app, iw)
 	default:
 		return renderGenericDeepMetrics(app.DeepMetrics, iw)
 	}
@@ -282,6 +285,296 @@ func capitalize(s string) string {
 		return s
 	}
 	return strings.ToUpper(s[:1]) + s[1:]
+}
+
+// ── Redis Detail ───────────────────────────────────────────────────────
+
+func renderRedisDeepMetrics(app model.AppInstance, iw int) string {
+	var sb strings.Builder
+	dm := app.DeepMetrics
+
+	// Health Status Table
+	sb.WriteString("  " + titleStyle.Render("HEALTH STATUS") + "\n")
+	sb.WriteString(boxTop(iw) + "\n")
+
+	type healthRow struct {
+		metric, value, status string
+	}
+	rows := []healthRow{}
+
+	// Memory usage
+	if dm["memory_usage_pct"] != "" {
+		var pct float64
+		fmt.Sscanf(dm["memory_usage_pct"], "%f", &pct)
+		status := "OK"
+		if pct > 90 {
+			status = "CRIT"
+		} else if pct > 75 {
+			status = "WARN"
+		}
+		rows = append(rows, healthRow{"Memory Usage", dm["used_memory_human"] + " / " + dm["maxmemory_human"] + " (" + dm["memory_usage_pct"] + ")", status})
+	} else if dm["maxmemory"] == "0" || dm["maxmemory"] == "" {
+		rows = append(rows, healthRow{"Memory Usage", dm["used_memory_human"] + " (no limit)", "OK"})
+	}
+
+	// Hit ratio
+	if dm["hit_ratio"] != "" {
+		var ratio float64
+		fmt.Sscanf(dm["hit_ratio"], "%f", &ratio)
+		status := "OK"
+		if ratio < 80 {
+			status = "CRIT"
+		} else if ratio < 90 {
+			status = "WARN"
+		}
+		rows = append(rows, healthRow{"Hit Ratio", dm["hit_ratio"], status})
+	}
+
+	// Evictions
+	evicted := dm["evicted_keys"]
+	if evicted != "" {
+		status := "OK"
+		if evicted != "0" {
+			status = "CRIT"
+		}
+		rows = append(rows, healthRow{"Evicted Keys", evicted, status})
+	}
+
+	// Fragmentation
+	if dm["mem_fragmentation_ratio"] != "" {
+		frag, _ := strconv.ParseFloat(dm["mem_fragmentation_ratio"], 64)
+		status := "OK"
+		if frag > 1.5 {
+			status = "WARN"
+		} else if frag < 1.0 && frag > 0 {
+			status = "WARN"
+		}
+		rows = append(rows, healthRow{"Fragmentation Ratio", dm["mem_fragmentation_ratio"], status})
+	}
+
+	// Blocked clients
+	if dm["blocked_clients"] != "" {
+		status := "OK"
+		if dm["blocked_clients"] != "0" {
+			b, _ := strconv.Atoi(dm["blocked_clients"])
+			if b > 10 {
+				status = "CRIT"
+			} else if b > 0 {
+				status = "WARN"
+			}
+		}
+		rows = append(rows, healthRow{"Blocked Clients", dm["blocked_clients"], status})
+	}
+
+	// Rejected connections
+	if dm["rejected_connections"] != "" && dm["rejected_connections"] != "0" {
+		rows = append(rows, healthRow{"Rejected Connections", dm["rejected_connections"], "CRIT"})
+	} else {
+		rows = append(rows, healthRow{"Rejected Connections", "0", "OK"})
+	}
+
+	// RDB save
+	if dm["rdb_last_bgsave_status"] != "" {
+		status := "OK"
+		if dm["rdb_last_bgsave_status"] != "ok" {
+			status = "CRIT"
+		}
+		rows = append(rows, healthRow{"Last RDB Save", dm["rdb_last_bgsave_status"], status})
+	}
+
+	// Replication
+	if dm["role"] == "slave" {
+		status := "OK"
+		if dm["master_link_status"] == "down" {
+			status = "CRIT"
+		}
+		rows = append(rows, healthRow{"Replication Link", dm["master_link_status"], status})
+	}
+
+	cMetric := 24
+	cValue := 40
+	hdr := fmt.Sprintf("  %s %s %s",
+		styledPad(dimStyle.Render("Metric"), cMetric),
+		styledPad(dimStyle.Render("Value"), cValue),
+		dimStyle.Render("Status"))
+	sb.WriteString(boxRow(hdr, iw) + "\n")
+	sb.WriteString(boxMid(iw) + "\n")
+
+	for _, r := range rows {
+		var badge string
+		switch r.status {
+		case "OK":
+			badge = okStyle.Render("OK")
+		case "WARN":
+			badge = warnStyle.Render("WARN")
+		case "CRIT":
+			badge = critStyle.Render("CRIT")
+		}
+		row := fmt.Sprintf("  %s %s %s",
+			styledPad(valueStyle.Render(r.metric), cMetric),
+			styledPad(valueStyle.Render(r.value), cValue),
+			badge)
+		sb.WriteString(boxRow(row, iw) + "\n")
+	}
+	sb.WriteString(boxBot(iw) + "\n\n")
+
+	// Throughput
+	sb.WriteString(appSection("THROUGHPUT", iw, []kv{
+		{Key: "Ops/sec", Val: dm["instantaneous_ops_per_sec"]},
+		{Key: "Input", Val: redisFmtKbps(dm["instantaneous_input_kbps"])},
+		{Key: "Output", Val: redisFmtKbps(dm["instantaneous_output_kbps"])},
+		{Key: "Total Commands", Val: redisFmtLargeNum(dm["total_commands_processed"])},
+		{Key: "Total Connections", Val: redisFmtLargeNum(dm["total_connections_received"])},
+		{Key: "Total Net In", Val: redisFmtNetBytes(dm["total_net_input_bytes"])},
+		{Key: "Total Net Out", Val: redisFmtNetBytes(dm["total_net_output_bytes"])},
+	}))
+
+	// Clients
+	sb.WriteString(appSection("CLIENTS", iw, []kv{
+		{Key: "Connected", Val: dm["connected_clients"]},
+		{Key: "Blocked", Val: dm["blocked_clients"]},
+		{Key: "Max Clients", Val: dm["maxclients"]},
+		{Key: "Rejected", Val: dm["rejected_connections"]},
+	}))
+
+	// Memory
+	sb.WriteString(appSection("MEMORY", iw, []kv{
+		{Key: "Used", Val: dm["used_memory_human"]},
+		{Key: "Used RSS", Val: dm["used_memory_rss_human"]},
+		{Key: "Peak", Val: dm["used_memory_peak_human"]},
+		{Key: "Lua", Val: dm["used_memory_lua_human"]},
+		{Key: "Dataset %", Val: dm["used_memory_dataset_perc"]},
+		{Key: "Max Memory", Val: dm["maxmemory_human"]},
+		{Key: "Policy", Val: dm["maxmemory_policy"]},
+		{Key: "Fragmentation", Val: dm["mem_fragmentation_ratio"]},
+	}))
+
+	// Persistence
+	sb.WriteString(appSection("PERSISTENCE", iw, []kv{
+		{Key: "RDB Last Save", Val: dm["rdb_last_bgsave_status"]},
+		{Key: "RDB Save Time", Val: redisFmtSec(dm["rdb_last_bgsave_time_sec"])},
+		{Key: "Changes Since Save", Val: dm["rdb_changes_since_last_save"]},
+		{Key: "AOF Enabled", Val: dm["aof_enabled"]},
+		{Key: "AOF Rewrite", Val: dm["aof_last_bgrewrite_status"]},
+	}))
+
+	// Replication
+	sb.WriteString(appSection("REPLICATION", iw, []kv{
+		{Key: "Role", Val: dm["role"]},
+		{Key: "Connected Slaves", Val: dm["connected_slaves"]},
+		{Key: "Master Host", Val: dm["master_host"]},
+		{Key: "Master Port", Val: dm["master_port"]},
+		{Key: "Master Link", Val: dm["master_link_status"]},
+		{Key: "Master Last IO", Val: redisFmtSec(dm["master_last_io_seconds_ago"])},
+	}))
+
+	// Keyspace (databases)
+	dbKVs := []kv{}
+	for i := 0; i <= 15; i++ {
+		dbKey := fmt.Sprintf("db%d", i)
+		if v, ok := dm[dbKey]; ok {
+			// Parse keys=N,expires=N,avg_ttl=N
+			parsed := redisParseDB(v)
+			dbKVs = append(dbKVs, kv{Key: dbKey, Val: parsed})
+		}
+	}
+	if dm["total_keys"] != "" {
+		dbKVs = append(dbKVs, kv{Key: "Total Keys", Val: dm["total_keys"]})
+	}
+	if dm["total_expires"] != "" {
+		dbKVs = append(dbKVs, kv{Key: "Expiring Keys", Val: dm["total_expires"]})
+	}
+	if len(dbKVs) > 0 {
+		sb.WriteString(appSection("KEYSPACE", iw, dbKVs))
+	}
+
+	// Stats
+	sb.WriteString(appSection("KEYS", iw, []kv{
+		{Key: "Keyspace Hits", Val: redisFmtLargeNum(dm["keyspace_hits"])},
+		{Key: "Keyspace Misses", Val: redisFmtLargeNum(dm["keyspace_misses"])},
+		{Key: "Expired Keys", Val: redisFmtLargeNum(dm["expired_keys"])},
+		{Key: "Evicted Keys", Val: dm["evicted_keys"]},
+	}))
+
+	// CPU
+	sb.WriteString(appSection("CPU", iw, []kv{
+		{Key: "System CPU", Val: redisFmtSec(dm["used_cpu_sys"])},
+		{Key: "User CPU", Val: redisFmtSec(dm["used_cpu_user"])},
+	}))
+
+	return sb.String()
+}
+
+func redisParseDB(v string) string {
+	parts := strings.Split(v, ",")
+	result := []string{}
+	for _, p := range parts {
+		kv := strings.SplitN(p, "=", 2)
+		if len(kv) == 2 {
+			switch kv[0] {
+			case "keys":
+				result = append(result, kv[1]+" keys")
+			case "expires":
+				result = append(result, kv[1]+" expires")
+			case "avg_ttl":
+				ttl, _ := strconv.ParseInt(kv[1], 10, 64)
+				if ttl > 0 {
+					result = append(result, fmt.Sprintf("avg_ttl=%ds", ttl/1000))
+				}
+			}
+		}
+	}
+	return strings.Join(result, ", ")
+}
+
+func redisFmtKbps(s string) string {
+	if s == "" {
+		return ""
+	}
+	v, _ := strconv.ParseFloat(s, 64)
+	if v >= 1024 {
+		return fmt.Sprintf("%.1f MB/s", v/1024)
+	}
+	return fmt.Sprintf("%.1f KB/s", v)
+}
+
+func redisFmtNetBytes(s string) string {
+	if s == "" {
+		return ""
+	}
+	v, _ := strconv.ParseFloat(s, 64)
+	return appFmtBytesShort(v)
+}
+
+func redisFmtLargeNum(s string) string {
+	if s == "" {
+		return ""
+	}
+	v, _ := strconv.ParseFloat(s, 64)
+	switch {
+	case v >= 1e9:
+		return fmt.Sprintf("%.1fB", v/1e9)
+	case v >= 1e6:
+		return fmt.Sprintf("%.1fM", v/1e6)
+	case v >= 1e3:
+		return fmt.Sprintf("%.1fK", v/1e3)
+	default:
+		return s
+	}
+}
+
+func redisFmtSec(s string) string {
+	if s == "" {
+		return ""
+	}
+	v, _ := strconv.ParseFloat(s, 64)
+	if v >= 3600 {
+		return fmt.Sprintf("%.1fh", v/3600)
+	}
+	if v >= 60 {
+		return fmt.Sprintf("%.1fm", v/60)
+	}
+	return fmt.Sprintf("%.1fs", v)
 }
 
 // ── Docker Detail ──────────────────────────────────────────────────────
