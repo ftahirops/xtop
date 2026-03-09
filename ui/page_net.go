@@ -923,16 +923,21 @@ func renderNetProcessesContent(snap *model.Snapshot, rates *model.RateSnapshot, 
 		// Source 1: eBPF outbound data (per-process bytes/sec)
 		sent := snap.Global.Sentinel
 		if sent.Active && len(sent.OutboundTop) > 0 {
-			netLines = append(netLines, dimStyle.Render(fmt.Sprintf("%-16s %6s  %-18s %10s %8s",
-				"PROCESS", "PID", "DESTINATION", "RATE", "PKTS")))
+			netLines = append(netLines, dimStyle.Render(fmt.Sprintf("%-16s %7s %10s %8s  %s",
+				"PROCESS", "PID", "RATE", "PKTS", "DESTINATIONS")))
 
-			// Aggregate by PID first
+			// Aggregate by PID, keep per-dest detail
+			type destInfo struct {
+				IP  string
+				Bps float64
+				Pkt uint64
+			}
 			type procNet struct {
 				PID       int
 				Comm      string
 				TotalBps  float64
 				TotalPkts uint64
-				Dests     []string
+				Dests     []destInfo
 			}
 			byPID := make(map[int]*procNet)
 			for _, e := range sent.OutboundTop {
@@ -943,14 +948,18 @@ func renderNetProcessesContent(snap *model.Snapshot, rates *model.RateSnapshot, 
 				}
 				pn.TotalBps += e.BytesPerSec
 				pn.TotalPkts += e.PacketCount
-				if len(pn.Dests) < 3 {
-					pn.Dests = append(pn.Dests, model.MaskIP(e.DstIP))
-				}
+				pn.Dests = append(pn.Dests, destInfo{
+					IP: model.MaskIP(e.DstIP), Bps: e.BytesPerSec, Pkt: e.PacketCount,
+				})
 			}
 
 			// Sort by total bytes/sec
 			var sorted []*procNet
 			for _, pn := range byPID {
+				// Sort destinations within each process by rate
+				sort.Slice(pn.Dests, func(i, j int) bool {
+					return pn.Dests[i].Bps > pn.Dests[j].Bps
+				})
 				sorted = append(sorted, pn)
 			}
 			sort.Slice(sorted, func(i, j int) bool {
@@ -966,12 +975,31 @@ func renderNetProcessesContent(snap *model.Snapshot, rates *model.RateSnapshot, 
 				if len(name) > 16 {
 					name = name[:13] + "..."
 				}
-				dstStr := strings.Join(pn.Dests, ", ")
-				if len(dstStr) > 18 {
-					dstStr = dstStr[:15] + "..."
+
+				// Build destination list for the first row
+				var dstParts []string
+				for i, d := range pn.Dests {
+					if i >= 5 {
+						dstParts = append(dstParts, fmt.Sprintf("+%d more", len(pn.Dests)-5))
+						break
+					}
+					dstParts = append(dstParts, fmt.Sprintf("%-18s %8s %6d",
+						d.IP, fmtBytesRate(d.Bps), d.Pkt))
 				}
-				netLines = append(netLines, fmt.Sprintf("%-16s %6d  %-18s %10s %8d",
-					name, pn.PID, dstStr, fmtBytesRate(pn.TotalBps), pn.TotalPkts))
+
+				// First line: process summary + first destination
+				if len(dstParts) > 0 {
+					netLines = append(netLines, fmt.Sprintf("%-16s %7d %10s %8d  %s",
+						name, pn.PID, fmtBytesRate(pn.TotalBps), pn.TotalPkts, dstParts[0]))
+				} else {
+					netLines = append(netLines, fmt.Sprintf("%-16s %7d %10s %8d",
+						name, pn.PID, fmtBytesRate(pn.TotalBps), pn.TotalPkts))
+				}
+				// Additional destinations as indented sub-rows
+				for i := 1; i < len(dstParts); i++ {
+					netLines = append(netLines, fmt.Sprintf("%-16s %7s %10s %8s  %s",
+						"", "", "", "", dstParts[i]))
+				}
 				shown++
 			}
 		}
@@ -981,7 +1009,7 @@ func renderNetProcessesContent(snap *model.Snapshot, rates *model.RateSnapshot, 
 			if len(netLines) > 0 {
 				netLines = append(netLines, "")
 			}
-			netLines = append(netLines, dimStyle.Render(fmt.Sprintf("%-16s %6s %8s %8s %8s %8s",
+			netLines = append(netLines, dimStyle.Render(fmt.Sprintf("%-16s %7s %8s %8s %8s %8s",
 				"PROCESS", "PID", "CONNS", "ESTAB", "TW", "CW")))
 			for i, u := range snap.Global.EphemeralPorts.TopUsers {
 				if i >= 5 {
@@ -991,7 +1019,7 @@ func renderNetProcessesContent(snap *model.Snapshot, rates *model.RateSnapshot, 
 				if len(name) > 16 {
 					name = name[:13] + "..."
 				}
-				row := fmt.Sprintf("%-16s %6d %8d %8d %8d %8d",
+				row := fmt.Sprintf("%-16s %7d %8d %8d %8d %8d",
 					name, u.PID, u.Ports, u.Established, u.TimeWait, u.CloseWait)
 				if u.CloseWait > 50 {
 					netLines = append(netLines, warnStyle.Render(row))
