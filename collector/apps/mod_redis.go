@@ -5,6 +5,7 @@ package apps
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
 	"strings"
@@ -38,13 +39,17 @@ func (m *redisModule) Detect(processes []model.ProcessMetrics) []DetectedApp {
 					}
 				}
 			}
-			for _, part := range strings.Fields(cmdline) {
-				if strings.HasPrefix(part, "--port") {
-					// --port 6380 or --port=6380
-					if strings.Contains(part, "=") {
-						if p, err := strconv.Atoi(strings.SplitN(part, "=", 2)[1]); err == nil {
-							port = p
-						}
+			fields := strings.Fields(cmdline)
+			for i, part := range fields {
+				if part == "--port" && i+1 < len(fields) {
+					// --port 6380 (space-separated)
+					if p, err := strconv.Atoi(fields[i+1]); err == nil {
+						port = p
+					}
+				} else if strings.HasPrefix(part, "--port=") {
+					// --port=6380
+					if p, err := strconv.Atoi(strings.SplitN(part, "=", 2)[1]); err == nil {
+						port = p
 					}
 				}
 			}
@@ -202,10 +207,11 @@ func redisINFO(host string, port int, password string) map[string]string {
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(3 * time.Second))
 
+	reader := bufio.NewReader(conn)
+
 	// AUTH if password provided
 	if password != "" {
 		fmt.Fprintf(conn, "*2\r\n$4\r\nAUTH\r\n$%d\r\n%s\r\n", len(password), password)
-		reader := bufio.NewReader(conn)
 		line, err := reader.ReadString('\n')
 		if err != nil || (!strings.HasPrefix(line, "+OK") && !strings.HasPrefix(line, "+")) {
 			return nil
@@ -215,7 +221,6 @@ func redisINFO(host string, port int, password string) map[string]string {
 	// Send INFO command
 	fmt.Fprintf(conn, "*1\r\n$4\r\nINFO\r\n")
 
-	reader := bufio.NewReader(conn)
 	// Read bulk string header: $<length>\r\n
 	header, err := reader.ReadString('\n')
 	if err != nil || !strings.HasPrefix(header, "$") {
@@ -229,7 +234,7 @@ func redisINFO(host string, port int, password string) map[string]string {
 
 	// Read the bulk data
 	data := make([]byte, length+2) // +2 for trailing \r\n
-	n, err := bufio.NewReader(reader).Read(data)
+	n, err := io.ReadFull(reader, data)
 	if err != nil && n == 0 {
 		return nil
 	}

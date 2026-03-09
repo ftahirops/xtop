@@ -16,9 +16,21 @@ import (
 	"github.com/ftahirops/xtop/model"
 )
 
-type esModule struct{}
+type esModule struct {
+	client *http.Client
+}
 
-func NewESModule() AppModule { return &esModule{} }
+func NewESModule() AppModule {
+	return &esModule{
+		client: esHTTPClient(),
+	}
+}
+
+func (m *esModule) Close() {
+	if m.client != nil {
+		m.client.CloseIdleConnections()
+	}
+}
 
 func (m *esModule) Type() string        { return "elasticsearch" }
 func (m *esModule) DisplayName() string { return "Elasticsearch" }
@@ -94,14 +106,6 @@ func isContainerized(pid int) bool {
 		return true
 	}
 
-	// Method 3: /proc/PID/mountinfo contains docker/overlay paths
-	if data, err := os.ReadFile(fmt.Sprintf("/proc/%d/mountinfo", pid)); err == nil {
-		s := string(data)
-		if strings.Contains(s, "docker") || strings.Contains(s, "overlay") && strings.Contains(s, "containers") {
-			return true
-		}
-	}
-
 	return false
 }
 
@@ -121,13 +125,13 @@ func (m *esModule) Collect(app *DetectedApp, secrets *AppSecrets) model.AppInsta
 	inst.FDs = readProcFDs(app.PID)
 	inst.Connections = countTCPConnections(app.Port)
 
-	collectESMetrics(&inst, app.Port, secrets)
+	collectESMetrics(m.client, &inst, app.Port, secrets)
 
 	return inst
 }
 
-// collectESMetrics fetches all ES REST API metrics. Exported for use by Docker module too.
-func collectESMetrics(inst *model.AppInstance, port int, secrets *AppSecrets) {
+// collectESMetrics fetches all ES REST API metrics.
+func collectESMetrics(client *http.Client, inst *model.AppInstance, port int, secrets *AppSecrets) {
 	baseURL := fmt.Sprintf("http://127.0.0.1:%d", port)
 	user := ""
 	password := ""
@@ -138,8 +142,6 @@ func collectESMetrics(inst *model.AppInstance, port int, secrets *AppSecrets) {
 		user = secrets.Elasticsearch.User
 		password = secrets.Elasticsearch.Password
 	}
-
-	client := esHTTPClient()
 
 	// Try HTTP first, then HTTPS if HTTP fails
 	root := esGet(client, baseURL+"/", user, password)

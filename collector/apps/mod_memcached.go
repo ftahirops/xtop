@@ -26,13 +26,11 @@ func (m *memcachedModule) Detect(processes []model.ProcessMetrics) []DetectedApp
 		if p.Comm == "memcached" {
 			port := 11211
 			cmdline := readProcCmdline(p.PID)
-			for i, arg := range strings.Fields(cmdline) {
-				if arg == "-p" {
-					parts := strings.Fields(cmdline)
-					if i+1 < len(parts) {
-						if p, err := strconv.Atoi(parts[i+1]); err == nil {
-							port = p
-						}
+			fields := strings.Fields(cmdline)
+			for i, arg := range fields {
+				if arg == "-p" && i+1 < len(fields) {
+					if p, err := strconv.Atoi(fields[i+1]); err == nil {
+						port = p
 					}
 				}
 			}

@@ -162,13 +162,16 @@ func (e *Engine) Tick() (*model.Snapshot, *model.RateSnapshot, *model.AnalysisRe
 	return snap, rates, result
 }
 
-// Close shuts down all engine resources (sentinel probes, security watchdog).
+// Close shuts down all engine resources (sentinel probes, security watchdog, collector connections).
 func (e *Engine) Close() {
 	if e.Sentinel != nil {
 		e.Sentinel.Close()
 	}
 	if e.SecWatchdog != nil {
 		e.SecWatchdog.Close()
+	}
+	if e.registry != nil {
+		e.registry.CloseAll()
 	}
 }
 

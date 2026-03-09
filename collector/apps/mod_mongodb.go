@@ -68,8 +68,8 @@ func (m *mongoModule) Collect(app *DetectedApp, secrets *AppSecrets) model.AppIn
 	inst.Connections = countTCPConnections(app.Port)
 
 	// Tier 2: placeholder — MongoDB requires a client driver for serverStatus.
-	// Flag NeedsCreds if credentials are configured (so the UI can indicate deep metrics are possible).
-	if secrets != nil && secrets.MongoDB != nil && secrets.MongoDB.URI != "" {
+	// Flag NeedsCreds when credentials are NOT configured (so the UI can prompt for them).
+	if secrets == nil || secrets.MongoDB == nil || secrets.MongoDB.URI == "" {
 		inst.NeedsCreds = true
 	}
 

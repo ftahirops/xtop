@@ -108,6 +108,7 @@ func findListeningPort(pid int) int {
 		if err != nil {
 			continue
 		}
+		defer f.Close()
 		scanner := bufio.NewScanner(f)
 		scanner.Scan() // skip header
 		for scanner.Scan() {
@@ -127,20 +128,17 @@ func findListeningPort(pid int) int {
 					if err == nil && len(portBytes) == 2 {
 						port := int(portBytes[0])<<8 | int(portBytes[1])
 						if port > 0 {
-							f.Close()
 							return port
 						}
 					}
 					// Try parsing as integer directly
 					p, err := strconv.ParseInt(localParts[1], 16, 32)
 					if err == nil && p > 0 {
-						f.Close()
 						return int(p)
 					}
 				}
 			}
 		}
-		f.Close()
 	}
 	return 0
 }

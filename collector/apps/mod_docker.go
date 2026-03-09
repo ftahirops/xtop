@@ -11,12 +11,15 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ftahirops/xtop/model"
 )
 
-type dockerModule struct{}
+type dockerModule struct {
+	client *http.Client
+}
 
 func NewDockerModule() AppModule { return &dockerModule{} }
 
@@ -43,7 +46,32 @@ func (m *dockerModule) Detect(processes []model.ProcessMetrics) []DetectedApp {
 	return apps
 }
 
+// initClient lazily initializes the shared HTTP client.
+func (m *dockerModule) initClient() {
+	if m.client == nil {
+		m.client = &http.Client{
+			Transport: &http.Transport{
+				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+					return net.Dial("unix", "/var/run/docker.sock")
+				},
+			},
+			Timeout: 5 * time.Second,
+		}
+	}
+}
+
+// Close shuts down idle connections on the underlying transport.
+func (m *dockerModule) Close() {
+	if m.client != nil {
+		if t, ok := m.client.Transport.(*http.Transport); ok {
+			t.CloseIdleConnections()
+		}
+	}
+}
+
 func (m *dockerModule) Collect(app *DetectedApp, _ *AppSecrets) model.AppInstance {
+	m.initClient()
+
 	inst := model.AppInstance{
 		AppType:     "docker",
 		DisplayName: "Docker",
@@ -58,10 +86,8 @@ func (m *dockerModule) Collect(app *DetectedApp, _ *AppSecrets) model.AppInstanc
 	inst.Threads = readProcThreads(app.PID)
 	inst.FDs = readProcFDs(app.PID)
 
-	client := dockerClient()
-
 	// Docker API: /info — daemon info
-	info := dockerInfo(client)
+	info := dockerInfo(m.client)
 	if info != nil {
 		inst.HasDeepMetrics = true
 		if v, ok := info["ServerVersion"]; ok {
@@ -103,9 +129,17 @@ func (m *dockerModule) Collect(app *DetectedApp, _ *AppSecrets) model.AppInstanc
 	}
 
 	// Docker API: /containers/json?all=true — container list
-	containerList := dockerContainerList(client)
+	containerList := dockerContainerList(m.client)
 	inst.HealthScore = 100
 
+	// Pre-process containers: parse basic info and identify running ones.
+	type containerEntry struct {
+		dc     model.AppDockerContainer
+		fullID string
+		idx    int
+	}
+
+	entries := make([]containerEntry, 0, len(containerList))
 	for i, c := range containerList {
 		if i >= 50 {
 			break
@@ -135,9 +169,6 @@ func (m *dockerModule) Collect(app *DetectedApp, _ *AppSecrets) model.AppInstanc
 		// Health check
 		if strings.Contains(dc.Status, "(unhealthy)") {
 			dc.Health = "unhealthy"
-			inst.HealthScore -= 10
-			inst.HealthIssues = append(inst.HealthIssues,
-				fmt.Sprintf("container '%s' is unhealthy", dc.Name))
 		} else if strings.Contains(dc.Status, "(healthy)") {
 			dc.Health = "healthy"
 		} else {
@@ -149,86 +180,117 @@ func (m *dockerModule) Collect(app *DetectedApp, _ *AppSecrets) model.AppInstanc
 			var code int
 			if _, err := fmt.Sscanf(dc.Status, "Exited (%d)", &code); err == nil {
 				dc.ExitCode = code
-				if code != 0 {
-					inst.HealthScore -= 5
-					inst.HealthIssues = append(inst.HealthIssues,
-						fmt.Sprintf("container '%s' exited with code %d", dc.Name, code))
+			}
+		}
+
+		fullID, _ := c["Id"].(string)
+		entries = append(entries, containerEntry{dc: dc, fullID: fullID, idx: i})
+	}
+
+	// Collect stats for running containers in parallel.
+	type statsResult struct {
+		idx   int
+		stats map[string]interface{}
+	}
+
+	var runningEntries []int
+	for i, e := range entries {
+		if e.dc.State == "running" && e.fullID != "" {
+			runningEntries = append(runningEntries, i)
+		}
+	}
+
+	results := make([]statsResult, len(runningEntries))
+	sem := make(chan struct{}, 5) // concurrency cap
+	var wg sync.WaitGroup
+
+	for ri, ei := range runningEntries {
+		wg.Add(1)
+		go func(resultIdx, entryIdx int) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			stats := dockerContainerStatsCtx(ctx, m.client, entries[entryIdx].fullID)
+			results[resultIdx] = statsResult{idx: entryIdx, stats: stats}
+		}(ri, ei)
+	}
+	wg.Wait()
+
+	// Apply stats results back to entries.
+	for _, r := range results {
+		if r.stats == nil {
+			continue
+		}
+		dc := &entries[r.idx].dc
+		stats := r.stats
+
+		dc.CPUPct = dockerCalcCPU(stats)
+
+		if memStats, ok := stats["memory_stats"].(map[string]interface{}); ok {
+			dc.MemUsedBytes = toFloat(memStats["usage"])
+			dc.MemLimitBytes = toFloat(memStats["limit"])
+			if dc.MemLimitBytes > 0 && dc.MemLimitBytes < 1e18 {
+				dc.MemPct = dc.MemUsedBytes / dc.MemLimitBytes * 100
+			}
+		}
+
+		// Network I/O
+		if networks, ok := stats["networks"].(map[string]interface{}); ok {
+			for _, iface := range networks {
+				if nd, ok := iface.(map[string]interface{}); ok {
+					dc.NetRxBytes += toFloat(nd["rx_bytes"])
+					dc.NetTxBytes += toFloat(nd["tx_bytes"])
 				}
 			}
 		}
 
-		// Per-container stats (running only)
-		if dc.State == "running" {
-			if fullID, ok := c["Id"].(string); ok {
-				stats := dockerContainerStats(client, fullID)
-				if stats != nil {
-					dc.CPUPct = dockerCalcCPU(stats)
-
-					if memStats, ok := stats["memory_stats"].(map[string]interface{}); ok {
-						dc.MemUsedBytes = toFloat(memStats["usage"])
-						dc.MemLimitBytes = toFloat(memStats["limit"])
-						if dc.MemLimitBytes > 0 && dc.MemLimitBytes < 1e18 {
-							dc.MemPct = dc.MemUsedBytes / dc.MemLimitBytes * 100
-						}
-						if dc.MemPct > 90 {
-							inst.HealthScore -= 5
-							inst.HealthIssues = append(inst.HealthIssues,
-								fmt.Sprintf("container '%s' memory at %.0f%%", dc.Name, dc.MemPct))
-						}
+		// Block I/O
+		if blkio, ok := stats["blkio_stats"].(map[string]interface{}); ok {
+			if ioEntries, ok := blkio["io_service_bytes_recursive"].([]interface{}); ok {
+				for _, entry := range ioEntries {
+					e, ok := entry.(map[string]interface{})
+					if !ok {
+						continue
 					}
-
-					// Network I/O
-					if networks, ok := stats["networks"].(map[string]interface{}); ok {
-						for _, iface := range networks {
-							if nd, ok := iface.(map[string]interface{}); ok {
-								dc.NetRxBytes += toFloat(nd["rx_bytes"])
-								dc.NetTxBytes += toFloat(nd["tx_bytes"])
-							}
-						}
-					}
-
-					// Block I/O
-					if blkio, ok := stats["blkio_stats"].(map[string]interface{}); ok {
-						if entries, ok := blkio["io_service_bytes_recursive"].([]interface{}); ok {
-							for _, entry := range entries {
-								e, ok := entry.(map[string]interface{})
-								if !ok {
-									continue
-								}
-								op, _ := e["op"].(string)
-								val := toFloat(e["value"])
-								switch strings.ToLower(op) {
-								case "read":
-									dc.BlockRead += val
-								case "write":
-									dc.BlockWrite += val
-								}
-							}
-						}
-					}
-
-					// PIDs
-					if pidStats, ok := stats["pids_stats"].(map[string]interface{}); ok {
-						dc.PIDs = int(toFloat(pidStats["current"]))
+					op, _ := e["op"].(string)
+					val := toFloat(e["value"])
+					switch strings.ToLower(op) {
+					case "read":
+						dc.BlockRead += val
+					case "write":
+						dc.BlockWrite += val
 					}
 				}
 			}
 		}
 
-		// Restart count from container inspect
-		if fullID, ok := c["Id"].(string); ok {
-			if inspect := dockerInspect(client, fullID); inspect != nil {
-				if state, ok := inspect["State"].(map[string]interface{}); ok {
-					if rc, ok := state["RestartCount"]; ok {
-						dc.RestartCount = int(toFloat(rc))
-					}
-				}
-				if rc, ok := inspect["RestartCount"]; ok {
-					dc.RestartCount = int(toFloat(rc))
-				}
-			}
+		// PIDs
+		if pidStats, ok := stats["pids_stats"].(map[string]interface{}); ok {
+			dc.PIDs = int(toFloat(pidStats["current"]))
 		}
+	}
 
+	// Build final container list and compute health.
+	for _, e := range entries {
+		dc := e.dc
+		if dc.Health == "unhealthy" {
+			inst.HealthScore -= 10
+			inst.HealthIssues = append(inst.HealthIssues,
+				fmt.Sprintf("container '%s' is unhealthy", dc.Name))
+		}
+		if dc.State == "exited" && dc.ExitCode != 0 {
+			inst.HealthScore -= 5
+			inst.HealthIssues = append(inst.HealthIssues,
+				fmt.Sprintf("container '%s' exited with code %d", dc.Name, dc.ExitCode))
+		}
+		if dc.MemPct > 90 {
+			inst.HealthScore -= 5
+			inst.HealthIssues = append(inst.HealthIssues,
+				fmt.Sprintf("container '%s' memory at %.0f%%", dc.Name, dc.MemPct))
+		}
 		inst.Containers = append(inst.Containers, dc)
 	}
 
@@ -239,20 +301,32 @@ func (m *dockerModule) Collect(app *DetectedApp, _ *AppSecrets) model.AppInstanc
 	return inst
 }
 
-// dockerClient creates an HTTP client that talks over the Docker unix socket.
-func dockerClient() *http.Client {
-	return &http.Client{
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return net.Dial("unix", "/var/run/docker.sock")
-			},
-		},
-		Timeout: 15 * time.Second,
-	}
-}
-
 func dockerGet(client *http.Client, path string) map[string]interface{} {
 	resp, err := client.Get("http://localhost" + path)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
+	if err != nil {
+		return nil
+	}
+	var result map[string]interface{}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil
+	}
+	return result
+}
+
+func dockerGetCtx(ctx context.Context, client *http.Client, path string) map[string]interface{} {
+	req, err := http.NewRequestWithContext(ctx, "GET", "http://localhost"+path, nil)
+	if err != nil {
+		return nil
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil
 	}
@@ -276,11 +350,6 @@ func dockerInfo(client *http.Client) map[string]interface{} {
 	return dockerGet(client, "/info")
 }
 
-// dockerInspect calls GET /containers/{id}/json.
-func dockerInspect(client *http.Client, id string) map[string]interface{} {
-	return dockerGet(client, fmt.Sprintf("/containers/%s/json", id))
-}
-
 // dockerContainerList calls GET /containers/json?all=true.
 func dockerContainerList(client *http.Client) []map[string]interface{} {
 	resp, err := client.Get("http://localhost/containers/json?all=true")
@@ -302,9 +371,9 @@ func dockerContainerList(client *http.Client) []map[string]interface{} {
 	return result
 }
 
-// dockerContainerStats calls GET /containers/{id}/stats?stream=false.
-func dockerContainerStats(client *http.Client, id string) map[string]interface{} {
-	return dockerGet(client, fmt.Sprintf("/containers/%s/stats?stream=false", id))
+// dockerContainerStatsCtx calls GET /containers/{id}/stats?stream=false with a context.
+func dockerContainerStatsCtx(ctx context.Context, client *http.Client, id string) map[string]interface{} {
+	return dockerGetCtx(ctx, client, fmt.Sprintf("/containers/%s/stats?stream=false", id))
 }
 
 // dockerCalcCPU calculates CPU% from Docker stats response.

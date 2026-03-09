@@ -76,3 +76,17 @@ func (r *Registry) CollectAll(snap *model.Snapshot) []error {
 	}
 	return errs
 }
+
+// Closeable is an optional interface for collectors that hold resources.
+type Closeable interface {
+	Close()
+}
+
+// CloseAll calls Close on any registered collector that implements Closeable.
+func (r *Registry) CloseAll() {
+	for _, c := range r.collectors {
+		if cl, ok := c.(Closeable); ok {
+			cl.Close()
+		}
+	}
+}
