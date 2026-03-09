@@ -470,7 +470,11 @@ func renderNetQualityContent(snap *model.Snapshot, rates *model.RateSnapshot, pm
 			if dropShown >= 3 || d.Rate <= 0 {
 				break
 			}
-			bpfLines = append(bpfLines, fmt.Sprintf("  %-24s %6.0f/s", d.ReasonStr, d.Rate))
+			if noiseBPFDropReasons[d.ReasonStr] {
+				bpfLines = append(bpfLines, dimStyle.Render(fmt.Sprintf("  %-24s %6.0f/s  (benign)", d.ReasonStr, d.Rate)))
+			} else {
+				bpfLines = append(bpfLines, warnStyle.Render(fmt.Sprintf("  %-24s %6.0f/s", d.ReasonStr, d.Rate)))
+			}
 			dropShown++
 		}
 		bpfLines = padTo(bpfLines, 4)
