@@ -193,6 +193,19 @@ func fmtPct(v float64) string {
 	return fmt.Sprintf("%.1f%%", v)
 }
 
+func fmtBytesRate(bps float64) string {
+	switch {
+	case bps >= 1<<30:
+		return fmt.Sprintf("%.1f GB/s", bps/(1<<30))
+	case bps >= 1<<20:
+		return fmt.Sprintf("%.1f MB/s", bps/(1<<20))
+	case bps >= 1<<10:
+		return fmt.Sprintf("%.1f KB/s", bps/(1<<10))
+	default:
+		return fmt.Sprintf("%.0f B/s", bps)
+	}
+}
+
 // #22: Use rune-aware operations for proper UTF-8 handling
 func padRight(s string, width int) string {
 	runes := []rune(s)

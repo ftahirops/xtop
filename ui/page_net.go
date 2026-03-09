@@ -916,53 +916,105 @@ func renderNetProcessesContent(snap *model.Snapshot, rates *model.RateSnapshot, 
 		sb.WriteString(boxSection("TOP PROCESSES BY FD USAGE", fdLines, iw))
 	}
 
-	// Top processes by connection count (from /proc/PID/net data)
+	// Per-process network activity from eBPF + ephemeral port tracking
 	{
-		var consLines []string
-		consLines = append(consLines, dimStyle.Render(fmt.Sprintf("%-20s %6s %8s %8s %10s",
-			"PROCESS", "PID", "FDs", "THREADS", "RSS")))
+		var netLines []string
 
-		if snap != nil && len(snap.Processes) > 0 {
-			// Sort by FD count descending — high FD = likely network-heavy
-			procs := make([]model.ProcessMetrics, len(snap.Processes))
-			copy(procs, snap.Processes)
-			sort.Slice(procs, func(i, j int) bool {
-				return procs[i].FDCount > procs[j].FDCount
+		// Source 1: eBPF outbound data (per-process bytes/sec)
+		sent := snap.Global.Sentinel
+		if sent.Active && len(sent.OutboundTop) > 0 {
+			netLines = append(netLines, dimStyle.Render(fmt.Sprintf("%-16s %6s  %-18s %10s %8s",
+				"PROCESS", "PID", "DESTINATION", "RATE", "PKTS")))
+
+			// Aggregate by PID first
+			type procNet struct {
+				PID       int
+				Comm      string
+				TotalBps  float64
+				TotalPkts uint64
+				Dests     []string
+			}
+			byPID := make(map[int]*procNet)
+			for _, e := range sent.OutboundTop {
+				pn, ok := byPID[e.PID]
+				if !ok {
+					pn = &procNet{PID: e.PID, Comm: e.Comm}
+					byPID[e.PID] = pn
+				}
+				pn.TotalBps += e.BytesPerSec
+				pn.TotalPkts += e.PacketCount
+				if len(pn.Dests) < 3 {
+					pn.Dests = append(pn.Dests, model.MaskIP(e.DstIP))
+				}
+			}
+
+			// Sort by total bytes/sec
+			var sorted []*procNet
+			for _, pn := range byPID {
+				sorted = append(sorted, pn)
+			}
+			sort.Slice(sorted, func(i, j int) bool {
+				return sorted[i].TotalBps > sorted[j].TotalBps
 			})
 
 			shown := 0
-			seen := make(map[string]bool)
-			for _, p := range procs {
-				if shown >= 5 {
+			for _, pn := range sorted {
+				if shown >= 5 || pn.TotalBps < 1 {
 					break
 				}
-				if p.FDCount < 10 {
-					break
+				name := pn.Comm
+				if len(name) > 16 {
+					name = name[:13] + "..."
 				}
-				key := p.Comm
-				if seen[key] {
-					continue
+				dstStr := strings.Join(pn.Dests, ", ")
+				if len(dstStr) > 18 {
+					dstStr = dstStr[:15] + "..."
 				}
-				seen[key] = true
-
-				name := p.Comm
-				if len(name) > 20 {
-					name = name[:17] + "..."
-				}
-				rss := fmt.Sprintf("%.1f MB", float64(p.RSS)/(1024*1024))
-				consLines = append(consLines, fmt.Sprintf("%-20s %6d %8d %8d %10s",
-					name, p.PID, p.FDCount, p.NumThreads, rss))
+				netLines = append(netLines, fmt.Sprintf("%-16s %6d  %-18s %10s %8d",
+					name, pn.PID, dstStr, fmtBytesRate(pn.TotalBps), pn.TotalPkts))
 				shown++
 			}
 		}
-		consLines = padTo(consLines, 6)
-		sb.WriteString(boxSection("TOP PROCESSES (by open FDs)", consLines, iw))
+
+		// Source 2: Ephemeral port users (per-process connection counts)
+		if len(snap.Global.EphemeralPorts.TopUsers) > 0 {
+			if len(netLines) > 0 {
+				netLines = append(netLines, "")
+			}
+			netLines = append(netLines, dimStyle.Render(fmt.Sprintf("%-16s %6s %8s %8s %8s %8s",
+				"PROCESS", "PID", "CONNS", "ESTAB", "TW", "CW")))
+			for i, u := range snap.Global.EphemeralPorts.TopUsers {
+				if i >= 5 {
+					break
+				}
+				name := u.Comm
+				if len(name) > 16 {
+					name = name[:13] + "..."
+				}
+				row := fmt.Sprintf("%-16s %6d %8d %8d %8d %8d",
+					name, u.PID, u.Ports, u.Established, u.TimeWait, u.CloseWait)
+				if u.CloseWait > 50 {
+					netLines = append(netLines, warnStyle.Render(row))
+				} else {
+					netLines = append(netLines, row)
+				}
+			}
+		}
+
+		if len(netLines) == 0 {
+			netLines = append(netLines, dimStyle.Render("No per-process network data (eBPF sentinel collects this)"))
+		}
+		netLines = padTo(netLines, 6)
+		sb.WriteString(boxSection("NETWORK ACTIVITY BY PROCESS", netLines, iw))
 	}
 
 	return sb.String()
 }
 
 func renderNetTalkersContent(snap *model.Snapshot, iw int) string {
+	var sb strings.Builder
+
+	// Top remote IPs with connection breakdown
 	var remLines []string
 	remLines = append(remLines, dimStyle.Render(fmt.Sprintf("%-18s %6s %6s %10s %10s",
 		"REMOTE IP", "TOTAL", "ESTAB", "TIME_WAIT", "CLOSE_WAIT")))
@@ -981,7 +1033,68 @@ func renderNetTalkersContent(snap *model.Snapshot, iw int) string {
 		shown++
 	}
 	remLines = padTo(remLines, 6)
-	return boxSection("TOP REMOTE IPs", remLines, iw)
+	sb.WriteString(boxSection("TOP REMOTE IPs", remLines, iw))
+
+	// Per-process connection destinations from eBPF flow rates
+	sent := snap.Global.Sentinel
+	if sent.Active && len(sent.FlowRates) > 0 {
+		var flowLines []string
+		flowLines = append(flowLines, dimStyle.Render(fmt.Sprintf("%-16s %6s  %-18s %8s %8s %6s",
+			"PROCESS", "PID", "DESTINATION", "CONNECTS", "CLOSES", "DESTS")))
+
+		// Group by PID
+		type pidFlows struct {
+			PID      int
+			Comm     string
+			Connects uint64
+			Closes   uint64
+			Dests    int
+			TopDsts  []string
+		}
+		byPID := make(map[int]*pidFlows)
+		for _, f := range sent.FlowRates {
+			pf, ok := byPID[f.PID]
+			if !ok {
+				pf = &pidFlows{PID: f.PID, Comm: f.Comm, Dests: f.UniqueDestCount}
+				byPID[f.PID] = pf
+			}
+			pf.Connects += f.ConnectCount
+			pf.Closes += f.CloseCount
+			if len(pf.TopDsts) < 3 {
+				pf.TopDsts = append(pf.TopDsts, model.MaskIP(f.DstIP))
+			}
+		}
+
+		var sorted []*pidFlows
+		for _, pf := range byPID {
+			sorted = append(sorted, pf)
+		}
+		sort.Slice(sorted, func(i, j int) bool {
+			return sorted[i].Connects > sorted[j].Connects
+		})
+
+		fShown := 0
+		for _, pf := range sorted {
+			if fShown >= 5 {
+				break
+			}
+			name := pf.Comm
+			if len(name) > 16 {
+				name = name[:13] + "..."
+			}
+			dstStr := strings.Join(pf.TopDsts, ", ")
+			if len(dstStr) > 18 {
+				dstStr = dstStr[:15] + "..."
+			}
+			flowLines = append(flowLines, fmt.Sprintf("%-16s %6d  %-18s %8d %8d %6d",
+				name, pf.PID, dstStr, pf.Connects, pf.Closes, pf.Dests))
+			fShown++
+		}
+		flowLines = padTo(flowLines, 6)
+		sb.WriteString(boxSection("PROCESS CONNECTIONS (BPF)", flowLines, iw))
+	}
+
+	return sb.String()
 }
 
 // analyzeNetHealth produces a health verdict and list of issue strings.
