@@ -129,25 +129,45 @@ func (m *dockerModule) Collect(app *DetectedApp, _ *AppSecrets) model.AppInstanc
 	}
 
 	// Docker API: /system/df — disk usage (containers, images, volumes)
-	if du := dockerGet(m.client, "http://localhost/system/df"); du != nil {
-		// Images total size
+	if du := dockerGet(m.client, "/system/df"); du != nil {
+		// Per-image data
 		if imgs, ok := du["Images"].([]interface{}); ok {
 			var totalSize, sharedSize float64
+			var imgCount int
 			for _, img := range imgs {
-				if m, ok := img.(map[string]interface{}); ok {
-					totalSize += toFloat(m["Size"])
-					sharedSize += toFloat(m["SharedSize"])
+				im, ok := img.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				totalSize += toFloat(im["Size"])
+				sharedSize += toFloat(im["SharedSize"])
+				// Store top images by size (up to 10)
+				if imgCount < 10 {
+					tags, _ := im["RepoTags"].([]interface{})
+					tag := "<none>"
+					if len(tags) > 0 {
+						tag = fmt.Sprintf("%v", tags[0])
+					}
+					inst.DeepMetrics[fmt.Sprintf("img_%d_name", imgCount)] = tag
+					inst.DeepMetrics[fmt.Sprintf("img_%d_size", imgCount)] = dockerFmtBytes(toFloat(im["Size"]))
+					inst.DeepMetrics[fmt.Sprintf("img_%d_containers", imgCount)] = fmt.Sprintf("%.0f", toFloat(im["Containers"]))
+					imgCount++
 				}
 			}
+			inst.DeepMetrics["images_count"] = fmt.Sprintf("%d", len(imgs))
 			inst.DeepMetrics["images_total_size"] = dockerFmtBytes(totalSize)
-			inst.DeepMetrics["images_shared_size"] = dockerFmtBytes(sharedSize)
+			inst.DeepMetrics["images_reclaimable"] = dockerFmtBytes(totalSize - sharedSize)
 		}
 		// Volumes
 		if vols, ok := du["Volumes"].([]interface{}); ok {
 			var volSize float64
 			for _, v := range vols {
-				if m, ok := v.(map[string]interface{}); ok {
-					volSize += toFloat(m["UsageData"].(map[string]interface{})["Size"])
+				vm, ok := v.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				if ud, ok := vm["UsageData"].(map[string]interface{}); ok {
+					volSize += toFloat(ud["Size"])
 				}
 			}
 			inst.DeepMetrics["volumes_count"] = fmt.Sprintf("%d", len(vols))
@@ -157,17 +177,43 @@ func (m *dockerModule) Collect(app *DetectedApp, _ *AppSecrets) model.AppInstanc
 		if bc, ok := du["BuildCache"].([]interface{}); ok {
 			var bcSize float64
 			for _, b := range bc {
-				if m, ok := b.(map[string]interface{}); ok {
-					bcSize += toFloat(m["Size"])
+				if bm, ok := b.(map[string]interface{}); ok {
+					bcSize += toFloat(bm["Size"])
 				}
 			}
+			inst.DeepMetrics["buildcache_count"] = fmt.Sprintf("%d", len(bc))
 			inst.DeepMetrics["buildcache_size"] = dockerFmtBytes(bcSize)
+		}
+		// Container layer sizes
+		if ctrs, ok := du["Containers"].([]interface{}); ok {
+			var totalRw, totalRootFs float64
+			for _, c := range ctrs {
+				cm, ok := c.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				totalRw += toFloat(cm["SizeRw"])
+				totalRootFs += toFloat(cm["SizeRootFs"])
+			}
+			inst.DeepMetrics["containers_rw_size"] = dockerFmtBytes(totalRw)
+			inst.DeepMetrics["containers_rootfs_size"] = dockerFmtBytes(totalRootFs)
 		}
 	}
 
-	// Docker API: /networks — network count
-	if nets := dockerGetList(m.client, "http://localhost/networks"); nets != nil {
+	// Docker API: /networks — network list
+	if nets := dockerGetList(m.client, "/networks"); nets != nil {
 		inst.DeepMetrics["networks_count"] = fmt.Sprintf("%d", len(nets))
+		for i, n := range nets {
+			if i >= 10 {
+				break
+			}
+			name, _ := n["Name"].(string)
+			driver, _ := n["Driver"].(string)
+			scope, _ := n["Scope"].(string)
+			inst.DeepMetrics[fmt.Sprintf("net_%d_name", i)] = name
+			inst.DeepMetrics[fmt.Sprintf("net_%d_driver", i)] = driver
+			inst.DeepMetrics[fmt.Sprintf("net_%d_scope", i)] = scope
+		}
 	}
 
 	// Docker API: /containers/json?all=true — container list
@@ -394,7 +440,7 @@ func dockerInfo(client *http.Client) map[string]interface{} {
 
 // dockerGetList calls a Docker API endpoint that returns a JSON array.
 func dockerGetList(client *http.Client, path string) []map[string]interface{} {
-	resp, err := client.Get(path)
+	resp, err := client.Get("http://localhost" + path)
 	if err != nil {
 		return nil
 	}

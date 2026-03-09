@@ -639,14 +639,22 @@ func renderDockerDetail(app model.AppInstance, iw int) string {
 
 	right.WriteString(dimStyle.Render("DISK USAGE") + "\n")
 	if dm["images_total_size"] != "" {
-		right.WriteString(fmt.Sprintf(" Images:      %s\n", valueStyle.Render(dm["images_total_size"])))
+		right.WriteString(fmt.Sprintf(" Images:      %s", valueStyle.Render(dm["images_total_size"])))
+		if dm["images_reclaimable"] != "" {
+			right.WriteString(dimStyle.Render(" (reclaimable: " + dm["images_reclaimable"] + ")"))
+		}
+		right.WriteString("\n")
 	}
 	if dm["volumes_count"] != "" {
 		right.WriteString(fmt.Sprintf(" Volumes:     %s  (%s vols)\n",
 			valueStyle.Render(dm["volumes_size"]), valueStyle.Render(dm["volumes_count"])))
 	}
-	if dm["buildcache_size"] != "" {
-		right.WriteString(fmt.Sprintf(" Build Cache: %s\n", valueStyle.Render(dm["buildcache_size"])))
+	if dm["buildcache_count"] != "" {
+		right.WriteString(fmt.Sprintf(" Build Cache: %s  (%s layers)\n",
+			valueStyle.Render(dm["buildcache_size"]), valueStyle.Render(dm["buildcache_count"])))
+	}
+	if dm["containers_rw_size"] != "" {
+		right.WriteString(fmt.Sprintf(" Containers:  %s writable\n", valueStyle.Render(dm["containers_rw_size"])))
 	}
 	if dm["networks_count"] != "" {
 		right.WriteString(fmt.Sprintf(" Networks:    %s\n", valueStyle.Render(dm["networks_count"])))
@@ -661,6 +669,80 @@ func renderDockerDetail(app model.AppInstance, iw int) string {
 	}
 	sb.WriteString(boxBot(iw) + "\n")
 	_ = rightW
+
+	// IMAGES table
+	if dm["images_count"] != "" {
+		var imgLines []string
+		imgLines = append(imgLines, dimStyle.Render(fmt.Sprintf(" %-40s %10s %s", "REPOSITORY:TAG", "SIZE", "CONTAINERS")))
+		for i := 0; i < 10; i++ {
+			name := dm[fmt.Sprintf("img_%d_name", i)]
+			if name == "" {
+				break
+			}
+			size := dm[fmt.Sprintf("img_%d_size", i)]
+			ctrs := dm[fmt.Sprintf("img_%d_containers", i)]
+			imgLines = append(imgLines, fmt.Sprintf(" %-40s %10s %s",
+				func() string {
+					if len(name) > 40 {
+						return name[:37] + "..."
+					}
+					return name
+				}(),
+				valueStyle.Render(size),
+				valueStyle.Render(ctrs)))
+		}
+		sb.WriteString(boxSection("IMAGES ("+dm["images_count"]+" total, "+dm["images_total_size"]+")", imgLines, iw))
+	}
+
+	// NETWORKS table
+	if dm["networks_count"] != "" {
+		var netLines []string
+		netLines = append(netLines, dimStyle.Render(fmt.Sprintf(" %-24s %-12s %s", "NAME", "DRIVER", "SCOPE")))
+		for i := 0; i < 10; i++ {
+			name := dm[fmt.Sprintf("net_%d_name", i)]
+			if name == "" {
+				break
+			}
+			driver := dm[fmt.Sprintf("net_%d_driver", i)]
+			scope := dm[fmt.Sprintf("net_%d_scope", i)]
+			netLines = append(netLines, fmt.Sprintf(" %-24s %-12s %s", name, valueStyle.Render(driver), dimStyle.Render(scope)))
+		}
+		sb.WriteString(boxSection("NETWORKS", netLines, iw))
+	}
+
+	// HEALTH DIAGNOSTICS
+	{
+		var issues []string
+		// Check for stopped/paused containers
+		if s := dm["Stopped"]; s != "" && s != "0" {
+			issues = append(issues, warnStyle.Render("!! "+s+" stopped containers"))
+		}
+		if s := dm["Paused"]; s != "" && s != "0" {
+			issues = append(issues, warnStyle.Render("!! "+s+" paused containers"))
+		}
+		// Check per-container health
+		for _, c := range app.Containers {
+			if c.Health == "unhealthy" {
+				issues = append(issues, critStyle.Render("!! "+c.Name+" is UNHEALTHY"))
+			}
+			if c.RestartCount > 0 {
+				issues = append(issues, warnStyle.Render(fmt.Sprintf("!! %s has %d restarts", c.Name, c.RestartCount)))
+			}
+			if c.State == "exited" && c.ExitCode != 0 {
+				issues = append(issues, critStyle.Render(fmt.Sprintf("!! %s exited with code %d", c.Name, c.ExitCode)))
+			}
+			if c.MemPct > 90 {
+				issues = append(issues, warnStyle.Render(fmt.Sprintf("!! %s memory at %.0f%%", c.Name, c.MemPct)))
+			}
+			if c.CPUPct > 80 {
+				issues = append(issues, warnStyle.Render(fmt.Sprintf("!! %s CPU at %.1f%%", c.Name, c.CPUPct)))
+			}
+		}
+		if len(issues) == 0 {
+			issues = append(issues, okStyle.Render(" All containers healthy"))
+		}
+		sb.WriteString(boxSection("HEALTH DIAGNOSTICS", issues, iw))
+	}
 
 	// Per-container table — single row per container
 	if len(app.Containers) > 0 {
