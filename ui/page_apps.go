@@ -609,47 +609,57 @@ func renderDockerDetail(app model.AppInstance, iw int) string {
 		{Key: "Images", Val: app.DeepMetrics["Images"]},
 	}))
 
-	// Per-container table
+	// Per-container table — single row per container
 	if len(app.Containers) > 0 {
 		sb.WriteString("  " + titleStyle.Render("CONTAINERS") + "\n")
 		sb.WriteString(boxTop(iw) + "\n")
 
-		cName := 22
+		cName := 24
 		cState := 10
-		cCPU := 8
-		cMem := 24
+		cCPU := 7
+		cMem := 12
+		cMemPct := 5
 		cNetRx := 10
 		cNetTx := 10
 		cBlkR := 10
 		cBlkW := 10
-		cPIDs := 6
+		cPIDs := 5
+		cImage := 30
 
-		hdr := fmt.Sprintf("  %s %s %s %s %s %s %s %s %s",
+		hdr := fmt.Sprintf(" %s%s%s%s%s%s%s%s%s%s%s",
 			styledPad(dimStyle.Render("Name"), cName),
 			styledPad(dimStyle.Render("State"), cState),
 			styledPad(dimStyle.Render("CPU%"), cCPU),
-			styledPad(dimStyle.Render("Memory"), cMem),
+			styledPad(dimStyle.Render("Mem"), cMem),
+			styledPad(dimStyle.Render("Mem%"), cMemPct),
 			styledPad(dimStyle.Render("Net RX"), cNetRx),
 			styledPad(dimStyle.Render("Net TX"), cNetTx),
 			styledPad(dimStyle.Render("Blk R"), cBlkR),
 			styledPad(dimStyle.Render("Blk W"), cBlkW),
-			styledPad(dimStyle.Render("PIDs"), cPIDs))
+			styledPad(dimStyle.Render("PIDs"), cPIDs),
+			styledPad(dimStyle.Render("Image"), cImage))
 		sb.WriteString(boxRow(hdr, iw) + "\n")
 		sb.WriteString(boxMid(iw) + "\n")
 
 		for _, c := range app.Containers {
 			name := c.Name
-			if len(name) > cName-2 {
-				name = name[:cName-2]
+			if len(name) > cName-1 {
+				name = name[:cName-4] + "..."
 			}
 
+			// State with health/restart indicators
 			stateStr := c.State
 			switch c.State {
 			case "running":
-				stateStr = okStyle.Render("running")
+				stateStr = okStyle.Render("run")
+				if c.Health == "unhealthy" {
+					stateStr = critStyle.Render("unheal")
+				} else if c.Health == "healthy" {
+					stateStr = okStyle.Render("healthy")
+				}
 			case "exited":
 				if c.ExitCode != 0 {
-					stateStr = critStyle.Render("exited")
+					stateStr = critStyle.Render(fmt.Sprintf("exit:%d", c.ExitCode))
 				} else {
 					stateStr = dimStyle.Render("exited")
 				}
@@ -658,9 +668,13 @@ func renderDockerDetail(app model.AppInstance, iw int) string {
 			default:
 				stateStr = dimStyle.Render(c.State)
 			}
+			if c.RestartCount > 0 {
+				stateStr = stateStr + warnStyle.Render(fmt.Sprintf("R%d", c.RestartCount))
+			}
 
 			cpuStr := "—"
 			memStr := "—"
+			memPctStr := "—"
 			netRx := "—"
 			netTx := "—"
 			blkR := "—"
@@ -669,13 +683,9 @@ func renderDockerDetail(app model.AppInstance, iw int) string {
 
 			if c.State == "running" {
 				cpuStr = fmt.Sprintf("%.1f%%", c.CPUPct)
+				memStr = appFmtBytesShort(c.MemUsedBytes)
 				if c.MemLimitBytes > 0 && c.MemLimitBytes < 1e18 {
-					memStr = fmt.Sprintf("%s / %s (%.0f%%)",
-						appFmtBytesShort(c.MemUsedBytes),
-						appFmtBytesShort(c.MemLimitBytes),
-						c.MemPct)
-				} else {
-					memStr = appFmtBytesShort(c.MemUsedBytes)
+					memPctStr = fmt.Sprintf("%.0f%%", c.MemPct)
 				}
 				netRx = appFmtBytesShort(c.NetRxBytes)
 				netTx = appFmtBytesShort(c.NetTxBytes)
@@ -684,45 +694,24 @@ func renderDockerDetail(app model.AppInstance, iw int) string {
 				pidStr = fmt.Sprintf("%d", c.PIDs)
 			}
 
-			row := fmt.Sprintf("  %s %s %s %s %s %s %s %s %s",
+			imageStr := c.Image
+			if len(imageStr) > cImage-1 {
+				imageStr = imageStr[:cImage-4] + "..."
+			}
+
+			row := fmt.Sprintf(" %s%s%s%s%s%s%s%s%s%s%s",
 				styledPad(valueStyle.Render(name), cName),
 				styledPad(stateStr, cState),
 				styledPad(valueStyle.Render(cpuStr), cCPU),
 				styledPad(valueStyle.Render(memStr), cMem),
+				styledPad(valueStyle.Render(memPctStr), cMemPct),
 				styledPad(valueStyle.Render(netRx), cNetRx),
 				styledPad(valueStyle.Render(netTx), cNetTx),
 				styledPad(valueStyle.Render(blkR), cBlkR),
 				styledPad(valueStyle.Render(blkW), cBlkW),
-				styledPad(valueStyle.Render(pidStr), cPIDs))
+				styledPad(valueStyle.Render(pidStr), cPIDs),
+				styledPad(dimStyle.Render(imageStr), cImage))
 			sb.WriteString(boxRow(row, iw) + "\n")
-
-			// Detail line: image, health, restarts, status
-			details := []string{}
-			if c.Image != "" {
-				details = append(details, dimStyle.Render("image: ")+valueStyle.Render(c.Image))
-			}
-			if c.Health != "" && c.Health != "—" {
-				hlth := c.Health
-				if hlth == "healthy" {
-					hlth = okStyle.Render(hlth)
-				} else if hlth == "unhealthy" {
-					hlth = critStyle.Render(hlth)
-				}
-				details = append(details, dimStyle.Render("health: ")+hlth)
-			}
-			if c.RestartCount > 0 {
-				details = append(details, dimStyle.Render("restarts: ")+warnStyle.Render(fmt.Sprintf("%d", c.RestartCount)))
-			}
-			if c.State == "exited" {
-				details = append(details, dimStyle.Render("exit: ")+valueStyle.Render(fmt.Sprintf("%d", c.ExitCode)))
-			}
-			if c.Status != "" {
-				details = append(details, dimStyle.Render(c.Status))
-			}
-			if len(details) > 0 {
-				detailRow := "    " + strings.Join(details, "  ")
-				sb.WriteString(boxRow(detailRow, iw) + "\n")
-			}
 		}
 		sb.WriteString(boxBot(iw) + "\n\n")
 	}
