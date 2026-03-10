@@ -102,12 +102,26 @@ func loadSecrets() *AppSecrets {
 }
 
 func secretsPath() string {
-	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
-		return filepath.Join(xdg, "xtop", "secrets.json")
-	}
+	// Primary: /root/.xtop_secrets (simple, discoverable)
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".config", "xtop", "secrets.json")
+	primary := filepath.Join(home, ".xtop_secrets")
+	if _, err := os.Stat(primary); err == nil {
+		return primary
+	}
+	// Fallback: XDG config
+	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+		p := filepath.Join(xdg, "xtop", "secrets.json")
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	legacy := filepath.Join(home, ".config", "xtop", "secrets.json")
+	if _, err := os.Stat(legacy); err == nil {
+		return legacy
+	}
+	// Return primary path (for creation instructions)
+	return primary
 }

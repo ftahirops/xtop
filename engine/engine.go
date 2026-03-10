@@ -63,6 +63,7 @@ func NewEngine(historySize, intervalSec int) *Engine {
 	appm.Register(apps.NewRabbitMQModule())
 	appm.Register(apps.NewKafkaModule())
 	appm.Register(apps.NewDockerModule())
+	appm.Register(apps.NewPHPFPMModule())
 	reg.Add(appm)
 
 	return &Engine{

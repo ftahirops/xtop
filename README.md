@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/xtop-v0.26.5-00d4aa?style=for-the-badge&logo=linux&logoColor=white" alt="version"/>
+  <img src="https://img.shields.io/badge/xtop-v0.26.8-00d4aa?style=for-the-badge&logo=linux&logoColor=white" alt="version"/>
   <img src="https://img.shields.io/badge/Go-1.21+-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="go"/>
   <img src="https://img.shields.io/badge/eBPF-Powered-ff6600?style=for-the-badge&logo=linux&logoColor=white" alt="ebpf"/>
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="license"/>
@@ -47,7 +47,7 @@
   - [Root-Cause Analysis Engine](#root-cause-analysis-engine) — 47+ evidence checks, 4 bottleneck detectors
   - [RCA Decision Engine](#rca-decision-engine-v0265) — Narrative, pattern detection, temporal causality, blame
   - [Health Levels](#health-levels) — OK / Inconclusive / Degraded / Critical
-  - [16 Interactive Pages](#16-interactive-pages) — Overview, CPU, Memory, IO, Network, Cgroups, Timeline, Events, Probe, Thresholds, DiskGuard, Security, Logs, Services, Diagnostics, Intel, Proxmox
+  - [17 Interactive Pages](#17-interactive-pages) — Overview, CPU, Memory, IO, Network, Cgroups, Timeline, Events, Probe, Thresholds, DiskGuard, Security, Logs, Services, Diagnostics, Intel, Apps, Proxmox
   - [6 Overview Layouts](#6-overview-layouts) — Two-Column, Compact, Adaptive, Grid, htop, btop
 - [eBPF Deep Investigation](#ebpf-deep-investigation) — Off-CPU, IO latency, lock contention, TCP retransmits
 - [eBPF Network Security Intelligence](#ebpf-network-security-intelligence-v0210) — SYN flood, port scan, DNS, C2 beacon, exfiltration
@@ -58,6 +58,10 @@
 - [Incident Recording & Replay](#incident-recording--replay) — Flight recorder for postmortem
 - [Event Detection](#event-detection) — Automatic incident detection and logging
 - [Doctor Mode](#doctor-mode) — Comprehensive health check (CLI, JSON, Markdown, cron, alerts)
+- [Application Diagnostics & RCA](#application-diagnostics--rca) — 15 auto-detected apps with deep health analysis
+  - [Supported Applications](#supported-applications) — MySQL, PostgreSQL, Redis, Nginx, and 11 more
+  - [Deep Metrics Collection](#deep-metrics-collection) — Tier 1 (process) + Tier 2 (protocol/CLI) metrics
+  - [Credential Configuration](#credential-configuration) — ~/.xtop_secrets setup
 - [Active Service Detection](#active-service-detection) — Auto-detect MySQL, Redis, Docker, K8s, etc.
 - [Shell Health Widget](#shell-health-widget) — Bash/Zsh prompt integration
 - [Cron Integration](#cron-integration) — Automated health checks
@@ -145,7 +149,7 @@ The heart of xtop. Four parallel bottleneck detectors continuously score system 
 
 **Trust Gating:** A bottleneck is only reported when **2+ independent evidence groups** confirm it. This eliminates false positives from single-metric spikes. Confidence scales from 30% (2 groups) to 98% (5+ groups).
 
-### RCA Decision Engine (v0.26.5)
+### RCA Decision Engine (v0.26.8)
 
 Beyond raw signals, xtop's **decision engine** tells you EXACTLY what's wrong, why, what caused it, and what to do:
 
@@ -154,8 +158,10 @@ Beyond raw signals, xtop's **decision engine** tells you EXACTLY what's wrong, w
 - **Temporal Causality** — Tracks signal onset times to identify which signal fired first and builds chains like `retransmits (T+0s) → drops (T+3s) → threads blocked (T+12s)`
 - **Blame Attribution** — Top offending processes per bottleneck domain with process-specific metrics (cpu%, threads, ctxsw, mem%, RSS, IO MB/s, CLOSE_WAIT count)
 - **Security Evidence** — BPF sentinel and watchdog probes feed security-specific evidence (SYN flood, port scan, lateral movement, data exfiltration, DNS tunneling, C2 beacon) into the RCA scoring with dedicated threat score bypass
+- **Application-Level RCA** — 15 auto-detected application modules with deep health diagnostics. Each module scores health from 100 down, applying weighted penalties for degraded metrics (e.g., MySQL buffer pool hit ratio < 95% = -15, PostgreSQL deadlocks > 0 = -10, HAProxy servers DOWN = -15 each). Total of **120+ application health rules** across all modules correlating internal app state with system-level bottlenecks
 
 Press `e` (Explain) to see the full ROOT CAUSE → EVIDENCE → IMPACT → TEMPORAL CAUSALITY → TOP OFFENDERS breakdown.
+Press `Y` to see per-application health diagnostics with deep metrics.
 
 ### Health Levels
 
@@ -168,7 +174,7 @@ Press `e` (Explain) to see the full ROOT CAUSE → EVIDENCE → IMPACT → TEMPO
 
 ---
 
-### 16 Interactive Pages
+### 17 Interactive Pages
 
 | Key | Page | What You See |
 |---|---|---|
@@ -188,6 +194,7 @@ Press `e` (Explain) to see the full ROOT CAUSE → EVIDENCE → IMPACT → TEMPO
 | `H` | **Services** | Active service health monitoring |
 | `W` | **Diagnostics** | System diagnostics and troubleshooting |
 | `X` | **Intel** | Impact scores, cross-signal correlation, runtime detection, SLO status, autopilot actions, incident history |
+| `Y` | **Apps** | Application diagnostics — auto-detected MySQL, PostgreSQL, Redis, Nginx, Apache, HAProxy, PHP-FPM, MongoDB, Memcached, RabbitMQ, Kafka, Elasticsearch, Docker, Caddy, Traefik with deep health RCA |
 | `Z` | **Proxmox** | Proxmox VE host dashboard — host CPU/RAM/load/PSI, network interfaces, disk IO/SMART health, VM status table, per-VM details, storage pools (auto-detected, hidden on non-PVE hosts) |
 
 ### 6 Overview Layouts
@@ -372,6 +379,113 @@ sudo xtop -doctor -alert             # Send alerts on state changes
 
 ---
 
+### Application Diagnostics & RCA
+
+Press `Y` to open the **Apps** page — xtop auto-detects 15 applications and runs deep root-cause analysis on each. No agents, no plugins, no configuration required. If the process is running, xtop finds it and starts collecting.
+
+#### How It Works
+
+The RCA engine uses a **two-tier collection strategy**:
+
+- **Tier 1 (always available)** — Process-level metrics from `/proc`: RSS memory, thread count, file descriptors, TCP connections, uptime. Works for every detected app with zero configuration.
+
+- **Tier 2 (deep metrics)** — Protocol-level collection via native APIs, CLI tools, or raw protocol:
+  - **MySQL**: `SHOW GLOBAL STATUS` (27 key variables), `SHOW PROCESSLIST`, `SHOW ENGINE INNODB STATUS`, `SHOW REPLICA STATUS`
+  - **PostgreSQL**: `pg_stat_activity`, `pg_stat_database`, `pg_stat_bgwriter`, dead tuples, lock contention, replication lag
+  - **Redis**: Raw RESP protocol `INFO` command — 60+ metrics including memory, replication, keyspace, persistence
+  - **Elasticsearch**: REST API — cluster health, shard status, JVM heap, index counts, node stats
+  - **MongoDB**: `mongosh` — serverStatus, WiredTiger cache, opCounters, lock queues, replication lag
+  - **Nginx**: `stub_status` HTTP endpoint — active connections, accepts/handled/requests, reading/writing/waiting
+  - **Apache**: `mod_status` endpoint — scoreboard analysis, request rates, worker utilization, MPM detection
+  - **HAProxy**: Unix socket `show stat`/`show info` — CSV stats parsing, backend health, session rates, queue depth
+  - **PHP-FPM**: Pool config parsing + per-worker state analysis via `/proc/PID/stat` — active/idle workers, utilization, memory tracking
+  - **RabbitMQ**: Management API — messages, queues, node resources, memory/disk alarms, consumer health
+  - **Memcached**: Raw TCP `stats`/`stats slabs` — hit ratio, evictions, slab analysis, memory pressure
+  - **Kafka**: Config parsing + CLI tools — broker ID, topic/group counts, log dir usage, JVM hsperfdata
+  - **Caddy**: Admin API (`:2019`) — live config, upstream health, metrics
+  - **Traefik**: API (`:8080`) — routers/services/middlewares, entrypoints, health check
+  - **Docker**: Unix socket — containers, images, networks, disk usage, health checks
+
+#### Supported Applications
+
+| Application | Detection | Deep Metrics | Health Checks | Credentials |
+|---|---|---|---|---|
+| **MySQL / MariaDB** | `mysqld`, `mariadbd` | InnoDB buffer pool, slow queries, replication, deadlocks, lock waits, temp tables | 17 rules | Required |
+| **PostgreSQL** | `postgres` (postmaster) | Cache hit ratio, dead tuples, vacuum lag, blocked queries, bgwriter, replication | 12 rules | Required |
+| **Redis** | `redis-server` | Memory, hit ratio, evictions, fragmentation, persistence, replication, keyspace | 8 rules | If AUTH enabled |
+| **Elasticsearch** | Java + ES cmdline | Cluster health, shards, JVM heap, indices, node stats | 8 rules | If X-Pack enabled |
+| **MongoDB** | `mongod`, `mongos` | WiredTiger cache, opCounters, lock queues, replication lag, slow ops | 10 rules | If auth enabled |
+| **Nginx** | `nginx` (master) | Active connections, request rate, dropped connections, worker state, scoreboard | 7 rules | No |
+| **Apache** | `httpd`, `apache2` | Scoreboard, worker utilization, request rate, MPM config, CPU load | 8 rules | No |
+| **HAProxy** | `haproxy` (master) | Backend server health, session rates, queue depth, 5xx rate, CPU idle | 11 rules | No |
+| **PHP-FPM** | `php-fpm*` (master) | Worker utilization, max_children saturation, per-worker memory, pool config | 7 rules | No |
+| **RabbitMQ** | `beam.smp` + rabbit | Message backlog, unacked, memory/disk alarms, queue health, node resources | 11 rules | Default guest/guest |
+| **Memcached** | `memcached` | Hit ratio, evictions, slab waste, memory pressure, connection rejection | 9 rules | No |
+| **Kafka** | Java + kafka cmdline | Broker config, topic count, consumer groups, log dir size, JVM hsperfdata | 4 rules | No |
+| **Caddy** | `caddy` | Live config, upstream health, TLS, Caddyfile analysis | Basic | No |
+| **Traefik** | `traefik` | Routers/services, health check, entrypoints, error rates | 3 rules | No |
+| **Docker** | `dockerd` | Containers, images, networks, disk usage, health diagnostics | 5 rules | No |
+
+#### Deep Metrics Collection
+
+Each application module follows the same RCA pattern:
+
+1. **Detect** — Scan process list every tick, match by `comm` name and cmdline
+2. **Collect Tier 1** — Read `/proc/PID/{status,stat,fd}` + `/proc/net/tcp` for connections
+3. **Collect Tier 2** — Query the app via its native protocol/CLI/API (with timeout, graceful fallback)
+4. **Compute** — Derive ratios (cache hit%, connection usage%, lock contention%, etc.)
+5. **Score Health** — Start at 100, apply weighted penalties per issue, clamp to [0, 100]
+6. **Report Issues** — Each penalty generates a human-readable health issue with context
+
+The health score drives a diagnostic badge: **OK** (80-100), **WARN** (50-79), **CRIT** (0-49).
+
+#### Credential Configuration
+
+Apps that need authentication show a **CREDENTIALS REQUIRED** notice at the top of their detail page with the exact JSON template to copy.
+
+Create `~/.xtop_secrets` (JSON format, `chmod 600`):
+
+```json
+{
+  "mysql": {
+    "host": "127.0.0.1",
+    "port": 3306,
+    "user": "root",
+    "password": "YOUR_MYSQL_PASSWORD"
+  },
+  "postgresql": {
+    "host": "127.0.0.1",
+    "port": 5432,
+    "user": "postgres",
+    "password": "YOUR_PG_PASSWORD",
+    "dbname": "postgres"
+  },
+  "mongodb": {
+    "uri": "mongodb://user:password@127.0.0.1:27017/admin"
+  },
+  "redis": {
+    "host": "127.0.0.1",
+    "port": 6379,
+    "password": "YOUR_REDIS_PASSWORD"
+  },
+  "rabbitmq": {
+    "host": "127.0.0.1",
+    "port": 15672,
+    "user": "guest",
+    "password": "guest"
+  },
+  "elasticsearch": {
+    "url": "http://127.0.0.1:9200",
+    "user": "elastic",
+    "password": "YOUR_ES_PASSWORD"
+  }
+}
+```
+
+Only include the apps you use. Apps without authentication (Nginx, Apache, HAProxy, PHP-FPM, Memcached, Kafka, Caddy, Traefik, Docker) work automatically with zero configuration.
+
+---
+
 ### Active Service Detection
 
 Doctor mode auto-detects running services and runs health checks — no pre-configuration needed:
@@ -379,14 +493,20 @@ Doctor mode auto-detects running services and runs health checks — no pre-conf
 | Service | Health Check |
 |---|---|
 | **sshd** | Process running |
-| **nginx / apache / caddy** | Process running |
-| **MySQL** | `mysqladmin ping` responsiveness |
-| **PostgreSQL** | `pg_isready` connection check |
-| **Redis** | `redis-cli ping` PONG response |
+| **nginx / apache / caddy** | Process running, stub_status/server-status check |
+| **MySQL / MariaDB** | Process running, SHOW GLOBAL STATUS analysis |
+| **PostgreSQL** | Process running, pg_stat_database analysis |
+| **Redis** | `INFO` command via RESP protocol |
 | **Docker** | Container count, unhealthy/restarting detection |
 | **Kubernetes** | kubelet running, `kubectl get nodes` status |
 | **WireGuard** | Interface active (`wg0`, etc.) |
-| **HAProxy / keepalived** | Process running |
+| **HAProxy** | Stats socket analysis, backend health |
+| **MongoDB** | serverStatus via mongosh |
+| **RabbitMQ** | Management API health |
+| **Elasticsearch** | Cluster health API |
+| **Memcached** | `stats` command via TCP |
+| **Kafka** | Process running, broker config |
+| **PHP-FPM** | Pool utilization, worker state |
 | **DNS (named/dnsmasq/unbound)** | Process running |
 
 Services that aren't installed are silently skipped — only active services appear in the report.
@@ -446,12 +566,12 @@ xtop -cron-install
 
 ```bash
 # Ubuntu/Debian (amd64)
-wget https://github.com/ftahirops/xtop/releases/download/v0.26.5/xtop_0.26.5-1_amd64.deb
-sudo dpkg -i xtop_0.26.5-1_amd64.deb
+wget https://github.com/ftahirops/xtop/releases/download/v0.26.8/xtop_0.26.8-1_amd64.deb
+sudo dpkg -i xtop_0.26.8-1_amd64.deb
 
 # RHEL/Rocky/Fedora (x86_64)
-wget https://github.com/ftahirops/xtop/releases/download/v0.26.5/xtop-0.26.5-1.x86_64.rpm
-sudo rpm -i xtop-0.26.5-1.x86_64.rpm
+wget https://github.com/ftahirops/xtop/releases/download/v0.26.8/xtop-0.26.8-1.x86_64.rpm
+sudo rpm -i xtop-0.26.8-1.x86_64.rpm
 ```
 
 ### Build from Source
@@ -459,7 +579,7 @@ sudo rpm -i xtop-0.26.5-1.x86_64.rpm
 ```bash
 git clone https://github.com/ftahirops/xtop.git
 cd xtop
-CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.26.5" -o xtop .
+CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.26.8" -o xtop .
 sudo install -m 755 xtop /usr/local/bin/xtop
 ```
 
@@ -491,15 +611,15 @@ sudo xtop -json | jq   # JSON for scripting
 ### From .deb Package (Ubuntu 22.04/24.04, Debian)
 
 ```bash
-wget https://github.com/ftahirops/xtop/releases/download/v0.26.5/xtop_0.26.5-1_amd64.deb
-sudo dpkg -i xtop_0.26.5-1_amd64.deb
+wget https://github.com/ftahirops/xtop/releases/download/v0.26.8/xtop_0.26.8-1_amd64.deb
+sudo dpkg -i xtop_0.26.8-1_amd64.deb
 ```
 
 ### From .rpm Package (Rocky Linux, RHEL, AlmaLinux, Fedora)
 
 ```bash
-wget https://github.com/ftahirops/xtop/releases/download/v0.26.5/xtop-0.26.5-1.x86_64.rpm
-sudo rpm -i xtop-0.26.5-1.x86_64.rpm
+wget https://github.com/ftahirops/xtop/releases/download/v0.26.8/xtop-0.26.8-1.x86_64.rpm
+sudo rpm -i xtop-0.26.8-1.x86_64.rpm
 ```
 
 ### From Source
@@ -507,7 +627,7 @@ sudo rpm -i xtop-0.26.5-1.x86_64.rpm
 ```bash
 git clone https://github.com/ftahirops/xtop.git
 cd xtop
-CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.26.5" -o xtop .
+CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.26.8" -o xtop .
 sudo install -m 755 xtop /usr/local/bin/xtop
 ```
 
@@ -575,6 +695,7 @@ Options:
 | `W` | Diagnostics page |
 | `X` | Intel page |
 | `Z` | Proxmox dashboard (auto-detected) |
+| `Y` | Application diagnostics — 15 auto-detected apps with deep RCA |
 | `D` | Open DiskGuard page |
 | `b` / `Esc` | Back to Overview |
 | `j` / `k` | Scroll down / up |

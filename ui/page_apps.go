@@ -127,6 +127,11 @@ func renderAppsDetail(app model.AppInstance, iw int) string {
 
 	sb.WriteString(appDetailHeader(app))
 
+	// Show credential requirement notice at the TOP (only when needed)
+	if app.NeedsCreds && !app.HasDeepMetrics {
+		sb.WriteString(renderCredsNotice(app, iw))
+	}
+
 	sb.WriteString(appSection("PROCESS INFO", iw, []kv{
 		{Key: "PID", Val: fmt.Sprintf("%d", app.PID)},
 		{Key: "Port", Val: appFmtPort(app.Port)},
@@ -157,12 +162,98 @@ func renderAppsDetail(app model.AppInstance, iw int) string {
 		sb.WriteString(boxBot(iw) + "\n\n")
 	}
 
-	if app.NeedsCreds && !app.HasDeepMetrics {
-		sb.WriteString("  " + dimStyle.Render("Configure credentials in ~/.config/xtop/secrets.json for deep metrics") + "\n\n")
-	}
-
 	sb.WriteString(pageFooter("k:Back  Y:Apps"))
 	return sb.String()
+}
+
+// renderCredsNotice shows a credential configuration template at the top of the detail page.
+func renderCredsNotice(app model.AppInstance, iw int) string {
+	template := appCredsTemplate(app.AppType, app.Port)
+	if template == "" {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("  " + warnStyle.Render("CREDENTIALS REQUIRED") + "  " +
+		dimStyle.Render("Deep metrics unavailable without credentials") + "\n")
+	sb.WriteString(boxTop(iw) + "\n")
+
+	sb.WriteString(boxRow("  "+dimStyle.Render("Add to")+" "+valueStyle.Render("~/.xtop_secrets")+" "+dimStyle.Render("(JSON, combine multiple apps in one file):"), iw) + "\n")
+	sb.WriteString(boxMid(iw) + "\n")
+
+	for _, line := range strings.Split(template, "\n") {
+		sb.WriteString(boxRow("  "+dimStyle.Render(line), iw) + "\n")
+	}
+
+	sb.WriteString(boxMid(iw) + "\n")
+	sb.WriteString(boxRow("  "+dimStyle.Render("chmod 600 ~/.xtop_secrets  # secure the file"), iw) + "\n")
+	sb.WriteString(boxBot(iw) + "\n\n")
+	return sb.String()
+}
+
+func appCredsTemplate(appType string, port int) string {
+	switch appType {
+	case "mysql":
+		return `{
+  "mysql": {
+    "host": "127.0.0.1",
+    "port": 3306,
+    "user": "root",
+    "password": "YOUR_MYSQL_PASSWORD"
+  }
+}`
+	case "postgresql":
+		p := 5432
+		if port > 0 {
+			p = port
+		}
+		return fmt.Sprintf(`{
+  "postgresql": {
+    "host": "127.0.0.1",
+    "port": %d,
+    "user": "postgres",
+    "password": "YOUR_PG_PASSWORD",
+    "dbname": "postgres"
+  }
+}`, p)
+	case "mongodb":
+		return `{
+  "mongodb": {
+    "uri": "mongodb://user:password@127.0.0.1:27017/admin"
+  }
+}`
+	case "redis":
+		p := 6379
+		if port > 0 {
+			p = port
+		}
+		return fmt.Sprintf(`{
+  "redis": {
+    "host": "127.0.0.1",
+    "port": %d,
+    "password": "YOUR_REDIS_PASSWORD"
+  }
+}`, p)
+	case "rabbitmq":
+		return `{
+  "rabbitmq": {
+    "host": "127.0.0.1",
+    "port": 15672,
+    "user": "guest",
+    "password": "guest"
+  }
+}`
+	case "elasticsearch":
+		return `{
+  "elasticsearch": {
+    "url": "http://127.0.0.1:9200",
+    "user": "elastic",
+    "password": "YOUR_ES_PASSWORD"
+  }
+}`
+	default:
+		return ""
+	}
 }
 
 func renderAppDeepMetrics(app model.AppInstance, iw int) string {
@@ -171,6 +262,30 @@ func renderAppDeepMetrics(app model.AppInstance, iw int) string {
 		return renderESDeepMetrics(app, iw)
 	case "redis":
 		return renderRedisDeepMetrics(app, iw)
+	case "mysql":
+		return renderMySQLDeepMetrics(app, iw)
+	case "postgresql":
+		return renderPostgreSQLDeepMetrics(app, iw)
+	case "phpfpm":
+		return renderPHPFPMDeepMetrics(app, iw)
+	case "nginx":
+		return renderNginxDeepMetrics(app, iw)
+	case "haproxy":
+		return renderHAProxyDeepMetrics(app, iw)
+	case "apache":
+		return renderApacheDeepMetrics(app, iw)
+	case "mongodb":
+		return renderMongoDBDeepMetrics(app, iw)
+	case "memcached":
+		return renderMemcachedDeepMetrics(app, iw)
+	case "rabbitmq":
+		return renderRabbitMQDeepMetrics(app, iw)
+	case "kafka":
+		return renderKafkaDeepMetrics(app, iw)
+	case "caddy":
+		return renderCaddyDeepMetrics(app, iw)
+	case "traefik":
+		return renderTraefikDeepMetrics(app, iw)
 	default:
 		return renderGenericDeepMetrics(app.DeepMetrics, iw)
 	}
@@ -575,6 +690,1416 @@ func redisFmtSec(s string) string {
 		return fmt.Sprintf("%.1fm", v/60)
 	}
 	return fmt.Sprintf("%.1fs", v)
+}
+
+// ── MySQL Detail ───────────────────────────────────────────────────────
+
+func renderMySQLDeepMetrics(app model.AppInstance, iw int) string {
+	var sb strings.Builder
+	dm := app.DeepMetrics
+
+	// Health Status Table
+	sb.WriteString("  " + titleStyle.Render("HEALTH STATUS") + "\n")
+	sb.WriteString(boxTop(iw) + "\n")
+
+	type healthRow struct {
+		metric, value, status string
+	}
+	rows := []healthRow{}
+
+	// Buffer Pool Hit Ratio
+	if dm["buffer_pool_hit_ratio"] != "" {
+		var ratio float64
+		fmt.Sscanf(dm["buffer_pool_hit_ratio"], "%f", &ratio)
+		status := "OK"
+		if ratio < 90 {
+			status = "CRIT"
+		} else if ratio < 95 {
+			status = "WARN"
+		}
+		rows = append(rows, healthRow{"Buffer Pool Hit Ratio", dm["buffer_pool_hit_ratio"] + "%", status})
+	}
+
+	// Connection Usage
+	if dm["connection_usage_pct"] != "" {
+		var pct float64
+		fmt.Sscanf(dm["connection_usage_pct"], "%f", &pct)
+		status := "OK"
+		if pct > 90 {
+			status = "CRIT"
+		} else if pct > 75 {
+			status = "WARN"
+		}
+		rows = append(rows, healthRow{"Connection Usage", dm["Threads_connected"] + " / " + dm["max_connections"] + " (" + dm["connection_usage_pct"] + "%)", status})
+	}
+
+	// Slow Queries
+	if dm["Slow_queries"] != "" {
+		status := "OK"
+		if dm["Slow_queries"] != "0" {
+			v, _ := strconv.Atoi(dm["Slow_queries"])
+			if v > 100 {
+				status = "CRIT"
+			} else if v > 0 {
+				status = "WARN"
+			}
+		}
+		rows = append(rows, healthRow{"Slow Queries", dm["Slow_queries"], status})
+	}
+
+	// Deadlocks
+	if dm["Innodb_deadlocks"] != "" {
+		status := "OK"
+		if dm["Innodb_deadlocks"] != "0" {
+			status = "CRIT"
+		}
+		rows = append(rows, healthRow{"InnoDB Deadlocks", dm["Innodb_deadlocks"], status})
+	}
+
+	// Replication
+	if dm["replication_status"] != "" {
+		status := "OK"
+		if dm["replication_status"] != "ok" {
+			status = "CRIT"
+		} else if dm["Seconds_behind_master"] != "" && dm["Seconds_behind_master"] != "0" {
+			lag, _ := strconv.Atoi(dm["Seconds_behind_master"])
+			if lag > 30 {
+				status = "CRIT"
+			} else if lag > 5 {
+				status = "WARN"
+			}
+		}
+		val := dm["replication_status"]
+		if dm["Seconds_behind_master"] != "" {
+			val += " (lag: " + dm["Seconds_behind_master"] + "s)"
+		}
+		rows = append(rows, healthRow{"Replication", val, status})
+	}
+
+	// Table Lock Contention
+	if dm["table_lock_contention"] != "" {
+		var pct float64
+		fmt.Sscanf(dm["table_lock_contention"], "%f", &pct)
+		status := "OK"
+		if pct > 5 {
+			status = "CRIT"
+		} else if pct > 1 {
+			status = "WARN"
+		}
+		rows = append(rows, healthRow{"Table Lock Contention", dm["table_lock_contention"] + "%", status})
+	}
+
+	cMetric := 24
+	cValue := 40
+	hdr := fmt.Sprintf("  %s %s %s",
+		styledPad(dimStyle.Render("Metric"), cMetric),
+		styledPad(dimStyle.Render("Value"), cValue),
+		dimStyle.Render("Status"))
+	sb.WriteString(boxRow(hdr, iw) + "\n")
+	sb.WriteString(boxMid(iw) + "\n")
+
+	for _, r := range rows {
+		var badge string
+		switch r.status {
+		case "OK":
+			badge = okStyle.Render("OK")
+		case "WARN":
+			badge = warnStyle.Render("WARN")
+		case "CRIT":
+			badge = critStyle.Render("CRIT")
+		}
+		row := fmt.Sprintf("  %s %s %s",
+			styledPad(valueStyle.Render(r.metric), cMetric),
+			styledPad(valueStyle.Render(r.value), cValue),
+			badge)
+		sb.WriteString(boxRow(row, iw) + "\n")
+	}
+	sb.WriteString(boxBot(iw) + "\n\n")
+
+	// Connection Pool
+	sb.WriteString(appSection("CONNECTION POOL", iw, []kv{
+		{Key: "Max Connections", Val: dm["max_connections"]},
+		{Key: "Threads Connected", Val: dm["Threads_connected"]},
+		{Key: "Threads Running", Val: dm["Threads_running"]},
+		{Key: "Max Used Connections", Val: dm["Max_used_connections"]},
+		{Key: "Active Queries", Val: dm["active_queries"]},
+		{Key: "Sleeping", Val: dm["sleeping_connections"]},
+		{Key: "Aborted Connects", Val: dm["Aborted_connects"]},
+		{Key: "Aborted Clients", Val: dm["Aborted_clients"]},
+		{Key: "Conn Errors (max)", Val: dm["Connection_errors_max_connections"]},
+		{Key: "Usage", Val: dm["connection_usage_pct"]},
+	}))
+
+	// InnoDB
+	sb.WriteString(appSection("INNODB", iw, []kv{
+		{Key: "Buffer Pool Size", Val: dm["innodb_buffer_pool_size"]},
+		{Key: "Buffer Pool Hit", Val: dm["buffer_pool_hit_ratio"]},
+		{Key: "Buffer Pool Usage", Val: dm["buffer_pool_usage_pct"]},
+		{Key: "Pages Data", Val: dm["Innodb_buffer_pool_pages_data"]},
+		{Key: "Pages Total", Val: dm["Innodb_buffer_pool_pages_total"]},
+		{Key: "Pages Dirty", Val: dm["Innodb_buffer_pool_pages_dirty"]},
+		{Key: "Pages Free", Val: dm["Innodb_buffer_pool_pages_free"]},
+		{Key: "Row Lock Waits", Val: dm["Innodb_row_lock_waits"]},
+		{Key: "Row Lock Avg (ms)", Val: dm["Innodb_row_lock_time_avg"]},
+		{Key: "Deadlocks", Val: dm["Innodb_deadlocks"]},
+		{Key: "Data Reads", Val: dm["Innodb_data_reads"]},
+		{Key: "Data Writes", Val: dm["Innodb_data_writes"]},
+	}))
+
+	// Query Performance
+	sb.WriteString(appSection("QUERY PERFORMANCE", iw, []kv{
+		{Key: "Questions", Val: dm["Questions"]},
+		{Key: "Slow Queries", Val: dm["Slow_queries"]},
+		{Key: "Full Joins", Val: dm["Select_full_join"]},
+		{Key: "Full Scans", Val: dm["Select_scan"]},
+		{Key: "Sort Merge Passes", Val: dm["Sort_merge_passes"]},
+		{Key: "Tmp Disk Table %", Val: dm["tmp_disk_table_pct"]},
+		{Key: "Tmp Disk Tables", Val: dm["Created_tmp_disk_tables"]},
+		{Key: "Tmp Tables", Val: dm["Created_tmp_tables"]},
+		{Key: "Handler Read Rnd", Val: dm["Handler_read_rnd_next"]},
+	}))
+
+	// Table Operations
+	sb.WriteString(appSection("TABLE OPERATIONS", iw, []kv{
+		{Key: "Open Tables", Val: dm["Open_tables"]},
+		{Key: "Opened Tables", Val: dm["Opened_tables"]},
+		{Key: "Lock Contention", Val: dm["table_lock_contention"]},
+		{Key: "Locks Waited", Val: dm["Table_locks_waited"]},
+		{Key: "Locks Immediate", Val: dm["Table_locks_immediate"]},
+	}))
+
+	// Replication (if present)
+	if dm["Slave_IO_Running"] != "" || dm["replication_status"] != "" {
+		sb.WriteString(appSection("REPLICATION", iw, []kv{
+			{Key: "Status", Val: dm["replication_status"]},
+			{Key: "Seconds Behind", Val: dm["Seconds_behind_master"]},
+			{Key: "Slave IO Running", Val: dm["Slave_IO_Running"]},
+			{Key: "Slave SQL Running", Val: dm["Slave_SQL_Running"]},
+		}))
+	}
+
+	// InnoDB Status
+	sb.WriteString(appSection("INNODB STATUS", iw, []kv{
+		{Key: "History List Length", Val: dm["history_list_length"]},
+		{Key: "Checkpoint Age", Val: dm["checkpoint_age"]},
+		{Key: "Pending Reads", Val: dm["pending_reads"]},
+		{Key: "Pending Writes", Val: dm["pending_writes"]},
+		{Key: "Tier 2 Status", Val: dm["tier2_status"]},
+	}))
+
+	return sb.String()
+}
+
+// ── PostgreSQL Detail ──────────────────────────────────────────────────
+
+func renderPostgreSQLDeepMetrics(app model.AppInstance, iw int) string {
+	var sb strings.Builder
+	dm := app.DeepMetrics
+
+	// Health Status Table
+	sb.WriteString("  " + titleStyle.Render("HEALTH STATUS") + "\n")
+	sb.WriteString(boxTop(iw) + "\n")
+
+	type healthRow struct {
+		metric, value, status string
+	}
+	rows := []healthRow{}
+
+	// Cache Hit Ratio
+	if dm["cache_hit_ratio"] != "" {
+		var ratio float64
+		fmt.Sscanf(dm["cache_hit_ratio"], "%f", &ratio)
+		status := "OK"
+		if ratio < 90 {
+			status = "CRIT"
+		} else if ratio < 95 {
+			status = "WARN"
+		}
+		rows = append(rows, healthRow{"Cache Hit Ratio", dm["cache_hit_ratio"] + "%", status})
+	}
+
+	// Deadlocks
+	if dm["deadlocks"] != "" {
+		status := "OK"
+		if dm["deadlocks"] != "0" {
+			status = "CRIT"
+		}
+		rows = append(rows, healthRow{"Deadlocks", dm["deadlocks"], status})
+	}
+
+	// Blocked Queries
+	if dm["blocked_queries"] != "" {
+		status := "OK"
+		if dm["blocked_queries"] != "0" {
+			v, _ := strconv.Atoi(dm["blocked_queries"])
+			if v > 5 {
+				status = "CRIT"
+			} else if v > 0 {
+				status = "WARN"
+			}
+		}
+		rows = append(rows, healthRow{"Blocked Queries", dm["blocked_queries"], status})
+	}
+
+	// Connections
+	if dm["backends"] != "" && dm["max_connections"] != "" {
+		backends, _ := strconv.Atoi(dm["backends"])
+		maxConn, _ := strconv.Atoi(dm["max_connections"])
+		status := "OK"
+		if maxConn > 0 {
+			pct := float64(backends) / float64(maxConn) * 100
+			if pct > 90 {
+				status = "CRIT"
+			} else if pct > 75 {
+				status = "WARN"
+			}
+		}
+		rows = append(rows, healthRow{"Connections", dm["backends"] + " / " + dm["max_connections"], status})
+	}
+
+	// Dead Tuples
+	if dm["dead_tuple_ratio"] != "" {
+		var ratio float64
+		fmt.Sscanf(dm["dead_tuple_ratio"], "%f", &ratio)
+		status := "OK"
+		if ratio > 20 {
+			status = "CRIT"
+		} else if ratio > 10 {
+			status = "WARN"
+		}
+		rows = append(rows, healthRow{"Dead Tuple Ratio", dm["dead_tuple_ratio"] + "%", status})
+	}
+
+	// Replication Lag
+	if dm["replication_lag"] != "" {
+		var lag float64
+		fmt.Sscanf(dm["replication_lag"], "%f", &lag)
+		status := "OK"
+		if lag > 30 {
+			status = "CRIT"
+		} else if lag > 5 {
+			status = "WARN"
+		}
+		rows = append(rows, healthRow{"Replication Lag", dm["replication_lag"] + "s", status})
+	}
+
+	cMetric := 24
+	cValue := 40
+	hdr := fmt.Sprintf("  %s %s %s",
+		styledPad(dimStyle.Render("Metric"), cMetric),
+		styledPad(dimStyle.Render("Value"), cValue),
+		dimStyle.Render("Status"))
+	sb.WriteString(boxRow(hdr, iw) + "\n")
+	sb.WriteString(boxMid(iw) + "\n")
+
+	for _, r := range rows {
+		var badge string
+		switch r.status {
+		case "OK":
+			badge = okStyle.Render("OK")
+		case "WARN":
+			badge = warnStyle.Render("WARN")
+		case "CRIT":
+			badge = critStyle.Render("CRIT")
+		}
+		row := fmt.Sprintf("  %s %s %s",
+			styledPad(valueStyle.Render(r.metric), cMetric),
+			styledPad(valueStyle.Render(r.value), cValue),
+			badge)
+		sb.WriteString(boxRow(row, iw) + "\n")
+	}
+	sb.WriteString(boxBot(iw) + "\n\n")
+
+	// Connections
+	sb.WriteString(appSection("CONNECTIONS", iw, []kv{
+		{Key: "Max Connections", Val: dm["max_connections"]},
+		{Key: "Backends", Val: dm["backends"]},
+		{Key: "Active Queries", Val: dm["active_queries"]},
+		{Key: "Idle Connections", Val: dm["idle_connections"]},
+		{Key: "Idle In Transaction", Val: dm["idle_in_transaction"]},
+		{Key: "Waiting", Val: dm["waiting_connections"]},
+		{Key: "Long Running", Val: dm["long_running_queries"]},
+	}))
+
+	// Performance
+	sb.WriteString(appSection("PERFORMANCE", iw, []kv{
+		{Key: "Commits", Val: dm["xact_commit"]},
+		{Key: "Rollbacks", Val: dm["xact_rollback"]},
+		{Key: "Rollback Ratio", Val: dm["rollback_ratio"]},
+		{Key: "Blocks Read", Val: dm["blks_read"]},
+		{Key: "Blocks Hit", Val: dm["blks_hit"]},
+		{Key: "Cache Hit Ratio", Val: dm["cache_hit_ratio"]},
+		{Key: "Tuples Returned", Val: dm["tup_returned"]},
+		{Key: "Tuples Fetched", Val: dm["tup_fetched"]},
+		{Key: "Tuples Inserted", Val: dm["tup_inserted"]},
+		{Key: "Tuples Updated", Val: dm["tup_updated"]},
+		{Key: "Tuples Deleted", Val: dm["tup_deleted"]},
+		{Key: "Conflicts", Val: dm["conflicts"]},
+		{Key: "Deadlocks", Val: dm["deadlocks"]},
+		{Key: "Temp Files", Val: dm["temp_files"]},
+		{Key: "Temp Bytes", Val: dm["temp_bytes"]},
+	}))
+
+	// Bgwriter
+	sb.WriteString(appSection("BGWRITER", iw, []kv{
+		{Key: "Checkpoints Timed", Val: dm["checkpoints_timed"]},
+		{Key: "Checkpoints Req", Val: dm["checkpoints_req"]},
+		{Key: "Buffers Checkpoint", Val: dm["buffers_checkpoint"]},
+		{Key: "Buffers Clean", Val: dm["buffers_clean"]},
+		{Key: "Buffers Backend", Val: dm["buffers_backend"]},
+		{Key: "Buffers Alloc", Val: dm["buffers_alloc"]},
+	}))
+
+	// Maintenance
+	sb.WriteString(appSection("MAINTENANCE", iw, []kv{
+		{Key: "Dead Tuple Ratio", Val: dm["dead_tuple_ratio"]},
+		{Key: "Total Dead Tuples", Val: dm["total_dead_tuples"]},
+		{Key: "Total Live Tuples", Val: dm["total_live_tuples"]},
+		{Key: "Top Dead Tuples", Val: dm["top_dead_tuples"]},
+		{Key: "Blocked Queries", Val: dm["blocked_queries"]},
+	}))
+
+	// Replication (if present)
+	if dm["replica_count"] != "" || dm["replication_lag"] != "" {
+		sb.WriteString(appSection("REPLICATION", iw, []kv{
+			{Key: "Replica Count", Val: dm["replica_count"]},
+			{Key: "Replication Lag", Val: dm["replication_lag"]},
+		}))
+	}
+
+	// Database Sizes
+	if dm["top_db_sizes"] != "" {
+		sb.WriteString(appSection("DATABASE SIZES", iw, []kv{
+			{Key: "Shared Buffers", Val: dm["shared_buffers"]},
+			{Key: "Top Databases", Val: dm["top_db_sizes"]},
+		}))
+	}
+
+	return sb.String()
+}
+
+// ── PHP-FPM Detail ─────────────────────────────────────────────────────
+
+func renderPHPFPMDeepMetrics(app model.AppInstance, iw int) string {
+	var sb strings.Builder
+	dm := app.DeepMetrics
+
+	// Health Status Table
+	sb.WriteString("  " + titleStyle.Render("HEALTH STATUS") + "\n")
+	sb.WriteString(boxTop(iw) + "\n")
+
+	type healthRow struct {
+		metric, value, status string
+	}
+	rows := []healthRow{}
+
+	// Worker Utilization
+	if dm["worker_utilization_pct"] != "" {
+		var pct float64
+		fmt.Sscanf(dm["worker_utilization_pct"], "%f", &pct)
+		status := "OK"
+		if pct > 90 {
+			status = "CRIT"
+		} else if pct > 75 {
+			status = "WARN"
+		}
+		rows = append(rows, healthRow{"Worker Utilization", dm["active_workers"] + " / " + dm["max_children"] + " (" + dm["worker_utilization_pct"] + "%)", status})
+	}
+
+	// Max Children Reached
+	if dm["max_children_reached"] != "" {
+		status := "OK"
+		if dm["max_children_reached"] != "0" {
+			v, _ := strconv.Atoi(dm["max_children_reached"])
+			if v > 10 {
+				status = "CRIT"
+			} else if v > 0 {
+				status = "WARN"
+			}
+		}
+		rows = append(rows, healthRow{"Max Children Reached", dm["max_children_reached"], status})
+	}
+
+	// Memory
+	if dm["total_rss_mb"] != "" {
+		var mb float64
+		fmt.Sscanf(dm["total_rss_mb"], "%f", &mb)
+		status := "OK"
+		if mb > 4096 {
+			status = "CRIT"
+		} else if mb > 2048 {
+			status = "WARN"
+		}
+		rows = append(rows, healthRow{"Total Memory", appFmtMem(mb), status})
+	}
+
+	cMetric := 24
+	cValue := 40
+	hdr := fmt.Sprintf("  %s %s %s",
+		styledPad(dimStyle.Render("Metric"), cMetric),
+		styledPad(dimStyle.Render("Value"), cValue),
+		dimStyle.Render("Status"))
+	sb.WriteString(boxRow(hdr, iw) + "\n")
+	sb.WriteString(boxMid(iw) + "\n")
+
+	for _, r := range rows {
+		var badge string
+		switch r.status {
+		case "OK":
+			badge = okStyle.Render("OK")
+		case "WARN":
+			badge = warnStyle.Render("WARN")
+		case "CRIT":
+			badge = critStyle.Render("CRIT")
+		}
+		row := fmt.Sprintf("  %s %s %s",
+			styledPad(valueStyle.Render(r.metric), cMetric),
+			styledPad(valueStyle.Render(r.value), cValue),
+			badge)
+		sb.WriteString(boxRow(row, iw) + "\n")
+	}
+	sb.WriteString(boxBot(iw) + "\n\n")
+
+	// Pool Config
+	sb.WriteString(appSection("POOL CONFIG", iw, []kv{
+		{Key: "Pool Name", Val: dm["pool_name"]},
+		{Key: "PM Type", Val: dm["pm_type"]},
+		{Key: "Max Children", Val: dm["max_children"]},
+		{Key: "Max Requests", Val: dm["max_requests"]},
+		{Key: "Slow Log Timeout", Val: dm["slow_log_timeout"]},
+		{Key: "Listen Mode", Val: dm["listen_mode"]},
+		{Key: "Listen Address", Val: dm["listen_address"]},
+	}))
+
+	// Worker Status
+	sb.WriteString(appSection("WORKER STATUS", iw, []kv{
+		{Key: "Active Workers", Val: dm["active_workers"]},
+		{Key: "Idle Workers", Val: dm["idle_workers"]},
+		{Key: "Total Workers", Val: dm["total_workers"]},
+		{Key: "Utilization", Val: dm["worker_utilization_pct"]},
+		{Key: "Max Children Hit", Val: dm["max_children_reached"]},
+	}))
+
+	// Memory
+	sb.WriteString(appSection("MEMORY", iw, []kv{
+		{Key: "Avg Worker RSS", Val: dm["avg_worker_rss_mb"]},
+		{Key: "Total RSS", Val: dm["total_rss_mb"]},
+	}))
+
+	return sb.String()
+}
+
+// ── Nginx Detail ───────────────────────────────────────────────────────
+
+func renderNginxDeepMetrics(app model.AppInstance, iw int) string {
+	var sb strings.Builder
+	dm := app.DeepMetrics
+
+	// Health Status Table
+	sb.WriteString("  " + titleStyle.Render("HEALTH STATUS") + "\n")
+	sb.WriteString(boxTop(iw) + "\n")
+
+	type healthRow struct {
+		metric, value, status string
+	}
+	rows := []healthRow{}
+
+	// Dropped Connections
+	if dm["dropped_connections"] != "" {
+		status := "OK"
+		if dm["dropped_connections"] != "0" {
+			v, _ := strconv.Atoi(dm["dropped_connections"])
+			if v > 100 {
+				status = "CRIT"
+			} else if v > 0 {
+				status = "WARN"
+			}
+		}
+		rows = append(rows, healthRow{"Dropped Connections", dm["dropped_connections"], status})
+	}
+
+	// Workers
+	if dm["workers"] != "" && dm["worker_processes"] != "" {
+		actual, _ := strconv.Atoi(dm["workers"])
+		expected, _ := strconv.Atoi(dm["worker_processes"])
+		status := "OK"
+		if expected > 0 && actual < expected {
+			status = "WARN"
+		}
+		rows = append(rows, healthRow{"Workers", dm["workers"] + " / " + dm["worker_processes"], status})
+	}
+
+	// Active Connections
+	if dm["active_connections"] != "" {
+		v, _ := strconv.Atoi(dm["active_connections"])
+		maxConn, _ := strconv.Atoi(dm["worker_connections"])
+		workers, _ := strconv.Atoi(dm["workers"])
+		status := "OK"
+		if maxConn > 0 && workers > 0 {
+			totalCap := maxConn * workers
+			pct := float64(v) / float64(totalCap) * 100
+			if pct > 90 {
+				status = "CRIT"
+			} else if pct > 75 {
+				status = "WARN"
+			}
+		}
+		rows = append(rows, healthRow{"Active Connections", dm["active_connections"], status})
+	}
+
+	cMetric := 24
+	cValue := 40
+	hdr := fmt.Sprintf("  %s %s %s",
+		styledPad(dimStyle.Render("Metric"), cMetric),
+		styledPad(dimStyle.Render("Value"), cValue),
+		dimStyle.Render("Status"))
+	sb.WriteString(boxRow(hdr, iw) + "\n")
+	sb.WriteString(boxMid(iw) + "\n")
+
+	for _, r := range rows {
+		var badge string
+		switch r.status {
+		case "OK":
+			badge = okStyle.Render("OK")
+		case "WARN":
+			badge = warnStyle.Render("WARN")
+		case "CRIT":
+			badge = critStyle.Render("CRIT")
+		}
+		row := fmt.Sprintf("  %s %s %s",
+			styledPad(valueStyle.Render(r.metric), cMetric),
+			styledPad(valueStyle.Render(r.value), cValue),
+			badge)
+		sb.WriteString(boxRow(row, iw) + "\n")
+	}
+	sb.WriteString(boxBot(iw) + "\n\n")
+
+	// Connections (stub_status)
+	sb.WriteString(appSection("CONNECTIONS", iw, []kv{
+		{Key: "Active", Val: dm["active_connections"]},
+		{Key: "Accepts", Val: dm["accepts"]},
+		{Key: "Handled", Val: dm["handled"]},
+		{Key: "Requests", Val: dm["requests"]},
+		{Key: "Reading", Val: dm["reading"]},
+		{Key: "Writing", Val: dm["writing"]},
+		{Key: "Waiting", Val: dm["waiting"]},
+		{Key: "Req/Connection", Val: dm["requests_per_connection"]},
+		{Key: "Dropped", Val: dm["dropped_connections"]},
+	}))
+
+	// Workers
+	sb.WriteString(appSection("WORKERS", iw, []kv{
+		{Key: "Worker Processes", Val: dm["worker_processes"]},
+		{Key: "Worker Connections", Val: dm["worker_connections"]},
+		{Key: "Workers Total", Val: dm["workers"]},
+		{Key: "Workers Running", Val: dm["workers_running"]},
+		{Key: "Workers Sleeping", Val: dm["workers_sleeping"]},
+		{Key: "Workers Disk Wait", Val: dm["workers_disk_wait"]},
+	}))
+
+	// Config
+	sb.WriteString(appSection("CONFIG", iw, []kv{
+		{Key: "Keepalive Timeout", Val: dm["keepalive_timeout"]},
+		{Key: "Client Max Body", Val: dm["client_max_body_size"]},
+		{Key: "Gzip", Val: dm["gzip"]},
+		{Key: "Upstream Blocks", Val: dm["upstream_blocks"]},
+		{Key: "Server Blocks", Val: dm["server_blocks"]},
+		{Key: "Stub Status", Val: dm["stub_status_location"]},
+	}))
+
+	return sb.String()
+}
+
+// ── HAProxy Detail ─────────────────────────────────────────────────────
+
+func renderHAProxyDeepMetrics(app model.AppInstance, iw int) string {
+	var sb strings.Builder
+	dm := app.DeepMetrics
+
+	// Health Status Table
+	sb.WriteString("  " + titleStyle.Render("HEALTH STATUS") + "\n")
+	sb.WriteString(boxTop(iw) + "\n")
+
+	type healthRow struct {
+		metric, value, status string
+	}
+	rows := []healthRow{}
+
+	// Servers Down
+	if dm["servers_down"] != "" {
+		status := "OK"
+		if dm["servers_down"] != "0" {
+			v, _ := strconv.Atoi(dm["servers_down"])
+			if v > 2 {
+				status = "CRIT"
+			} else if v > 0 {
+				status = "WARN"
+			}
+		}
+		rows = append(rows, healthRow{"Servers Down", dm["servers_down"] + " / " + dm["servers_total"], status})
+	}
+
+	// Connection Usage
+	if dm["curr_conn"] != "" && dm["max_conn"] != "" {
+		curr, _ := strconv.Atoi(dm["curr_conn"])
+		max, _ := strconv.Atoi(dm["max_conn"])
+		status := "OK"
+		if max > 0 {
+			pct := float64(curr) / float64(max) * 100
+			if pct > 90 {
+				status = "CRIT"
+			} else if pct > 75 {
+				status = "WARN"
+			}
+		}
+		rows = append(rows, healthRow{"Connection Usage", dm["curr_conn"] + " / " + dm["max_conn"], status})
+	}
+
+	// Queue
+	if dm["queue_current"] != "" {
+		status := "OK"
+		if dm["queue_current"] != "0" {
+			v, _ := strconv.Atoi(dm["queue_current"])
+			if v > 50 {
+				status = "CRIT"
+			} else if v > 10 {
+				status = "WARN"
+			}
+		}
+		rows = append(rows, healthRow{"Queue Current", dm["queue_current"], status})
+	}
+
+	// 5xx Rate
+	if dm["http_5xx"] != "" {
+		status := "OK"
+		if dm["http_5xx"] != "0" {
+			v, _ := strconv.Atoi(dm["http_5xx"])
+			if v > 100 {
+				status = "CRIT"
+			} else if v > 0 {
+				status = "WARN"
+			}
+		}
+		rows = append(rows, healthRow{"HTTP 5xx", dm["http_5xx"], status})
+	}
+
+	// CPU (idle_pct)
+	if dm["idle_pct"] != "" {
+		var idle float64
+		fmt.Sscanf(dm["idle_pct"], "%f", &idle)
+		status := "OK"
+		if idle < 10 {
+			status = "CRIT"
+		} else if idle < 25 {
+			status = "WARN"
+		}
+		rows = append(rows, healthRow{"CPU Idle", dm["idle_pct"] + "%", status})
+	}
+
+	cMetric := 24
+	cValue := 40
+	hdr := fmt.Sprintf("  %s %s %s",
+		styledPad(dimStyle.Render("Metric"), cMetric),
+		styledPad(dimStyle.Render("Value"), cValue),
+		dimStyle.Render("Status"))
+	sb.WriteString(boxRow(hdr, iw) + "\n")
+	sb.WriteString(boxMid(iw) + "\n")
+
+	for _, r := range rows {
+		var badge string
+		switch r.status {
+		case "OK":
+			badge = okStyle.Render("OK")
+		case "WARN":
+			badge = warnStyle.Render("WARN")
+		case "CRIT":
+			badge = critStyle.Render("CRIT")
+		}
+		row := fmt.Sprintf("  %s %s %s",
+			styledPad(valueStyle.Render(r.metric), cMetric),
+			styledPad(valueStyle.Render(r.value), cValue),
+			badge)
+		sb.WriteString(boxRow(row, iw) + "\n")
+	}
+	sb.WriteString(boxBot(iw) + "\n\n")
+
+	// Proxy Type (shown prominently)
+	sb.WriteString(appSection("PROXY TYPE", iw, []kv{
+		{Key: "Role", Val: dm["proxy_role"]},
+		{Key: "HTTP Frontends", Val: dm["http_frontends"]},
+		{Key: "TCP Frontends", Val: dm["tcp_frontends"]},
+		{Key: "HTTP Backends", Val: dm["http_backends"]},
+		{Key: "TCP Backends", Val: dm["tcp_backends"]},
+		{Key: "Proxy Map", Val: dm["proxy_map"]},
+	}))
+
+	// Global
+	sb.WriteString(appSection("GLOBAL", iw, []kv{
+		{Key: "Max Connections", Val: dm["max_conn"]},
+		{Key: "Current Connections", Val: dm["curr_conn"]},
+		{Key: "Cumulative Conns", Val: dm["cum_connections"]},
+		{Key: "Cumulative Requests", Val: dm["cum_requests"]},
+		{Key: "Max Session Rate", Val: dm["max_sess_rate"]},
+		{Key: "Idle %", Val: dm["idle_pct"]},
+		{Key: "Run Queue", Val: dm["run_queue"]},
+		{Key: "Tasks", Val: dm["tasks"]},
+	}))
+
+	// Backends
+	sb.WriteString(appSection("BACKENDS", iw, []kv{
+		{Key: "Frontends", Val: dm["frontends"]},
+		{Key: "Backends", Val: dm["backends"]},
+		{Key: "Servers Total", Val: dm["servers_total"]},
+		{Key: "Servers Up", Val: dm["servers_up"]},
+		{Key: "Servers Down", Val: dm["servers_down"]},
+		{Key: "Top Backends", Val: dm["top_backends"]},
+	}))
+
+	// Traffic
+	sb.WriteString(appSection("TRAFFIC", iw, []kv{
+		{Key: "Total Sessions", Val: dm["total_sessions"]},
+		{Key: "Current Sessions", Val: dm["current_sessions"]},
+		{Key: "Session Rate", Val: dm["session_rate"]},
+		{Key: "Request Rate", Val: dm["request_rate"]},
+		{Key: "Queue Current", Val: dm["queue_current"]},
+		{Key: "Queue Max", Val: dm["queue_max"]},
+	}))
+
+	// Error Rates
+	sb.WriteString(appSection("ERROR RATES", iw, []kv{
+		{Key: "Connection Errors", Val: dm["connection_errors"]},
+		{Key: "Response Errors", Val: dm["response_errors"]},
+		{Key: "Retries", Val: dm["retries"]},
+		{Key: "HTTP 5xx", Val: dm["http_5xx"]},
+		{Key: "HTTP 4xx", Val: dm["http_4xx"]},
+		{Key: "Client Aborts", Val: dm["client_aborts"]},
+		{Key: "Server Aborts", Val: dm["server_aborts"]},
+	}))
+
+	// Config
+	sb.WriteString(appSection("CONFIG", iw, []kv{
+		{Key: "Max Conn", Val: dm["maxconn"]},
+		{Key: "Threads", Val: dm["nbthread"]},
+		{Key: "Frontend Sections", Val: dm["frontend_sections"]},
+		{Key: "Backend Sections", Val: dm["backend_sections"]},
+		{Key: "Stats URI", Val: dm["stats_uri"]},
+		{Key: "Stats Socket", Val: dm["stats_socket"]},
+	}))
+
+	return sb.String()
+}
+
+// ── Apache Detail ──────────────────────────────────────────────────────
+
+func renderApacheDeepMetrics(app model.AppInstance, iw int) string {
+	var sb strings.Builder
+	dm := app.DeepMetrics
+
+	// Health status table
+	type healthRow struct{ metric, value, status string }
+	rows := []healthRow{}
+
+	if v := dm["worker_utilization_pct"]; v != "" {
+		var pct float64
+		fmt.Sscanf(v, "%f", &pct)
+		status := "OK"
+		if pct > 95 {
+			status = "CRIT"
+		} else if pct > 80 {
+			status = "WARN"
+		}
+		rows = append(rows, healthRow{"Worker Utilization", v + "%", status})
+	}
+	if busy := dm["busy_workers"]; busy != "" {
+		maxW := dm["max_request_workers"]
+		val := busy + " busy"
+		if maxW != "" {
+			val += " / " + maxW + " max"
+		}
+		status := "OK"
+		if maxW != "" {
+			b, _ := strconv.Atoi(busy)
+			m, _ := strconv.Atoi(maxW)
+			if m > 0 && b >= m {
+				status = "CRIT"
+			}
+		}
+		rows = append(rows, healthRow{"Workers", val, status})
+	}
+	if v := dm["cpu_load"]; v != "" {
+		var load float64
+		fmt.Sscanf(v, "%f", &load)
+		status := "OK"
+		if load > 0.5 {
+			status = "CRIT"
+		} else if load > 0.2 {
+			status = "WARN"
+		}
+		rows = append(rows, healthRow{"CPU Load", fmt.Sprintf("%.2f", load), status})
+	}
+
+	if len(rows) > 0 {
+		sb.WriteString("  " + titleStyle.Render("HEALTH STATUS") + "\n")
+		sb.WriteString(boxTop(iw) + "\n")
+		cM, cV := 24, 30
+		hdr := fmt.Sprintf("  %s %s %s", styledPad(dimStyle.Render("Metric"), cM), styledPad(dimStyle.Render("Value"), cV), dimStyle.Render("Status"))
+		sb.WriteString(boxRow(hdr, iw) + "\n")
+		sb.WriteString(boxMid(iw) + "\n")
+		for _, r := range rows {
+			badge := okStyle.Render("OK")
+			if r.status == "WARN" {
+				badge = warnStyle.Render("WARN")
+			} else if r.status == "CRIT" {
+				badge = critStyle.Render("CRIT")
+			}
+			row := fmt.Sprintf("  %s %s %s", styledPad(valueStyle.Render(r.metric), cM), styledPad(valueStyle.Render(r.value), cV), badge)
+			sb.WriteString(boxRow(row, iw) + "\n")
+		}
+		sb.WriteString(boxBot(iw) + "\n\n")
+	}
+
+	sb.WriteString(appSection("TRAFFIC", iw, []kv{
+		{Key: "Requests/sec", Val: dm["req_per_sec"]},
+		{Key: "Bytes/sec", Val: dm["bytes_per_sec"]},
+		{Key: "Bytes/req", Val: dm["bytes_per_req"]},
+		{Key: "Total Accesses", Val: dm["total_accesses"]},
+		{Key: "Total kBytes", Val: dm["total_kbytes"]},
+	}))
+
+	sb.WriteString(appSection("WORKERS", iw, []kv{
+		{Key: "Busy", Val: dm["busy_workers"]},
+		{Key: "Idle", Val: dm["idle_workers"]},
+		{Key: "Running (R)", Val: dm["workers_running"]},
+		{Key: "Sleeping (S)", Val: dm["workers_sleeping"]},
+		{Key: "Disk Wait (D)", Val: dm["workers_disk_wait"]},
+	}))
+
+	sb.WriteString(appSection("SCOREBOARD", iw, []kv{
+		{Key: "Writing (W)", Val: dm["scoreboard_writing"]},
+		{Key: "Reading (R)", Val: dm["scoreboard_reading"]},
+		{Key: "Keepalive (K)", Val: dm["scoreboard_keepalive"]},
+		{Key: "DNS Lookup (D)", Val: dm["scoreboard_dns"]},
+		{Key: "Closing (C)", Val: dm["scoreboard_closing"]},
+		{Key: "Logging (L)", Val: dm["scoreboard_logging"]},
+		{Key: "Graceful (G)", Val: dm["scoreboard_graceful"]},
+		{Key: "Starting (S)", Val: dm["scoreboard_starting"]},
+		{Key: "Idle Slots (.)", Val: dm["scoreboard_idle"]},
+	}))
+
+	sb.WriteString(appSection("CONFIG", iw, []kv{
+		{Key: "MPM", Val: dm["mpm"]},
+		{Key: "MaxRequestWorkers", Val: dm["max_request_workers"]},
+		{Key: "ServerLimit", Val: dm["server_limit"]},
+		{Key: "KeepAlive", Val: dm["keepalive"]},
+		{Key: "KeepAliveTimeout", Val: dm["keepalive_timeout"]},
+		{Key: "Timeout", Val: dm["timeout"]},
+	}))
+
+	return sb.String()
+}
+
+// ── MongoDB Detail ─────────────────────────────────────────────────────
+
+func renderMongoDBDeepMetrics(app model.AppInstance, iw int) string {
+	var sb strings.Builder
+	dm := app.DeepMetrics
+
+	type healthRow struct{ metric, value, status string }
+	rows := []healthRow{}
+
+	if v := dm["cache_usage_pct"]; v != "" {
+		var pct float64
+		fmt.Sscanf(v, "%f", &pct)
+		status := "OK"
+		if pct > 95 {
+			status = "CRIT"
+		} else if pct > 80 {
+			status = "WARN"
+		}
+		rows = append(rows, healthRow{"Cache Usage", v + "%", status})
+	}
+	if cur := dm["conn_current"]; cur != "" {
+		avail := dm["conn_available"]
+		val := cur + " / " + avail
+		status := "OK"
+		c, _ := strconv.Atoi(cur)
+		a, _ := strconv.Atoi(avail)
+		if a > 0 {
+			pct := float64(c) / float64(c+a) * 100
+			if pct > 90 {
+				status = "CRIT"
+			} else if pct > 80 {
+				status = "WARN"
+			}
+		}
+		rows = append(rows, healthRow{"Connections", val, status})
+	}
+	if v := dm["lock_queue_total"]; v != "" && v != "0" {
+		status := "WARN"
+		q, _ := strconv.Atoi(v)
+		if q > 10 {
+			status = "CRIT"
+		}
+		rows = append(rows, healthRow{"Lock Queue", v, status})
+	} else {
+		rows = append(rows, healthRow{"Lock Queue", "0", "OK"})
+	}
+	if v := dm["slow_ops"]; v != "" && v != "0" {
+		rows = append(rows, healthRow{"Slow Operations", v, "WARN"})
+	}
+	if v := dm["repl_lag_sec"]; v != "" && v != "0" {
+		status := "WARN"
+		lag, _ := strconv.Atoi(v)
+		if lag > 60 {
+			status = "CRIT"
+		}
+		rows = append(rows, healthRow{"Replication Lag", v + "s", status})
+	}
+
+	if len(rows) > 0 {
+		sb.WriteString("  " + titleStyle.Render("HEALTH STATUS") + "\n")
+		sb.WriteString(boxTop(iw) + "\n")
+		cM, cV := 24, 30
+		hdr := fmt.Sprintf("  %s %s %s", styledPad(dimStyle.Render("Metric"), cM), styledPad(dimStyle.Render("Value"), cV), dimStyle.Render("Status"))
+		sb.WriteString(boxRow(hdr, iw) + "\n")
+		sb.WriteString(boxMid(iw) + "\n")
+		for _, r := range rows {
+			badge := okStyle.Render("OK")
+			if r.status == "WARN" {
+				badge = warnStyle.Render("WARN")
+			} else if r.status == "CRIT" {
+				badge = critStyle.Render("CRIT")
+			}
+			row := fmt.Sprintf("  %s %s %s", styledPad(valueStyle.Render(r.metric), cM), styledPad(valueStyle.Render(r.value), cV), badge)
+			sb.WriteString(boxRow(row, iw) + "\n")
+		}
+		sb.WriteString(boxBot(iw) + "\n\n")
+	}
+
+	sb.WriteString(appSection("CONNECTIONS", iw, []kv{
+		{Key: "Current", Val: dm["conn_current"]},
+		{Key: "Available", Val: dm["conn_available"]},
+		{Key: "Total Created", Val: dm["conn_total_created"]},
+		{Key: "Active Clients", Val: dm["active_clients"]},
+		{Key: "Active Readers", Val: dm["active_readers"]},
+		{Key: "Active Writers", Val: dm["active_writers"]},
+	}))
+
+	sb.WriteString(appSection("OPERATIONS", iw, []kv{
+		{Key: "Queries", Val: dm["op_query"]},
+		{Key: "Inserts", Val: dm["op_insert"]},
+		{Key: "Updates", Val: dm["op_update"]},
+		{Key: "Deletes", Val: dm["op_delete"]},
+		{Key: "Commands", Val: dm["op_command"]},
+		{Key: "Slow Ops (>5s)", Val: dm["slow_ops"]},
+	}))
+
+	sb.WriteString(appSection("MEMORY & CACHE", iw, []kv{
+		{Key: "Resident", Val: dm["mem_resident_mb"]},
+		{Key: "Virtual", Val: dm["mem_virtual_mb"]},
+		{Key: "Cache Used", Val: dm["cache_used_mb"]},
+		{Key: "Cache Max", Val: dm["cache_max_mb"]},
+		{Key: "Cache Usage", Val: dm["cache_usage_pct"]},
+		{Key: "Cache Dirty", Val: dm["cache_dirty_mb"]},
+		{Key: "Storage Engine", Val: dm["storage_engine"]},
+	}))
+
+	sb.WriteString(appSection("LOCKS", iw, []kv{
+		{Key: "Queue Total", Val: dm["lock_queue_total"]},
+		{Key: "Queue Readers", Val: dm["lock_queue_readers"]},
+		{Key: "Queue Writers", Val: dm["lock_queue_writers"]},
+	}))
+
+	if dm["repl_set"] != "" {
+		sb.WriteString(appSection("REPLICATION", iw, []kv{
+			{Key: "Set Name", Val: dm["repl_set"]},
+			{Key: "State", Val: dm["repl_state"]},
+			{Key: "Members", Val: dm["repl_members"]},
+			{Key: "Lag", Val: dm["repl_lag_sec"]},
+		}))
+	}
+
+	sb.WriteString(appSection("STORAGE", iw, []kv{
+		{Key: "Databases", Val: dm["db_count"]},
+		{Key: "Total Size", Val: dm["total_size_mb"]},
+		{Key: "Config Cache", Val: dm["wt_cache_size_gb"]},
+		{Key: "Max Connections", Val: dm["max_connections"]},
+	}))
+
+	return sb.String()
+}
+
+// ── Memcached Detail ───────────────────────────────────────────────────
+
+func renderMemcachedDeepMetrics(app model.AppInstance, iw int) string {
+	var sb strings.Builder
+	dm := app.DeepMetrics
+
+	type healthRow struct{ metric, value, status string }
+	rows := []healthRow{}
+
+	if v := dm["memory_usage_pct"]; v != "" {
+		var pct float64
+		fmt.Sscanf(v, "%f", &pct)
+		status := "OK"
+		if pct > 95 {
+			status = "CRIT"
+		} else if pct > 90 {
+			status = "WARN"
+		}
+		rows = append(rows, healthRow{"Memory Usage", v + "%", status})
+	}
+	if v := dm["hit_ratio"]; v != "" {
+		var pct float64
+		fmt.Sscanf(v, "%f", &pct)
+		status := "OK"
+		if pct < 50 {
+			status = "CRIT"
+		} else if pct < 80 {
+			status = "WARN"
+		}
+		rows = append(rows, healthRow{"Hit Ratio", v, status})
+	}
+	if v := dm["evictions"]; v != "" {
+		status := "OK"
+		if v != "0" {
+			status = "CRIT"
+		}
+		rows = append(rows, healthRow{"Evictions", v, status})
+	}
+	if v := dm["accepting_conns"]; v == "0" {
+		rows = append(rows, healthRow{"Accepting Conns", "NO", "CRIT"})
+	}
+	if v := dm["rejected_connections"]; v != "" && v != "0" {
+		rows = append(rows, healthRow{"Rejected Conns", v, "CRIT"})
+	}
+
+	if len(rows) > 0 {
+		sb.WriteString("  " + titleStyle.Render("HEALTH STATUS") + "\n")
+		sb.WriteString(boxTop(iw) + "\n")
+		cM, cV := 24, 30
+		hdr := fmt.Sprintf("  %s %s %s", styledPad(dimStyle.Render("Metric"), cM), styledPad(dimStyle.Render("Value"), cV), dimStyle.Render("Status"))
+		sb.WriteString(boxRow(hdr, iw) + "\n")
+		sb.WriteString(boxMid(iw) + "\n")
+		for _, r := range rows {
+			badge := okStyle.Render("OK")
+			if r.status == "WARN" {
+				badge = warnStyle.Render("WARN")
+			} else if r.status == "CRIT" {
+				badge = critStyle.Render("CRIT")
+			}
+			row := fmt.Sprintf("  %s %s %s", styledPad(valueStyle.Render(r.metric), cM), styledPad(valueStyle.Render(r.value), cV), badge)
+			sb.WriteString(boxRow(row, iw) + "\n")
+		}
+		sb.WriteString(boxBot(iw) + "\n\n")
+	}
+
+	sb.WriteString(appSection("CACHE", iw, []kv{
+		{Key: "Current Items", Val: dm["curr_items"]},
+		{Key: "Total Items", Val: dm["total_items"]},
+		{Key: "Hit Ratio", Val: dm["hit_ratio"]},
+		{Key: "Miss Ratio", Val: dm["miss_ratio"]},
+		{Key: "Evictions", Val: dm["evictions"]},
+		{Key: "Eviction Rate", Val: dm["eviction_rate"]},
+		{Key: "Reclaimed", Val: dm["reclaimed"]},
+	}))
+
+	sb.WriteString(appSection("MEMORY", iw, []kv{
+		{Key: "Used", Val: dm["bytes"]},
+		{Key: "Limit", Val: dm["limit_maxbytes"]},
+		{Key: "Usage", Val: dm["memory_usage_pct"]},
+		{Key: "Config Memory MB", Val: dm["config_memory_mb"]},
+		{Key: "Slab Count", Val: dm["slab_count"]},
+		{Key: "Slab Waste", Val: dm["slab_wasted_pct"]},
+	}))
+
+	sb.WriteString(appSection("COMMANDS", iw, []kv{
+		{Key: "GET", Val: dm["cmd_get"]},
+		{Key: "SET", Val: dm["cmd_set"]},
+		{Key: "Flush", Val: dm["cmd_flush"]},
+		{Key: "Get/Set Ratio", Val: dm["cmd_ratio_get_set"]},
+		{Key: "Delete Hits", Val: dm["delete_hits"]},
+		{Key: "Delete Misses", Val: dm["delete_misses"]},
+	}))
+
+	sb.WriteString(appSection("CONNECTIONS", iw, []kv{
+		{Key: "Current", Val: dm["curr_connections"]},
+		{Key: "Total", Val: dm["total_connections"]},
+		{Key: "Rejected", Val: dm["rejected_connections"]},
+		{Key: "Listen Disabled", Val: dm["listen_disabled_num"]},
+		{Key: "Max Connections", Val: dm["config_max_connections"]},
+		{Key: "Threads", Val: dm["threads"]},
+	}))
+
+	sb.WriteString(appSection("NETWORK", iw, []kv{
+		{Key: "Bytes Read", Val: dm["bytes_read_human"]},
+		{Key: "Bytes Written", Val: dm["bytes_written_human"]},
+	}))
+
+	return sb.String()
+}
+
+// ── RabbitMQ Detail ────────────────────────────────────────────────────
+
+func renderRabbitMQDeepMetrics(app model.AppInstance, iw int) string {
+	var sb strings.Builder
+	dm := app.DeepMetrics
+
+	type healthRow struct{ metric, value, status string }
+	rows := []healthRow{}
+
+	if v := dm["messages_unacked"]; v != "" {
+		status := "OK"
+		n, _ := strconv.Atoi(v)
+		if n > 10000 {
+			status = "CRIT"
+		} else if n > 1000 {
+			status = "WARN"
+		}
+		rows = append(rows, healthRow{"Unacked Messages", v, status})
+	}
+	if v := dm["messages_ready"]; v != "" {
+		status := "OK"
+		n, _ := strconv.Atoi(v)
+		if n > 100000 {
+			status = "CRIT"
+		} else if n > 10000 {
+			status = "WARN"
+		}
+		rows = append(rows, healthRow{"Ready Messages", v, status})
+	}
+	if dm["mem_alarm"] == "true" {
+		rows = append(rows, healthRow{"Memory Alarm", "TRIGGERED", "CRIT"})
+	}
+	if dm["disk_alarm"] == "true" {
+		rows = append(rows, healthRow{"Disk Alarm", "TRIGGERED", "CRIT"})
+	}
+	if v := dm["mem_usage_pct"]; v != "" {
+		var pct float64
+		fmt.Sscanf(v, "%f", &pct)
+		status := "OK"
+		if pct > 80 {
+			status = "WARN"
+		}
+		rows = append(rows, healthRow{"Memory Usage", v + "%", status})
+	}
+	if v := dm["fd_usage_pct"]; v != "" {
+		var pct float64
+		fmt.Sscanf(v, "%f", &pct)
+		status := "OK"
+		if pct > 80 {
+			status = "WARN"
+		}
+		rows = append(rows, healthRow{"FD Usage", v + "%", status})
+	}
+	if v := dm["queues_idle"]; v != "" && v != "0" {
+		n, _ := strconv.Atoi(v)
+		status := "OK"
+		if n > 5 {
+			status = "WARN"
+		}
+		rows = append(rows, healthRow{"Idle Queues", v, status})
+	}
+
+	if len(rows) > 0 {
+		sb.WriteString("  " + titleStyle.Render("HEALTH STATUS") + "\n")
+		sb.WriteString(boxTop(iw) + "\n")
+		cM, cV := 24, 30
+		hdr := fmt.Sprintf("  %s %s %s", styledPad(dimStyle.Render("Metric"), cM), styledPad(dimStyle.Render("Value"), cV), dimStyle.Render("Status"))
+		sb.WriteString(boxRow(hdr, iw) + "\n")
+		sb.WriteString(boxMid(iw) + "\n")
+		for _, r := range rows {
+			badge := okStyle.Render("OK")
+			if r.status == "WARN" {
+				badge = warnStyle.Render("WARN")
+			} else if r.status == "CRIT" {
+				badge = critStyle.Render("CRIT")
+			}
+			row := fmt.Sprintf("  %s %s %s", styledPad(valueStyle.Render(r.metric), cM), styledPad(valueStyle.Render(r.value), cV), badge)
+			sb.WriteString(boxRow(row, iw) + "\n")
+		}
+		sb.WriteString(boxBot(iw) + "\n\n")
+	}
+
+	sb.WriteString(appSection("MESSAGES", iw, []kv{
+		{Key: "Ready", Val: dm["messages_ready"]},
+		{Key: "Unacked", Val: dm["messages_unacked"]},
+		{Key: "Total", Val: dm["messages_total"]},
+		{Key: "Publish Rate", Val: dm["publish_rate"]},
+		{Key: "Deliver Rate", Val: dm["deliver_rate"]},
+		{Key: "Ack Rate", Val: dm["ack_rate"]},
+		{Key: "Redeliver Rate", Val: dm["redeliver_rate"]},
+		{Key: "Unroutable", Val: dm["return_unroutable"]},
+	}))
+
+	sb.WriteString(appSection("CLUSTER", iw, []kv{
+		{Key: "Cluster Name", Val: dm["cluster_name"]},
+		{Key: "Node", Val: dm["node"]},
+		{Key: "Node Type", Val: dm["node_type"]},
+		{Key: "Erlang Version", Val: dm["erlang_version"]},
+		{Key: "Connections", Val: dm["connections"]},
+		{Key: "Channels", Val: dm["channels"]},
+		{Key: "Consumers", Val: dm["consumers"]},
+	}))
+
+	sb.WriteString(appSection("QUEUES", iw, []kv{
+		{Key: "Total", Val: dm["queues"]},
+		{Key: "Idle (no consumers)", Val: dm["queues_idle"]},
+		{Key: "Backlogged (>1K)", Val: dm["queues_backlogged"]},
+		{Key: "Top Queue", Val: dm["top_queue_name"]},
+		{Key: "Top Queue Msgs", Val: dm["top_queue_messages"]},
+	}))
+
+	sb.WriteString(appSection("NODE RESOURCES", iw, []kv{
+		{Key: "Memory", Val: dm["mem_used_mb"]},
+		{Key: "Memory Limit", Val: dm["mem_limit_mb"]},
+		{Key: "Memory Usage", Val: dm["mem_usage_pct"]},
+		{Key: "Disk Free", Val: dm["disk_free_mb"]},
+		{Key: "FD Used/Total", Val: dm["fd_used"] + " / " + dm["fd_total"]},
+		{Key: "Sockets", Val: dm["sockets_used"] + " / " + dm["sockets_total"]},
+		{Key: "Erlang Procs", Val: dm["proc_used"] + " / " + dm["proc_total"]},
+	}))
+
+	return sb.String()
+}
+
+// ── Kafka Detail ───────────────────────────────────────────────────────
+
+func renderKafkaDeepMetrics(app model.AppInstance, iw int) string {
+	var sb strings.Builder
+	dm := app.DeepMetrics
+
+	sb.WriteString(appSection("BROKER", iw, []kv{
+		{Key: "Broker ID", Val: dm["broker_id"]},
+		{Key: "Kafka Version", Val: dm["kafka_version"]},
+		{Key: "Topics", Val: dm["topic_count"]},
+		{Key: "Consumer Groups", Val: dm["consumer_group_count"]},
+		{Key: "JMX Port", Val: dm["jmx_port"]},
+		{Key: "JVM hsperfdata", Val: dm["jvm_hsperfdata"]},
+	}))
+
+	sb.WriteString(appSection("CONFIG", iw, []kv{
+		{Key: "Partitions", Val: dm["num_partitions"]},
+		{Key: "Log Dirs", Val: dm["log_dirs"]},
+		{Key: "Retention Hours", Val: dm["log_retention_hours"]},
+		{Key: "IO Threads", Val: dm["num_io_threads"]},
+		{Key: "Network Threads", Val: dm["num_network_threads"]},
+		{Key: "Replication Factor", Val: dm["default_replication_factor"]},
+		{Key: "Auto-create Topics", Val: dm["auto_create_topics"]},
+	}))
+
+	if dm["log_dir_size_gb"] != "" {
+		sb.WriteString(appSection("STORAGE", iw, []kv{
+			{Key: "Log Dir Size", Val: dm["log_dir_size_gb"] + " GB"},
+		}))
+	}
+
+	return sb.String()
+}
+
+// ── Caddy Detail ───────────────────────────────────────────────────────
+
+func renderCaddyDeepMetrics(app model.AppInstance, iw int) string {
+	var sb strings.Builder
+	dm := app.DeepMetrics
+
+	sb.WriteString(appSection("SERVER", iw, []kv{
+		{Key: "Version", Val: dm["caddy_version"]},
+		{Key: "Admin API", Val: dm["admin_api"]},
+		{Key: "Sites", Val: dm["sites"]},
+		{Key: "Reverse Proxies", Val: dm["reverse_proxy_count"]},
+		{Key: "TLS Enabled", Val: dm["tls_enabled"]},
+		{Key: "Gzip", Val: dm["encode_gzip"]},
+	}))
+
+	if dm["api_servers"] != "" || dm["api_routes"] != "" {
+		sb.WriteString(appSection("LIVE CONFIG", iw, []kv{
+			{Key: "Servers", Val: dm["api_servers"]},
+			{Key: "Routes", Val: dm["api_routes"]},
+			{Key: "Auto-HTTPS", Val: dm["api_auto_https"]},
+		}))
+	}
+
+	if dm["upstreams_healthy"] != "" || dm["upstreams_unhealthy"] != "" {
+		sb.WriteString(appSection("UPSTREAMS", iw, []kv{
+			{Key: "Healthy", Val: dm["upstreams_healthy"]},
+			{Key: "Unhealthy", Val: dm["upstreams_unhealthy"]},
+		}))
+	}
+
+	if dm["http_requests_total"] != "" {
+		sb.WriteString(appSection("METRICS", iw, []kv{
+			{Key: "HTTP Requests", Val: dm["http_requests_total"]},
+		}))
+	}
+
+	return sb.String()
+}
+
+// ── Traefik Detail ─────────────────────────────────────────────────────
+
+func renderTraefikDeepMetrics(app model.AppInstance, iw int) string {
+	var sb strings.Builder
+	dm := app.DeepMetrics
+
+	type healthRow struct{ metric, value, status string }
+	rows := []healthRow{}
+
+	if v := dm["health_status"]; v != "" {
+		status := "OK"
+		if v != "ok" {
+			status = "CRIT"
+		}
+		rows = append(rows, healthRow{"Health Check", v, status})
+	}
+	if v := dm["http_router_errors"]; v != "" && v != "0" {
+		rows = append(rows, healthRow{"Router Errors", v, "CRIT"})
+	}
+	if v := dm["http_service_errors"]; v != "" && v != "0" {
+		rows = append(rows, healthRow{"Service Errors", v, "CRIT"})
+	}
+
+	if len(rows) > 0 {
+		sb.WriteString("  " + titleStyle.Render("HEALTH STATUS") + "\n")
+		sb.WriteString(boxTop(iw) + "\n")
+		cM, cV := 24, 30
+		hdr := fmt.Sprintf("  %s %s %s", styledPad(dimStyle.Render("Metric"), cM), styledPad(dimStyle.Render("Value"), cV), dimStyle.Render("Status"))
+		sb.WriteString(boxRow(hdr, iw) + "\n")
+		sb.WriteString(boxMid(iw) + "\n")
+		for _, r := range rows {
+			badge := okStyle.Render("OK")
+			if r.status == "WARN" {
+				badge = warnStyle.Render("WARN")
+			} else if r.status == "CRIT" {
+				badge = critStyle.Render("CRIT")
+			}
+			row := fmt.Sprintf("  %s %s %s", styledPad(valueStyle.Render(r.metric), cM), styledPad(valueStyle.Render(r.value), cV), badge)
+			sb.WriteString(boxRow(row, iw) + "\n")
+		}
+		sb.WriteString(boxBot(iw) + "\n\n")
+	}
+
+	sb.WriteString(appSection("HTTP", iw, []kv{
+		{Key: "Routers", Val: dm["http_routers"]},
+		{Key: "Services", Val: dm["http_services"]},
+		{Key: "Middlewares", Val: dm["http_middlewares"]},
+		{Key: "Router Warnings", Val: dm["http_router_warnings"]},
+	}))
+
+	if dm["tcp_routers"] != "" && dm["tcp_routers"] != "0" {
+		sb.WriteString(appSection("TCP", iw, []kv{
+			{Key: "Routers", Val: dm["tcp_routers"]},
+			{Key: "Services", Val: dm["tcp_services"]},
+		}))
+	}
+
+	sb.WriteString(appSection("ENTRYPOINTS", iw, []kv{
+		{Key: "Addresses", Val: dm["entrypoints"]},
+		{Key: "API Port", Val: dm["api_port"]},
+		{Key: "Dashboard", Val: dm["dashboard_enabled"]},
+	}))
+
+	return sb.String()
 }
 
 // ── Docker Detail ──────────────────────────────────────────────────────

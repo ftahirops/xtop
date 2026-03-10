@@ -248,6 +248,25 @@ func readProcUptime(pid int) int64 {
 	return int64(now - startSec)
 }
 
+// countChildProcesses counts child processes with given comm name.
+func countChildProcesses(parentPID int, comm string) int {
+	count := 0
+	entries, err := procEntries()
+	if err != nil {
+		return 0
+	}
+	for _, pid := range entries {
+		if pid == parentPID {
+			continue
+		}
+		ppid, pcomm := readPPIDComm(pid)
+		if ppid == parentPID && pcomm == comm {
+			count++
+		}
+	}
+	return count
+}
+
 // findConfigFile returns the first existing path from the list.
 func findConfigFile(paths []string) string {
 	for _, p := range paths {
