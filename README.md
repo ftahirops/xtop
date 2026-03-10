@@ -30,17 +30,46 @@
 </p>
 
 <p align="center">
-  <a href="#-quick-start">Quick Start</a> •
-  <a href="#-the-problem">The Problem</a> •
-  <a href="#-how-xtop-solves-it">The Solution</a> •
-  <a href="#-features">Features</a> •
-  <a href="#-screenshots">Pages</a> •
-  <a href="#-ebpf-deep-investigation">eBPF Probes</a> •
-  <a href="#-doctor-mode">Doctor</a> •
-  <a href="#-active-service-detection">Services</a> •
-  <a href="#-installation">Installation</a> •
-  <a href="#-documentation">Docs</a>
+  <a href="#quick-start"><b>Install Now</b></a> &nbsp;&bull;&nbsp;
+  <a href="#the-problem">Why xtop?</a> &nbsp;&bull;&nbsp;
+  <a href="#features">Features</a> &nbsp;&bull;&nbsp;
+  <a href="#installation">Full Install Guide</a> &nbsp;&bull;&nbsp;
+  <a href="#documentation">Docs</a>
 </p>
+
+---
+
+## Table of Contents
+
+- [The Problem](#the-problem) — Why traditional tools fail
+- [How xtop Solves It](#how-xtop-solves-it) — What xtop answers in 5 seconds
+- [Features](#features)
+  - [Root-Cause Analysis Engine](#root-cause-analysis-engine) — 47+ evidence checks, 4 bottleneck detectors
+  - [RCA Decision Engine](#rca-decision-engine-v0265) — Narrative, pattern detection, temporal causality, blame
+  - [Health Levels](#health-levels) — OK / Inconclusive / Degraded / Critical
+  - [16 Interactive Pages](#16-interactive-pages) — Overview, CPU, Memory, IO, Network, Cgroups, Timeline, Events, Probe, Thresholds, DiskGuard, Security, Logs, Services, Diagnostics, Intel, Proxmox
+  - [6 Overview Layouts](#6-overview-layouts) — Two-Column, Compact, Adaptive, Grid, htop, btop
+- [eBPF Deep Investigation](#ebpf-deep-investigation) — Off-CPU, IO latency, lock contention, TCP retransmits
+- [eBPF Network Security Intelligence](#ebpf-network-security-intelligence-v0210) — SYN flood, port scan, DNS, C2 beacon, exfiltration
+- [Predictive Exhaustion Warnings](#predictive-exhaustion-warnings) — Memory, swap, conntrack trend prediction
+- [Anomaly Onset Tracking](#anomaly-onset-tracking) — Timestamped bottleneck origins
+- [Network Intelligence](#network-intelligence) — Interface classification, TCP state analysis, conntrack
+- [SMART Disk Health](#smart-disk-health) — Temperature, wear level, reallocated sectors
+- [Incident Recording & Replay](#incident-recording--replay) — Flight recorder for postmortem
+- [Event Detection](#event-detection) — Automatic incident detection and logging
+- [Doctor Mode](#doctor-mode) — Comprehensive health check (CLI, JSON, Markdown, cron, alerts)
+- [Active Service Detection](#active-service-detection) — Auto-detect MySQL, Redis, Docker, K8s, etc.
+- [Shell Health Widget](#shell-health-widget) — Bash/Zsh prompt integration
+- [Cron Integration](#cron-integration) — Automated health checks
+- [9 Output Modes](#9-output-modes) — TUI, watch, doctor, JSON, Markdown, daemon, record/replay, shell widget
+- [Quick Start](#quick-start) — One-liner install
+- [Installation](#installation) — .deb, .rpm, from source, uninstall
+- [Documentation](#documentation)
+  - [CLI Reference](#cli-reference) — All flags and options
+  - [Key Bindings](#key-bindings) — Keyboard shortcuts
+  - [Data Sources](#data-sources) — 20+ Linux kernel interfaces
+  - [Examples](#examples) — Usage examples
+- [Configuration](#configuration)
 
 ---
 
