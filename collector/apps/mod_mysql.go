@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -233,6 +234,10 @@ func collectMySQLTier2(inst *model.AppInstance, secrets *AppSecrets, maxConns in
 		// Queries
 		"Questions", "Slow_queries", "Select_full_join", "Select_scan",
 		"Sort_merge_passes", "Created_tmp_disk_tables", "Created_tmp_tables",
+		// Per-command counters
+		"Com_select", "Com_insert", "Com_update", "Com_delete", "Com_commit", "Com_rollback",
+		// Traffic
+		"Bytes_received", "Bytes_sent",
 		// Tables
 		"Open_tables", "Opened_tables", "Table_locks_waited", "Table_locks_immediate",
 		// Handler
@@ -247,7 +252,38 @@ func collectMySQLTier2(inst *model.AppInstance, secrets *AppSecrets, maxConns in
 	// Computed metrics from SHOW GLOBAL STATUS
 	computeMySQLDerivedMetrics(dm)
 
-	// 2. SHOW PROCESSLIST — count active queries and sleeping connections
+	// QPS and per-command rates
+	uptime := inst.UptimeSec
+	if uptime > 0 {
+		if questions, ok := dm["Questions"]; ok {
+			q, _ := strconv.ParseInt(questions, 10, 64)
+			if q > 0 {
+				qps := float64(q) / float64(uptime)
+				dm["queries_per_sec"] = fmt.Sprintf("%.1f", qps)
+			}
+		}
+		perCmdKeys := []struct {
+			statusKey string
+			metricKey string
+		}{
+			{"Com_select", "selects_per_sec"},
+			{"Com_insert", "inserts_per_sec"},
+			{"Com_update", "updates_per_sec"},
+			{"Com_delete", "deletes_per_sec"},
+			{"Com_commit", "commits_per_sec"},
+		}
+		for _, ck := range perCmdKeys {
+			if v, ok := dm[ck.statusKey]; ok {
+				cnt, _ := strconv.ParseInt(v, 10, 64)
+				if cnt > 0 {
+					rate := float64(cnt) / float64(uptime)
+					dm[ck.metricKey] = fmt.Sprintf("%.1f", rate)
+				}
+			}
+		}
+	}
+
+	// 2. SHOW FULL PROCESSLIST — count active queries, sleeping connections, top queries, per-host breakdown
 	collectProcessList(inst, secrets)
 
 	// 3. SHOW ENGINE INNODB STATUS — parse key metrics
@@ -309,15 +345,38 @@ func computeMySQLDerivedMetrics(dm map[string]string) {
 	}
 }
 
-// collectProcessList runs SHOW PROCESSLIST and counts active/sleeping connections.
+// processListEntry holds a parsed row from SHOW FULL PROCESSLIST.
+type processListEntry struct {
+	id      string
+	user    string
+	host    string
+	db      string
+	command string
+	timeSec int64
+	state   string
+	info    string
+}
+
+// collectProcessList runs SHOW FULL PROCESSLIST and extracts active/sleeping counts,
+// top 5 longest-running queries, and per-host connection breakdown.
 func collectProcessList(inst *model.AppInstance, secrets *AppSecrets) {
-	out, err := mysqlQuery(secrets, "SHOW PROCESSLIST")
+	out, err := mysqlQuery(secrets, "SHOW FULL PROCESSLIST")
 	if err != nil {
 		return
 	}
 
+	dm := inst.DeepMetrics
 	active := 0
 	sleeping := 0
+
+	var entries []processListEntry
+	// Per-host tracking
+	type hostStats struct {
+		total  int
+		active int
+	}
+	hostMap := make(map[string]*hostStats)
+
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 		if line == "" {
 			continue
@@ -326,21 +385,128 @@ func collectProcessList(inst *model.AppInstance, secrets *AppSecrets) {
 		if len(fields) < 5 {
 			continue
 		}
-		command := fields[4]
-		switch strings.ToLower(command) {
+
+		e := processListEntry{
+			id:      fields[0],
+			command: fields[4],
+		}
+		if len(fields) > 1 {
+			e.user = fields[1]
+		}
+		if len(fields) > 2 {
+			e.host = fields[2]
+		}
+		if len(fields) > 3 {
+			e.db = fields[3]
+		}
+		if len(fields) > 5 {
+			e.timeSec, _ = strconv.ParseInt(fields[5], 10, 64)
+		}
+		if len(fields) > 6 {
+			e.state = fields[6]
+		}
+		if len(fields) > 7 {
+			e.info = fields[7]
+		}
+
+		// Strip port from host (host:port -> host)
+		hostOnly := e.host
+		if idx := strings.LastIndex(hostOnly, ":"); idx > 0 {
+			hostOnly = hostOnly[:idx]
+		}
+
+		isActive := false
+		cmd := strings.ToLower(e.command)
+		switch cmd {
 		case "sleep":
 			sleeping++
 		case "query", "execute", "prepare":
 			active++
+			isActive = true
 		default:
-			// Daemon, Binlog Dump, etc. — count as active
-			if strings.ToLower(command) != "sleep" {
-				active++
+			active++
+			isActive = true
+		}
+
+		// Track per-host stats
+		if hostOnly != "" {
+			hs, ok := hostMap[hostOnly]
+			if !ok {
+				hs = &hostStats{}
+				hostMap[hostOnly] = hs
+			}
+			hs.total++
+			if isActive {
+				hs.active++
 			}
 		}
+
+		entries = append(entries, e)
 	}
-	inst.DeepMetrics["active_queries"] = fmt.Sprintf("%d", active)
-	inst.DeepMetrics["sleeping_connections"] = fmt.Sprintf("%d", sleeping)
+
+	dm["active_queries"] = fmt.Sprintf("%d", active)
+	dm["sleeping_connections"] = fmt.Sprintf("%d", sleeping)
+
+	// Top 5 longest-running non-Sleep queries
+	var activeEntries []processListEntry
+	for _, e := range entries {
+		if strings.ToLower(e.command) != "sleep" {
+			activeEntries = append(activeEntries, e)
+		}
+	}
+	sort.Slice(activeEntries, func(i, j int) bool {
+		return activeEntries[i].timeSec > activeEntries[j].timeSec
+	})
+	topN := len(activeEntries)
+	if topN > 5 {
+		topN = 5
+	}
+	dm["top_query_count"] = fmt.Sprintf("%d", topN)
+	for i := 0; i < topN; i++ {
+		e := activeEntries[i]
+		prefix := fmt.Sprintf("top_query_%d", i)
+		dm[prefix+"_id"] = e.id
+		dm[prefix+"_user"] = e.user
+		// Store host without port
+		h := e.host
+		if idx := strings.LastIndex(h, ":"); idx > 0 {
+			h = h[:idx]
+		}
+		dm[prefix+"_host"] = h
+		dm[prefix+"_db"] = e.db
+		dm[prefix+"_time"] = fmt.Sprintf("%d", e.timeSec)
+		dm[prefix+"_state"] = e.state
+		info := e.info
+		if len(info) > 120 {
+			info = info[:120]
+		}
+		dm[prefix+"_info"] = info
+	}
+
+	// Per-host connection breakdown (top 5 by total connections)
+	type hostEntry struct {
+		host   string
+		total  int
+		active int
+	}
+	var hostList []hostEntry
+	for h, hs := range hostMap {
+		hostList = append(hostList, hostEntry{host: h, total: hs.total, active: hs.active})
+	}
+	sort.Slice(hostList, func(i, j int) bool {
+		return hostList[i].total > hostList[j].total
+	})
+	hostN := len(hostList)
+	if hostN > 5 {
+		hostN = 5
+	}
+	dm["conn_host_count"] = fmt.Sprintf("%d", hostN)
+	for i := 0; i < hostN; i++ {
+		prefix := fmt.Sprintf("conn_host_%d", i)
+		dm[prefix+"_host"] = hostList[i].host
+		dm[prefix+"_count"] = fmt.Sprintf("%d", hostList[i].total)
+		dm[prefix+"_active"] = fmt.Sprintf("%d", hostList[i].active)
+	}
 }
 
 // collectInnoDBStatus parses SHOW ENGINE INNODB STATUS for key metrics.
