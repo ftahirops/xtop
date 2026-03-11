@@ -8,6 +8,28 @@ import (
 	"github.com/ftahirops/xtop/model"
 )
 
+// scanAllProcesses reads /proc to build a lightweight process list for app detection.
+// This is independent of ProcessCollector's top-N filtering, ensuring idle apps are found.
+func scanAllProcesses() []model.ProcessMetrics {
+	pids, err := procEntries()
+	if err != nil {
+		return nil
+	}
+	procs := make([]model.ProcessMetrics, 0, len(pids))
+	for _, pid := range pids {
+		ppid, comm := readPPIDComm(pid)
+		if comm == "" {
+			continue
+		}
+		procs = append(procs, model.ProcessMetrics{
+			PID:  pid,
+			Comm: comm,
+			PPID: ppid,
+		})
+	}
+	return procs
+}
+
 const appScanInterval = 30 * time.Second
 
 // AppCloser is an optional interface for app modules that hold resources.
@@ -46,11 +68,13 @@ func (m *Manager) Collect(snap *model.Snapshot) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Run detection scan periodically
+	// Run detection scan periodically using a full /proc scan
+	// (snap.Processes is filtered to top N by CPU/IO — idle apps would be missed)
 	if time.Since(m.lastScan) >= appScanInterval || m.detected == nil {
 		m.detected = nil
+		allProcs := scanAllProcesses()
 		for _, mod := range m.modules {
-			apps := mod.Detect(snap.Processes)
+			apps := mod.Detect(allProcs)
 			for _, app := range apps {
 				m.detected = append(m.detected, detectedEntry{
 					module: mod,

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/xtop-v0.26.8-00d4aa?style=for-the-badge&logo=linux&logoColor=white" alt="version"/>
+  <img src="https://img.shields.io/badge/xtop-v0.28.2-00d4aa?style=for-the-badge&logo=linux&logoColor=white" alt="version"/>
   <img src="https://img.shields.io/badge/Go-1.21+-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="go"/>
   <img src="https://img.shields.io/badge/eBPF-Powered-ff6600?style=for-the-badge&logo=linux&logoColor=white" alt="ebpf"/>
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="license"/>
@@ -149,7 +149,7 @@ The heart of xtop. Four parallel bottleneck detectors continuously score system 
 
 **Trust Gating:** A bottleneck is only reported when **2+ independent evidence groups** confirm it. This eliminates false positives from single-metric spikes. Confidence scales from 30% (2 groups) to 98% (5+ groups).
 
-### RCA Decision Engine (v0.26.8)
+### RCA Decision Engine (v0.28.2)
 
 Beyond raw signals, xtop's **decision engine** tells you EXACTLY what's wrong, why, what caused it, and what to do:
 
@@ -397,7 +397,7 @@ The RCA engine uses a **two-tier collection strategy**:
   - **MongoDB**: `mongosh` — serverStatus, WiredTiger cache, opCounters, lock queues, replication lag
   - **Nginx**: `stub_status` HTTP endpoint — active connections, accepts/handled/requests, reading/writing/waiting
   - **Apache**: `mod_status` endpoint — scoreboard analysis, request rates, worker utilization, MPM detection
-  - **HAProxy**: Unix socket `show stat`/`show info` — CSV stats parsing, backend health, session rates, queue depth
+  - **HAProxy**: Unix socket `show stat`/`show info`/`show sess` — CSV stats parsing, backend health, session rates, queue depth, latency breakdown (queue/connect/response/total), slow backend spotlight, retry & redispatch analysis, denied request tracking, peak vs current sessions, config warnings, server state change tracking, per-direction TCP state analysis, top IP breakdown, connection error RCA with per-backend blame
   - **PHP-FPM**: Pool config parsing + per-worker state analysis via `/proc/PID/stat` — active/idle workers, utilization, memory tracking
   - **RabbitMQ**: Management API — messages, queues, node resources, memory/disk alarms, consumer health
   - **Memcached**: Raw TCP `stats`/`stats slabs` — hit ratio, evictions, slab analysis, memory pressure
@@ -417,7 +417,7 @@ The RCA engine uses a **two-tier collection strategy**:
 | **MongoDB** | `mongod`, `mongos` | WiredTiger cache, opCounters, lock queues, replication lag, slow ops | 10 rules | If auth enabled |
 | **Nginx** | `nginx` (master) | Active connections, request rate, dropped connections, worker state, scoreboard | 7 rules | No |
 | **Apache** | `httpd`, `apache2` | Scoreboard, worker utilization, request rate, MPM config, CPU load | 8 rules | No |
-| **HAProxy** | `haproxy` (master) | Backend server health, session rates, queue depth, 5xx rate, CPU idle | 11 rules | No |
+| **HAProxy** | `haproxy` (master) | Backend server health, session rates, queue depth, 5xx rate, CPU idle, latency breakdown, slow backends, retry/redispatch, denied requests, peak vs current, config warnings, state changes, TCP direction analysis | 11 rules | No |
 | **PHP-FPM** | `php-fpm*` (master) | Worker utilization, max_children saturation, per-worker memory, pool config | 7 rules | No |
 | **RabbitMQ** | `beam.smp` + rabbit | Message backlog, unacked, memory/disk alarms, queue health, node resources | 11 rules | Default guest/guest |
 | **Memcached** | `memcached` | Hit ratio, evictions, slab waste, memory pressure, connection rejection | 9 rules | No |
@@ -500,7 +500,7 @@ Doctor mode auto-detects running services and runs health checks — no pre-conf
 | **Docker** | Container count, unhealthy/restarting detection |
 | **Kubernetes** | kubelet running, `kubectl get nodes` status |
 | **WireGuard** | Interface active (`wg0`, etc.) |
-| **HAProxy** | Stats socket analysis, backend health |
+| **HAProxy** | Stats socket analysis, backend health, latency breakdown, config warnings |
 | **MongoDB** | serverStatus via mongosh |
 | **RabbitMQ** | Management API health |
 | **Elasticsearch** | Cluster health API |
@@ -566,12 +566,12 @@ xtop -cron-install
 
 ```bash
 # Ubuntu/Debian (amd64)
-wget https://github.com/ftahirops/xtop/releases/download/v0.26.8/xtop_0.26.8-1_amd64.deb
-sudo dpkg -i xtop_0.26.8-1_amd64.deb
+wget https://github.com/ftahirops/xtop/releases/download/v0.28.2/xtop_0.28.2-1_amd64.deb
+sudo dpkg -i xtop_0.28.2-1_amd64.deb
 
 # RHEL/Rocky/Fedora (x86_64)
-wget https://github.com/ftahirops/xtop/releases/download/v0.26.8/xtop-0.26.8-1.x86_64.rpm
-sudo rpm -i xtop-0.26.8-1.x86_64.rpm
+wget https://github.com/ftahirops/xtop/releases/download/v0.28.2/xtop-0.28.2-1.x86_64.rpm
+sudo rpm -i xtop-0.28.2-1.x86_64.rpm
 ```
 
 ### Build from Source
@@ -579,7 +579,7 @@ sudo rpm -i xtop-0.26.8-1.x86_64.rpm
 ```bash
 git clone https://github.com/ftahirops/xtop.git
 cd xtop
-CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.26.8" -o xtop .
+CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.28.2" -o xtop .
 sudo install -m 755 xtop /usr/local/bin/xtop
 ```
 
@@ -611,15 +611,15 @@ sudo xtop -json | jq   # JSON for scripting
 ### From .deb Package (Ubuntu 22.04/24.04, Debian)
 
 ```bash
-wget https://github.com/ftahirops/xtop/releases/download/v0.26.8/xtop_0.26.8-1_amd64.deb
-sudo dpkg -i xtop_0.26.8-1_amd64.deb
+wget https://github.com/ftahirops/xtop/releases/download/v0.28.2/xtop_0.28.2-1_amd64.deb
+sudo dpkg -i xtop_0.28.2-1_amd64.deb
 ```
 
 ### From .rpm Package (Rocky Linux, RHEL, AlmaLinux, Fedora)
 
 ```bash
-wget https://github.com/ftahirops/xtop/releases/download/v0.26.8/xtop-0.26.8-1.x86_64.rpm
-sudo rpm -i xtop-0.26.8-1.x86_64.rpm
+wget https://github.com/ftahirops/xtop/releases/download/v0.28.2/xtop-0.28.2-1.x86_64.rpm
+sudo rpm -i xtop-0.28.2-1.x86_64.rpm
 ```
 
 ### From Source
@@ -627,7 +627,7 @@ sudo rpm -i xtop-0.26.8-1.x86_64.rpm
 ```bash
 git clone https://github.com/ftahirops/xtop.git
 cd xtop
-CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.26.8" -o xtop .
+CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.28.2" -o xtop .
 sudo install -m 755 xtop /usr/local/bin/xtop
 ```
 

@@ -248,6 +248,95 @@ func readProcUptime(pid int) int64 {
 	return int64(now - startSec)
 }
 
+// readProcCPUTicks reads utime+stime from /proc/PID/stat (fields 13+14 after the comm field).
+// Returns total CPU ticks (utime + stime).
+func readProcCPUTicks(pid int) uint64 {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return 0
+	}
+	s := string(data)
+	ci := strings.LastIndex(s, ")")
+	if ci < 0 || ci+2 >= len(s) {
+		return 0
+	}
+	// Fields after ")": state(0), ppid(1), pgrp(2), session(3), tty(4), tpgid(5),
+	// flags(6), minflt(7), cminflt(8), majflt(9), cmajflt(10), utime(11), stime(12)
+	fields := strings.Fields(s[ci+2:])
+	if len(fields) < 13 {
+		return 0
+	}
+	utime, _ := strconv.ParseUint(fields[11], 10, 64)
+	stime, _ := strconv.ParseUint(fields[12], 10, 64)
+	return utime + stime
+}
+
+// findAllListeningPorts finds all listening ports owned by a PID.
+func findAllListeningPorts(pid int) []int {
+	// Get inodes for this PID's sockets
+	inodes := make(map[string]bool)
+	fdDir := fmt.Sprintf("/proc/%d/fd", pid)
+	entries, err := os.ReadDir(fdDir)
+	if err != nil {
+		return nil
+	}
+	for _, e := range entries {
+		link, err := os.Readlink(fmt.Sprintf("%s/%s", fdDir, e.Name()))
+		if err != nil {
+			continue
+		}
+		if strings.HasPrefix(link, "socket:[") {
+			inode := strings.TrimPrefix(strings.TrimSuffix(link, "]"), "socket:[")
+			inodes[inode] = true
+		}
+	}
+	if len(inodes) == 0 {
+		return nil
+	}
+
+	seen := make(map[int]bool)
+	var ports []int
+	for _, path := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
+		f, err := os.Open(path)
+		if err != nil {
+			continue
+		}
+		scanner := bufio.NewScanner(f)
+		scanner.Scan() // skip header
+		for scanner.Scan() {
+			flds := strings.Fields(scanner.Text())
+			if len(flds) < 10 {
+				continue
+			}
+			if flds[3] != "0A" { // LISTEN
+				continue
+			}
+			if !inodes[flds[9]] {
+				continue
+			}
+			localParts := strings.Split(flds[1], ":")
+			if len(localParts) == 2 {
+				portBytes, err := hex.DecodeString(localParts[1])
+				if err == nil && len(portBytes) == 2 {
+					p := int(portBytes[0])<<8 | int(portBytes[1])
+					if p > 0 && !seen[p] {
+						seen[p] = true
+						ports = append(ports, p)
+					}
+					continue
+				}
+				pv, err := strconv.ParseInt(localParts[1], 16, 32)
+				if err == nil && pv > 0 && !seen[int(pv)] {
+					seen[int(pv)] = true
+					ports = append(ports, int(pv))
+				}
+			}
+		}
+		f.Close()
+	}
+	return ports
+}
+
 // countChildProcesses counts child processes with given comm name.
 func countChildProcesses(parentPID int, comm string) int {
 	count := 0
