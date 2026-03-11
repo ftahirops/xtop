@@ -281,6 +281,19 @@ func collectMySQLTier2(inst *model.AppInstance, secrets *AppSecrets, maxConns in
 				}
 			}
 		}
+		// Bytes per second
+		if v, ok := dm["Bytes_received"]; ok {
+			b, _ := strconv.ParseInt(v, 10, 64)
+			if b > 0 {
+				dm["bytes_in_per_sec"] = fmt.Sprintf("%d", b/int64(uptime))
+			}
+		}
+		if v, ok := dm["Bytes_sent"]; ok {
+			b, _ := strconv.ParseInt(v, 10, 64)
+			if b > 0 {
+				dm["bytes_out_per_sec"] = fmt.Sprintf("%d", b/int64(uptime))
+			}
+		}
 	}
 
 	// 2. SHOW FULL PROCESSLIST — count active queries, sleeping connections, top queries, per-host breakdown
@@ -447,12 +460,22 @@ func collectProcessList(inst *model.AppInstance, secrets *AppSecrets) {
 	dm["active_queries"] = fmt.Sprintf("%d", active)
 	dm["sleeping_connections"] = fmt.Sprintf("%d", sleeping)
 
-	// Top 5 longest-running non-Sleep queries
+	// Top 5 longest-running non-Sleep queries (filter out system threads and self)
 	var activeEntries []processListEntry
 	for _, e := range entries {
-		if strings.ToLower(e.command) != "sleep" {
-			activeEntries = append(activeEntries, e)
+		cmd := strings.ToLower(e.command)
+		if cmd == "sleep" || cmd == "daemon" || cmd == "binlog dump" {
+			continue
 		}
+		// Skip event_scheduler and our own SHOW FULL PROCESSLIST
+		if e.user == "event_scheduler" {
+			continue
+		}
+		infoLower := strings.ToLower(e.info)
+		if infoLower == "show full processlist" || infoLower == "null" || e.info == "NULL" {
+			continue
+		}
+		activeEntries = append(activeEntries, e)
 	}
 	sort.Slice(activeEntries, func(i, j int) bool {
 		return activeEntries[i].timeSec > activeEntries[j].timeSec

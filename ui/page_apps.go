@@ -696,7 +696,7 @@ func renderMySQLDeepMetrics(app model.AppInstance, iw int) string {
 			{"Queries/s", dm["queries_per_sec"], "Selects/s", dm["selects_per_sec"]},
 			{"Inserts/s", dm["inserts_per_sec"], "Updates/s", dm["updates_per_sec"]},
 			{"Deletes/s", dm["deletes_per_sec"], "Commits/s", dm["commits_per_sec"]},
-			{"Bytes In", haFmtBytes(dm["Bytes_received"]) + "/s", "Bytes Out", haFmtBytes(dm["Bytes_sent"]) + "/s"},
+			{"Bytes In", haFmtBytes(dm["bytes_in_per_sec"]) + "/s", "Bytes Out", haFmtBytes(dm["bytes_out_per_sec"]) + "/s"},
 		}
 		for _, r := range actRows {
 			lv := r.lVal; if lv == "/s" { lv = "" }
@@ -718,14 +718,17 @@ func renderMySQLDeepMetrics(app model.AppInstance, iw int) string {
 		if cnt > 0 {
 			sb.WriteString("  " + titleStyle.Render("TOP QUERIES") + "  " + dimStyle.Render(fmt.Sprintf("%d running", cnt)) + "\n")
 			sb.WriteString(boxTop(iw) + "\n")
-			// header
-			hdr := fmt.Sprintf("  %s %s %s %s %s %s",
-				styledPad(dimStyle.Render("ID"), 10),
-				styledPad(dimStyle.Render("User"), 10),
-				styledPad(dimStyle.Render("Host"), 16),
-				styledPad(dimStyle.Render("DB"), 10),
-				styledPad(dimStyle.Render("Time"), 8),
-				dimStyle.Render("State"))
+			cID, cUser, cHost, cDB, cTime, cState := 8, 10, 16, 10, 8, 16
+			queryW := iw - cID - cUser - cHost - cDB - cTime - cState - 14
+			if queryW < 20 { queryW = 20 }
+			hdr := fmt.Sprintf("  %s%s%s%s%s%s%s",
+				styledPad(dimStyle.Render("ID"), cID),
+				styledPad(dimStyle.Render("User"), cUser),
+				styledPad(dimStyle.Render("Host"), cHost),
+				styledPad(dimStyle.Render("DB"), cDB),
+				styledPad(dimStyle.Render("Time"), cTime),
+				styledPad(dimStyle.Render("State"), cState),
+				dimStyle.Render("Query"))
 			sb.WriteString(boxRow(hdr, iw) + "\n")
 			sb.WriteString(boxMid(iw) + "\n")
 			maxQ := cnt; if maxQ > 5 { maxQ = 5 }
@@ -738,28 +741,26 @@ func renderMySQLDeepMetrics(app model.AppInstance, iw int) string {
 				qTime := dm[pfx+"time"]
 				qState := dm[pfx+"state"]
 				qInfo := dm[pfx+"info"]
+				if qDB == "" || qDB == "NULL" { qDB = "-" }
 				// color time
 				timeStyled := valueStyle.Render(qTime + "s")
-				if ts, err := strconv.Atoi(qTime); err == nil {
-					if ts > 30 { timeStyled = critStyle.Render(qTime + "s") } else if ts > 5 { timeStyled = warnStyle.Render(qTime + "s") }
+				if ts, _ := strconv.Atoi(qTime); ts > 30 {
+					timeStyled = critStyle.Render(qTime + "s")
+				} else if ts > 5 {
+					timeStyled = warnStyle.Render(qTime + "s")
 				}
-				// truncate host if long
-				if len(qHost) > 15 { qHost = qHost[:15] }
-				if len(qState) > 18 { qState = qState[:18] }
-				row := fmt.Sprintf("  %s %s %s %s %s %s",
-					styledPad(valueStyle.Render(qID), 10),
-					styledPad(valueStyle.Render(qUser), 10),
-					styledPad(valueStyle.Render(qHost), 16),
-					styledPad(valueStyle.Render(qDB), 10),
-					styledPad(timeStyled, 8),
-					valueStyle.Render(qState))
+				if len(qHost) > cHost-2 { qHost = qHost[:cHost-2] }
+				if len(qState) > cState-2 { qState = qState[:cState-2] }
+				if len(qInfo) > queryW { qInfo = qInfo[:queryW-3] + "..." }
+				row := fmt.Sprintf("  %s%s%s%s%s%s%s",
+					styledPad(dimStyle.Render(qID), cID),
+					styledPad(valueStyle.Render(qUser), cUser),
+					styledPad(valueStyle.Render(qHost), cHost),
+					styledPad(dimStyle.Render(qDB), cDB),
+					styledPad(timeStyled, cTime),
+					styledPad(dimStyle.Render(qState), cState),
+					dimStyle.Render(qInfo))
 				sb.WriteString(boxRow(row, iw) + "\n")
-				// query text on next line, truncated
-				if qInfo != "" {
-					maxInfoW := iw - 12
-					if maxInfoW > 0 && len(qInfo) > maxInfoW { qInfo = qInfo[:maxInfoW-3] + "..." }
-					sb.WriteString(boxRow("          "+dimStyle.Render(qInfo), iw) + "\n")
-				}
 			}
 			sb.WriteString(boxBot(iw) + "\n")
 		}
@@ -3345,9 +3346,17 @@ func renderAppInfoResourceBox(app model.AppInstance, iw int) string {
 		{Key: "Version", Val: appFmtDash(app.Version)},
 		{Key: "Config", Val: app.ConfigPath},
 	}
+	cpuStr := fmt.Sprintf("%.1f%%", app.CPUPct)
+	if app.CPUPct > 80 {
+		cpuStr = critStyle.Render(cpuStr)
+	} else if app.CPUPct > 50 {
+		cpuStr = warnStyle.Render(cpuStr)
+	} else {
+		cpuStr = okStyle.Render(cpuStr)
+	}
 	rCol := []kv{
 		{Key: "RSS", Val: appFmtMem(app.RSSMB)},
-		{Key: "CPU", Val: fmt.Sprintf("%.1f%%", app.CPUPct)},
+		{Key: "CPU", Val: cpuStr},
 		{Key: "Threads", Val: fmt.Sprintf("%d", app.Threads)},
 		{Key: "FDs", Val: fmt.Sprintf("%d", app.FDs)},
 		{Key: "Conns", Val: fmt.Sprintf("%d", app.Connections)},
@@ -3363,14 +3372,21 @@ func renderAppInfoResourceBox(app model.AppInstance, iw int) string {
 				valueStyle.Render(lCol[i].Val))
 		}
 		if i < len(rCol) && rCol[i].Val != "" {
+			// CPU val is pre-styled with color, use as-is
+			val := rCol[i].Val
+			if strings.Contains(val, "\x1b[") {
+				// Already styled (contains ANSI escape)
+			} else {
+				val = valueStyle.Render(val)
+			}
 			right = fmt.Sprintf("%s %s",
 				styledPad(dimStyle.Render(rCol[i].Key+":"), 10),
-				valueStyle.Render(rCol[i].Val))
+				val)
 		}
 		row := fmt.Sprintf("  %s%s", styledPad(left, halfW), right)
 		sb.WriteString(boxRow(row, iw) + "\n")
 	}
-	sb.WriteString(boxBot(iw) + "\n\n")
+	sb.WriteString(boxBot(iw) + "\n")
 	return sb.String()
 }
 
