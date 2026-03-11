@@ -56,6 +56,7 @@ func (m *rabbitmqModule) Collect(app *DetectedApp, secrets *AppSecrets) model.Ap
 	inst.RSSMB = readProcRSS(app.PID)
 	inst.Threads = readProcThreads(app.PID)
 	inst.Connections = countTCPConnections(app.Port)
+	inst.CPUPct = readProcCPUPct(app.PID, inst.UptimeSec)
 
 	// Tier 2: management API
 	host := "127.0.0.1"

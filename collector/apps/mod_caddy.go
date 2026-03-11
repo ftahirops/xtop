@@ -53,6 +53,7 @@ func (m *caddyModule) Collect(app *DetectedApp, secrets *AppSecrets) model.AppIn
 	inst.Threads = readProcThreads(app.PID)
 	inst.FDs = readProcFDs(app.PID)
 	inst.Connections = countTCPConnections(app.Port)
+	inst.CPUPct = readProcCPUPct(app.PID, inst.UptimeSec)
 
 	// Config file
 	confPath := findConfigFile([]string{

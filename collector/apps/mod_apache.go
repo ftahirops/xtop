@@ -76,6 +76,7 @@ func (m *apacheModule) Collect(app *DetectedApp, secrets *AppSecrets) model.AppI
 	inst.Threads = readProcThreads(app.PID)
 	inst.FDs = readProcFDs(app.PID)
 	inst.Connections = countTCPConnections(app.Port)
+	inst.CPUPct = readProcCPUPct(app.PID, inst.UptimeSec)
 
 	inst.ConfigPath = findConfigFile([]string{
 		"/etc/httpd/conf/httpd.conf",

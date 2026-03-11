@@ -271,6 +271,25 @@ func readProcCPUTicks(pid int) uint64 {
 	return utime + stime
 }
 
+// readProcCPUPct returns the average CPU% for a process over its lifetime.
+// This matches what `ps aux` %CPU shows: (total_cpu_ticks / CLK_TCK) / uptime_sec * 100.
+func readProcCPUPct(pid int, uptimeSec int64) float64 {
+	if uptimeSec <= 0 {
+		return 0
+	}
+	ticks := readProcCPUTicks(pid)
+	if ticks == 0 {
+		return 0
+	}
+	// CLK_TCK is 100 on Linux (sysconf(_SC_CLK_TCK))
+	cpuSec := float64(ticks) / 100.0
+	pct := cpuSec / float64(uptimeSec) * 100.0
+	if pct > 100*10 { // cap at 1000% (10 cores)
+		pct = 100 * 10
+	}
+	return pct
+}
+
 // findAllListeningPorts finds all listening ports owned by a PID.
 func findAllListeningPorts(pid int) []int {
 	// Get inodes for this PID's sockets

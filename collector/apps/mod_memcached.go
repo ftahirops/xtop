@@ -54,6 +54,7 @@ func (m *memcachedModule) Collect(app *DetectedApp, secrets *AppSecrets) model.A
 	inst.Threads = readProcThreads(app.PID)
 	inst.FDs = readProcFDs(app.PID)
 	inst.Connections = countTCPConnections(app.Port)
+	inst.CPUPct = readProcCPUPct(app.PID, inst.UptimeSec)
 
 	// Parse cmdline for config values
 	memcachedParseCmdline(app.Cmdline, inst.DeepMetrics)

@@ -69,6 +69,7 @@ func (m *postgresqlModule) Collect(app *DetectedApp, secrets *AppSecrets) model.
 	inst.Threads = readProcThreads(app.PID)
 	inst.FDs = readProcFDs(app.PID)
 	inst.Connections = countTCPConnections(app.Port)
+	inst.CPUPct = readProcCPUPct(app.PID, inst.UptimeSec)
 
 	// Sum RSS from backend processes (children of the postmaster)
 	backendCount := 0

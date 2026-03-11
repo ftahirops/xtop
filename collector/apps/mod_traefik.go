@@ -53,6 +53,7 @@ func (m *traefikModule) Collect(app *DetectedApp, secrets *AppSecrets) model.App
 	inst.Threads = readProcThreads(app.PID)
 	inst.FDs = readProcFDs(app.PID)
 	inst.Connections = countTCPConnections(app.Port)
+	inst.CPUPct = readProcCPUPct(app.PID, inst.UptimeSec)
 
 	// ---- Tier 2: Deep Metrics ----
 

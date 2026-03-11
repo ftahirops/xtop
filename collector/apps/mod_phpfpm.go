@@ -58,6 +58,7 @@ func (m *phpfpmModule) Collect(app *DetectedApp, secrets *AppSecrets) model.AppI
 	if app.Port > 0 {
 		inst.Connections = countTCPConnections(app.Port)
 	}
+	inst.CPUPct = readProcCPUPct(app.PID, inst.UptimeSec)
 
 	// Enumerate worker processes (children of master with php-fpm comm prefix)
 	type workerInfo struct {
