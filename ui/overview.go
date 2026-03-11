@@ -98,6 +98,12 @@ func renderHeader(snap *model.Snapshot, rates *model.RateSnapshot, result *model
 		if si.Virtualization != "" {
 			parts = append(parts, si.Virtualization)
 		}
+		if si.OS != "" {
+			parts = append(parts, si.OS)
+		}
+		if si.Kernel != "" {
+			parts = append(parts, si.Kernel)
+		}
 		if len(parts) > 0 {
 			sb.WriteString(" ")
 			sb.WriteString(dimStyle.Render(strings.Join(parts, " | ")))

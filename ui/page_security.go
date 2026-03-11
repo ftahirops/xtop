@@ -451,6 +451,17 @@ func renderSecAuthContent(sec model.SecurityMetrics, iw int) string {
 		if overflow > 0 {
 			sb.WriteString(dimStyle.Render(fmt.Sprintf("  ... and %d more", overflow)) + "\n")
 		}
+		if sec.BruteForce {
+			sb.WriteString(secContext(
+				"Someone is rapidly guessing SSH passwords to break into this server.",
+				"sudo apt install fail2ban && sudo systemctl enable --now fail2ban",
+				"Automated scanners hit every public SSH server. High rate from one IP = real attack."))
+		} else if sec.FailedAuthRate > 0.5 {
+			sb.WriteString(secContext(
+				"Elevated SSH login failures — could be a slow brute force or misconfigured client.",
+				"Review IPs above. Block repeat offenders: sudo ufw deny from <IP>",
+				"Users mistyping passwords or old SSH keys can cause low-rate failures."))
+		}
 	}
 	return sb.String()
 }
@@ -468,6 +479,10 @@ func renderSecPortsContent(sec model.SecurityMetrics, iw int) string {
 				styledPad(valueStyle.Render(padRight(fmt.Sprintf("%d", p.PID), 6)), 6),
 				valueStyle.Render(p.Comm)))
 		}
+		sb.WriteString(secContext(
+			"A process opened a new network port after xtop started. Could be a backdoor or legitimate service.",
+			"Verify: ss -tlnp | grep <port>  — if unexpected, kill the process and investigate.",
+			"Restarting services (nginx, sshd) or cron jobs legitimately open ports."))
 	}
 	return sb.String()
 }
@@ -484,6 +499,10 @@ func renderSecSUIDContent(sec model.SecurityMetrics, iw int) string {
 				critStyle.Render(padRight(s.Path, 48)),
 				dimStyle.Render(s.ModTime.Format("2006-01-02 15:04"))))
 		}
+		sb.WriteString(secContext(
+			"SUID binaries run with root privileges regardless of who executes them. New ones could be privilege escalation backdoors.",
+			"Check: ls -la <path> — if unfamiliar, remove SUID bit: sudo chmod u-s <path>",
+			"Package updates (apt/yum) can legitimately create SUID binaries."))
 	}
 	return sb.String()
 }
@@ -562,6 +581,19 @@ func renderSecExecContent(sent model.SentinelData, iw int) string {
 		if okCount > 0 {
 			sb.WriteString(dimStyle.Render(fmt.Sprintf("  + %d normal executions filtered", okCount)) + "\n")
 		}
+		hasCrit := false
+		for _, r := range rows {
+			if r.sev == "crit" {
+				hasCrit = true
+				break
+			}
+		}
+		if hasCrit {
+			sb.WriteString(secContext(
+				"CRIT processes are commonly used in attacks (curl, wget, nc, python as child of web server, etc).",
+				"Check parent: cat /proc/<PPID>/cmdline — was this launched by a web shell or cron?",
+				"Legitimate automation (ansible, chef, monitoring) also runs these tools."))
+		}
 	}
 	return sb.String()
 }
@@ -587,6 +619,10 @@ func renderSecPtraceContent(sent model.SentinelData, iw int) string {
 			styledPad(critStyle.Render(padRight(p.RequestStr, 16)), 16),
 			valueStyle.Render(fmt.Sprintf("%d", p.Count))))
 	}
+	sb.WriteString(secContext(
+		"ptrace lets one process read/write another's memory — used by debuggers but also by malware to inject code.",
+		"If unexpected: sudo kill -9 <TRACER_PID> — then check how it was launched.",
+		"Debuggers (gdb, strace), IDEs, and anti-cheat software use ptrace legitimately."))
 	return sb.String()
 }
 
@@ -605,6 +641,10 @@ func renderSecReverseShellContent(sec model.SecurityMetrics, iw int) string {
 			styledPad(dimStyle.Render(truncate(r.FD0, 20)), 21),
 			dimStyle.Render(truncate(r.FD1, 20))))
 	}
+	sb.WriteString(secContext(
+		critStyle.Render("ACTIVE COMPROMISE")+" — a shell has stdin/stdout redirected to a network socket. An attacker has remote command execution.",
+		"IMMEDIATELY: sudo kill -9 <PID> — then investigate: check auth logs, look for persistence, rotate credentials.",
+		""))
 	return sb.String()
 }
 
@@ -633,6 +673,24 @@ func renderSecFilelessContent(snap *model.Snapshot, iw int) string {
 			styledPad(valueStyle.Render(fmt.Sprintf("%d", f.NetConns)), 6),
 			dimStyle.Render(ips)))
 	}
+	hasNet := false
+	for _, f := range fp {
+		if f.NetConns > 0 {
+			hasNet = true
+			break
+		}
+	}
+	if hasNet {
+		sb.WriteString(secContext(
+			critStyle.Render("HIGH RISK")+" — process running from deleted binary AND has network connections. Classic malware evasion technique.",
+			"sudo kill -9 <PID> — capture memory dump first if forensics needed: gcore <PID>",
+			""))
+	} else {
+		sb.WriteString(secContext(
+			"Process binary was deleted from disk but still running in memory. Could be a software update or malware hiding its tracks.",
+			"Check: ls -la /proc/<PID>/exe — if it points to '(deleted)', investigate the original path.",
+			"Package updates often delete old binaries while processes still run (e.g., apt upgrade)."))
+	}
 	return sb.String()
 }
 
@@ -657,6 +715,10 @@ func renderSecModLoadsContent(sent model.SentinelData, iw int) string {
 			warnStyle.Render(padRight(name, 30)),
 			valueStyle.Render(fmt.Sprintf("%d", m.Count))))
 	}
+	sb.WriteString(secContext(
+		"Kernel modules run with full system privileges. Rootkits load as kernel modules to hide from detection.",
+		"Check: lsmod | grep <name> — if unfamiliar: sudo modprobe -r <name> and add to /etc/modprobe.d/blacklist.conf",
+		"Hardware drivers, filesystem modules, and Docker/containerd load modules normally."))
 	return sb.String()
 }
 
@@ -734,6 +796,10 @@ func renderSecAttacksContent(sent model.SentinelData, sec model.SecurityMetrics,
 				styledPad(hoStr, 11),
 				dimStyle.Render(fmt.Sprintf("%.0fs", float64(s.SynCount)/max64f(s.Rate, 1)))))
 		}
+		sb.WriteString(secContext(
+			"SYN flood overwhelms your server with half-open connections, exhausting resources and blocking real users.",
+			"Enable SYN cookies: sudo sysctl -w net.ipv4.tcp_syncookies=1 — block source: sudo iptables -A INPUT -s <IP> -j DROP",
+			"High-traffic web servers can show elevated SYN rates during traffic spikes."))
 		sb.WriteString("\n")
 	}
 
@@ -750,6 +816,10 @@ func renderSecAttacksContent(sent model.SentinelData, sec model.SecurityMetrics,
 				styledPad(valueStyle.Render(fmt.Sprintf("%d", p.UniquePortBuckets)), 8),
 				dimStyle.Render(fmt.Sprintf("%.0fs", p.DurationSec))))
 		}
+		sb.WriteString(secContext(
+			"An IP is probing many ports to discover running services — usually reconnaissance before an attack.",
+			"Block scanner: sudo iptables -A INPUT -s <IP> -j DROP",
+			"Load balancers, CDN health checks, and monitoring tools probe multiple ports legitimately."))
 		sb.WriteString("\n")
 	}
 
@@ -765,6 +835,10 @@ func renderSecAttacksContent(sent model.SentinelData, sec model.SecurityMetrics,
 				styledPad(critStyle.Render(padRight(f.FlagCombo, 14)), 14),
 				valueStyle.Render(fmt.Sprintf("%d", f.Count))))
 		}
+		sb.WriteString(secContext(
+			"Invalid TCP flag combinations (XMAS, NULL, SYN+FIN) are used for OS fingerprinting and firewall evasion.",
+			"Block source: sudo iptables -A INPUT -s <IP> -j DROP",
+			"Rarely false — broken network stacks can occasionally produce odd flags."))
 		sb.WriteString("\n")
 	}
 
@@ -787,6 +861,7 @@ func renderSecDNSContent(sent model.SentinelData, sec model.SecurityMetrics, iw 
 		sb.WriteString(headerStyle.Render("  DNS ANOMALIES") + "\n")
 		sb.WriteString(dimStyle.Render("  PID     Comm             Queries/s   Avg Len   Verdict") + "\n")
 		sb.WriteString(dimStyle.Render("  "+strings.Repeat("─", 60)) + "\n")
+		hasTunnel := false
 		for _, d := range sent.DNSAnomaly {
 			verdict := okStyle.Render("normal")
 			if d.QueriesPerSec > 500 && d.AvgQueryLen > 80 {
@@ -794,6 +869,7 @@ func renderSecDNSContent(sent model.SentinelData, sec model.SecurityMetrics, iw 
 			}
 			if d.QueriesPerSec > 1000 && d.AvgQueryLen > 100 {
 				verdict = critStyle.Render("TUNNEL")
+				hasTunnel = true
 			}
 			sb.WriteString(fmt.Sprintf("  %s %s %s %s %s\n",
 				styledPad(valueStyle.Render(fmt.Sprintf("%d", d.PID)), 7),
@@ -801,6 +877,12 @@ func renderSecDNSContent(sent model.SentinelData, sec model.SecurityMetrics, iw 
 				styledPad(valueStyle.Render(fmt.Sprintf("%.1f", d.QueriesPerSec)), 11),
 				styledPad(valueStyle.Render(fmt.Sprintf("%d", d.AvgQueryLen)), 9),
 				verdict))
+		}
+		if hasTunnel {
+			sb.WriteString(secContext(
+				"Unusually high DNS query rate with long query names — data may be exfiltrated through DNS queries.",
+				"Identify: cat /proc/<PID>/cmdline — block: add DNS query length limits in your resolver.",
+				"DNS-heavy apps (recursive resolvers, monitoring) can generate high query rates."))
 		}
 		sb.WriteString("\n")
 	}
@@ -834,6 +916,10 @@ func renderSecDNSContent(sent model.SentinelData, sec model.SecurityMetrics, iw 
 				styledPad(valueStyle.Render(fmt.Sprintf("%.1f", d.QueryRate)), 9),
 				verdict))
 		}
+		sb.WriteString(secContext(
+			"High TXT record ratio indicates DNS tunneling — attackers encode stolen data inside DNS queries to bypass firewalls.",
+			"Investigate: tcpdump -i any port 53 -w dns.pcap — then analyze with Wireshark.",
+			"DKIM/SPF validation and Let's Encrypt use TXT records legitimately but at low rates."))
 		sb.WriteString("\n")
 	}
 
@@ -877,6 +963,20 @@ func renderSecFlowsContent(sent model.SentinelData, iw int) string {
 				styledPad(valueStyle.Render(fmt.Sprintf("%.0f", pktsPerSec)), 8),
 				flag))
 		}
+		hasExfil := false
+		for _, o := range sent.OutboundTop {
+			mbHr2 := o.BytesPerSec * 3600.0 / 1024.0 / 1024.0
+			if mbHr2 > 500 && !isPrivateIP(o.DstIP) {
+				hasExfil = true
+				break
+			}
+		}
+		if hasExfil {
+			sb.WriteString(secContext(
+				"Large outbound data transfer to external IP — could be data exfiltration or legitimate backup/sync.",
+				"Identify: cat /proc/<PID>/cmdline — check if destination IP is expected.",
+				"Backups (rsync, rclone), CDN uploads, and log shipping produce high outbound legitimately."))
+		}
 		sb.WriteString("\n")
 	}
 
@@ -906,6 +1006,10 @@ func renderSecFlowsContent(sent model.SentinelData, iw int) string {
 				styledPad(valueStyle.Render(fmt.Sprintf("%.1f", f.Rate)), 9),
 				flag))
 		}
+		sb.WriteString(secContext(
+			"A process is connecting to many different internal hosts — attackers use this to spread after initial compromise.",
+			"Investigate: ss -tnp | grep <PID> — check if destinations are expected for this service.",
+			"Service discovery, monitoring (Prometheus), and orchestrators (Ansible) connect to many hosts."))
 		sb.WriteString("\n")
 	}
 
@@ -966,6 +1070,26 @@ func renderSecTLSContent(sec model.SecurityMetrics, iw int) string {
 				styledPad(dimStyle.Render(padRight(j.SampleSrc, 17)), 17),
 				matchStyle.Render(match)))
 		}
+		hasC2JA3 := false
+		for _, j := range sec.JA3Fingerprints {
+			kl := strings.ToLower(j.Known)
+			if strings.Contains(kl, "cobalt") || strings.Contains(kl, "metasploit") ||
+				strings.Contains(kl, "sliver") || strings.Contains(kl, "empire") {
+				hasC2JA3 = true
+				break
+			}
+		}
+		if hasC2JA3 {
+			sb.WriteString(secContext(
+				critStyle.Render("KNOWN C2 TOOL FINGERPRINT")+" — TLS handshake matches a known attack framework (CobaltStrike, Metasploit, etc).",
+				"URGENT: Block destination IP immediately. Isolate the source host. Begin incident response.",
+				""))
+		} else {
+			sb.WriteString(secContext(
+				"JA3 fingerprints identify TLS client implementations. Unknown fingerprints may indicate custom/malicious tools.",
+				"Compare with known-good list. Investigate unknown hashes connecting to external IPs.",
+				"Legitimate but uncommon TLS libraries (Go, Rust) produce unusual JA3 hashes."))
+		}
 		sb.WriteString("\n")
 	}
 
@@ -994,6 +1118,24 @@ func renderSecTLSContent(sec model.SecurityMetrics, iw int) string {
 				styledPad(valueStyle.Render(jitterStr), 9),
 				flag))
 		}
+		hasC2Beacon := false
+		for _, b := range sec.BeaconIndicators {
+			if b.Jitter < 0.05 && b.SampleCount > 20 && b.AvgIntervalSec > 1 {
+				hasC2Beacon = true
+				break
+			}
+		}
+		if hasC2Beacon {
+			sb.WriteString(secContext(
+				critStyle.Render("C2 BEACON DETECTED")+" — process phones home at regular intervals with low jitter. Classic command-and-control behavior.",
+				"URGENT: sudo kill -9 <PID> — block destination IP — begin incident response.",
+				""))
+		} else {
+			sb.WriteString(secContext(
+				"Regular outbound connections at fixed intervals may indicate malware checking in with a command server.",
+				"Investigate: what is <PID> connecting to? Is that destination expected?",
+				"Health checks, NTP, monitoring agents, and apt update produce periodic connections."))
+		}
 		sb.WriteString("\n")
 	}
 
@@ -1012,6 +1154,26 @@ func renderSecTLSContent(sec model.SecurityMetrics, iw int) string {
 		}
 	}
 
+	return sb.String()
+}
+
+// ── Context helpers for beginner-friendly explanations ──────────────────────
+
+// secContext renders a "So What?" context block with explanation, actions, and false-positive note.
+func secContext(whatItMeans, whatToDo, falsePositive string) string {
+	var sb strings.Builder
+	sb.WriteString("\n")
+	sb.WriteString(dimStyle.Render("  ┌─ So What?") + "\n")
+	sb.WriteString(dimStyle.Render("  │ ") + whatItMeans + "\n")
+	if whatToDo != "" {
+		sb.WriteString(dimStyle.Render("  │") + "\n")
+		sb.WriteString(dimStyle.Render("  │ ") + headerStyle.Render("Action:") + " " + whatToDo + "\n")
+	}
+	if falsePositive != "" {
+		sb.WriteString(dimStyle.Render("  │") + "\n")
+		sb.WriteString(dimStyle.Render("  │ ") + dimStyle.Render("FP hint: "+falsePositive) + "\n")
+	}
+	sb.WriteString(dimStyle.Render("  └─") + "\n")
 	return sb.String()
 }
 

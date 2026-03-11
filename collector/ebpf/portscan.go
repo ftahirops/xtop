@@ -3,6 +3,8 @@
 package ebpf
 
 import (
+	"bufio"
+	"encoding/hex"
 	"fmt"
 	"math/bits"
 	"os"
@@ -55,27 +57,35 @@ func (p *portscanProbe) read() ([]model.PortScanEntry, error) {
 	var srcIP uint32
 	var val portscanScanVal
 
-	// Get current monotonic time to compute scan duration from BPF first_ns
 	nowNs := ktimeNowNs()
+
+	// Build set of IPs with established TCP connections — these are clients, not scanners
+	establishedIPs := getEstablishedRemoteIPs()
 
 	iter := p.objs.ScanAccum.Iterate()
 	for iter.Next(&srcIP, &val) {
-		// Skip loopback (127.0.0.0/8) — local RSTs are not port scans
 		if isLoopback(srcIP) {
 			continue
 		}
 		portDiversity := bits.OnesCount64(val.PortBitmap)
-		// Filter: require significant RST count AND port diversity
-		// Low counts or few ports = normal connection failures, not scans
-		if val.RstCount < 50 || portDiversity < 10 {
+		if val.RstCount < 200 || portDiversity < 16 {
 			continue
 		}
 		var durSec float64
 		if val.FirstNs > 0 && nowNs > val.FirstNs {
 			durSec = float64(nowNs-val.FirstNs) / 1e9
 		}
+		if durSec > 60 && float64(val.RstCount)/durSec < 1.0 {
+			continue
+		}
+		// If this IP has active established connections, it's a client, not a scanner.
+		// Scanners send RSTs to closed ports and move on — they don't maintain connections.
+		ipStr := formatIPv4(srcIP)
+		if establishedIPs[ipStr] {
+			continue
+		}
 		results = append(results, model.PortScanEntry{
-			SrcIP:             formatIPv4(srcIP),
+			SrcIP:             ipStr,
 			RSTCount:          val.RstCount,
 			UniquePortBuckets: portDiversity,
 			DurationSec:       durSec,
@@ -85,6 +95,42 @@ func (p *portscanProbe) read() ([]model.PortScanEntry, error) {
 		return results, fmt.Errorf("iterate scan_accum map: %w", err)
 	}
 	return results, nil
+}
+
+// getEstablishedRemoteIPs returns a set of remote IPs that have ESTABLISHED TCP connections.
+func getEstablishedRemoteIPs() map[string]bool {
+	ips := make(map[string]bool)
+	for _, path := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
+		f, err := os.Open(path)
+		if err != nil {
+			continue
+		}
+		scanner := bufio.NewScanner(f)
+		scanner.Scan() // skip header
+		for scanner.Scan() {
+			fields := strings.Fields(scanner.Text())
+			if len(fields) < 4 {
+				continue
+			}
+			if fields[3] != "01" { // ESTABLISHED
+				continue
+			}
+			// remote_address is fields[2], format: hex_ip:hex_port
+			parts := strings.Split(fields[2], ":")
+			if len(parts) != 2 || len(parts[0]) != 8 {
+				continue
+			}
+			b, err := hex.DecodeString(parts[0])
+			if err != nil || len(b) != 4 {
+				continue
+			}
+			// /proc/net/tcp stores IP in little-endian
+			ip := fmt.Sprintf("%d.%d.%d.%d", b[3], b[2], b[1], b[0])
+			ips[ip] = true
+		}
+		f.Close()
+	}
+	return ips
 }
 
 func (p *portscanProbe) close() {

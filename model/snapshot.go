@@ -362,6 +362,11 @@ type SysInfo struct {
 	Hostname       string
 	IPs            []string
 	Virtualization string // "Bare Metal", "VM (KVM)", "VM (VMware)", "Container (Docker)", etc.
+	CloudProvider  string // "AWS", "Hetzner", "DigitalOcean", "GCP", "Azure", etc.
+	Kernel         string // kernel version
+	OS             string // OS name from /etc/os-release
+	Arch           string // architecture
+	CPUModel       string // CPU model name
 }
 
 // RCAEntry holds one bottleneck analysis result.

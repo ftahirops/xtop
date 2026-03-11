@@ -94,7 +94,7 @@ func renderNetPage(snap *model.Snapshot, rates *model.RateSnapshot,
 	}
 
 	// Key hint line
-	sb.WriteString(dimStyle.Render("  Tab:section  j/k:scroll  Enter:expand/collapse  A:all  C:collapse  F:focus") + "\n")
+	sb.WriteString(dimStyle.Render("  ↑/↓:scroll  Tab:section  Enter:expand/collapse  A:all  C:collapse  F:focus") + "\n")
 
 	return sb.String()
 }
@@ -395,7 +395,67 @@ func renderNetQualityContent(snap *model.Snapshot, rates *model.RateSnapshot, pm
 	} else {
 		thrLines = append(thrLines, dimStyle.Render(dropLine+errLine))
 	}
-	thrLines = append(thrLines, fmt.Sprintf("Retransmits: %.0f/s    Resets: %.0f/s", retransR, resetR))
+	retransLine := fmt.Sprintf("Retransmits: %.0f/s    Resets: %.0f/s", retransR, resetR)
+	if retransR > 10 || resetR > 10 {
+		thrLines = append(thrLines, warnStyle.Render(retransLine))
+	} else {
+		thrLines = append(thrLines, retransLine)
+	}
+	// Per-process retransmit attribution from BPF sentinel
+	if sent.Active {
+		if len(sent.Retransmits) > 0 {
+			thrLines = append(thrLines, "")
+			thrLines = append(thrLines, titleStyle.Render("RETRANSMIT OFFENDERS")+"  (BPF per-PID)")
+			for i, r := range sent.Retransmits {
+				if i >= 5 || r.Rate <= 0 {
+					break
+				}
+				line := fmt.Sprintf("  %-16s PID %-6d %6.1f/s  → %s", r.Comm, r.PID, r.Rate, resolveIP(r.DstStr))
+				if r.Rate > 10 {
+					thrLines = append(thrLines, warnStyle.Render(line))
+				} else {
+					thrLines = append(thrLines, line)
+				}
+			}
+		}
+		if len(sent.TCPResets) > 0 {
+			thrLines = append(thrLines, "")
+			thrLines = append(thrLines, titleStyle.Render("RESET OFFENDERS")+"  (BPF per-PID)")
+			for i, r := range sent.TCPResets {
+				if i >= 5 || r.Rate <= 0 {
+					break
+				}
+				line := fmt.Sprintf("  %-16s PID %-6d %6.0f/s  → %s", r.Comm, r.PID, r.Rate, resolveIP(r.DstStr))
+				if r.Rate > 10 {
+					thrLines = append(thrLines, warnStyle.Render(line))
+				} else {
+					thrLines = append(thrLines, line)
+				}
+			}
+		}
+		if len(sent.PktDrops) > 0 {
+			hasReal := false
+			for _, d := range sent.PktDrops {
+				if d.Rate > 0 && !noiseBPFDropReasons[d.ReasonStr] {
+					hasReal = true
+					break
+				}
+			}
+			if hasReal {
+				thrLines = append(thrLines, "")
+				thrLines = append(thrLines, titleStyle.Render("DROP REASONS")+"  (BPF kfree_skb)")
+				for _, d := range sent.PktDrops {
+					if d.Rate <= 0 {
+						continue
+					}
+					if noiseBPFDropReasons[d.ReasonStr] {
+						continue
+					}
+					thrLines = append(thrLines, warnStyle.Render(fmt.Sprintf("  %-24s %6.0f/s", d.ReasonStr, d.Rate)))
+				}
+			}
+		}
+	}
 	sb.WriteString(boxSection("RETRANSMITS & DROPS", thrLines, iw))
 
 	// Protocol health (TCP)
@@ -408,13 +468,13 @@ func renderNetQualityContent(snap *model.Snapshot, rates *model.RateSnapshot, pm
 	if tcp.OutSegs > 0 {
 		retransPct = float64(tcp.RetransSegs) / float64(tcp.OutSegs) * 100
 	}
-	retransLine := fmt.Sprintf("  Retransmit rate: %.3f%%", retransPct)
+	retransPctLine := fmt.Sprintf("  Retransmit rate: %.3f%%", retransPct)
 	if retransPct > 1 {
-		protoLines = append(protoLines, critStyle.Render(retransLine))
+		protoLines = append(protoLines, critStyle.Render(retransPctLine))
 	} else if retransPct > 0.1 {
-		protoLines = append(protoLines, warnStyle.Render(retransLine))
+		protoLines = append(protoLines, warnStyle.Render(retransPctLine))
 	} else {
-		protoLines = append(protoLines, retransLine)
+		protoLines = append(protoLines, retransPctLine)
 	}
 
 	failLine := fmt.Sprintf("  Failures: attempt=%d resets=%d errors=%d rsts=%d",
@@ -476,7 +536,7 @@ func renderNetQualityContent(snap *model.Snapshot, rates *model.RateSnapshot, pm
 			if rstShown >= 3 || r.Rate <= 0 {
 				break
 			}
-			bpfLines = append(bpfLines, fmt.Sprintf("  %-16s PID %-6d %6.0f/s  dst=%s", r.Comm, r.PID, r.Rate, r.DstStr))
+			bpfLines = append(bpfLines, fmt.Sprintf("  %-16s PID %-6d %6.0f/s  → %s", r.Comm, r.PID, r.Rate, resolveIP(r.DstStr)))
 			rstShown++
 		}
 		bpfLines = padTo(bpfLines, 8)
@@ -487,7 +547,7 @@ func renderNetQualityContent(snap *model.Snapshot, rates *model.RateSnapshot, pm
 			if retShown >= 3 || r.Rate <= 0 {
 				break
 			}
-			bpfLines = append(bpfLines, fmt.Sprintf("  %-16s PID %-6d %6.1f/s  dst=%s", r.Comm, r.PID, r.Rate, r.DstStr))
+			bpfLines = append(bpfLines, fmt.Sprintf("  %-16s PID %-6d %6.1f/s  → %s", r.Comm, r.PID, r.Rate, resolveIP(r.DstStr)))
 			retShown++
 		}
 		bpfLines = padTo(bpfLines, 12)
@@ -1035,15 +1095,19 @@ func renderNetTalkersContent(snap *model.Snapshot, iw int) string {
 
 	// Top remote IPs with connection breakdown
 	var remLines []string
-	remLines = append(remLines, dimStyle.Render(fmt.Sprintf("%-18s %6s %6s %10s %10s",
+	remLines = append(remLines, dimStyle.Render(fmt.Sprintf("%-40s %6s %6s %10s %10s",
 		"REMOTE IP", "TOTAL", "ESTAB", "TIME_WAIT", "CLOSE_WAIT")))
 	shown := 0
 	for _, r := range snap.Global.TopRemoteIPs {
 		if shown >= 5 {
 			break
 		}
-		row := fmt.Sprintf("%-18s %6d %6d %10d %10d",
-			model.MaskIP(r.IP), r.Connections, r.Established, r.TimeWait, r.CloseWait)
+		ipDisplay := resolveIP(model.MaskIP(r.IP))
+		if len(ipDisplay) > 40 {
+			ipDisplay = ipDisplay[:37] + "..."
+		}
+		row := fmt.Sprintf("%-40s %6d %6d %10d %10d",
+			ipDisplay, r.Connections, r.Established, r.TimeWait, r.CloseWait)
 		if r.TimeWait > 500 || r.CloseWait > 50 {
 			remLines = append(remLines, warnStyle.Render(row))
 		} else {
@@ -1080,7 +1144,7 @@ func renderNetTalkersContent(snap *model.Snapshot, iw int) string {
 			pf.Connects += f.ConnectCount
 			pf.Closes += f.CloseCount
 			if len(pf.TopDsts) < 3 {
-				pf.TopDsts = append(pf.TopDsts, model.MaskIP(f.DstIP))
+				pf.TopDsts = append(pf.TopDsts, resolveIP(model.MaskIP(f.DstIP)))
 			}
 		}
 
@@ -1502,11 +1566,11 @@ func renderConntrackIntelligence(snap *model.Snapshot, rates *model.RateSnapshot
 		for i := 0; i < 5; i++ {
 			srcIP, srcC, dstIP, dstC := "", "", "", ""
 			if i < len(dissect.TopSrcIPs) {
-				srcIP = model.MaskIP(dissect.TopSrcIPs[i].IP)
+				srcIP = resolveIP(model.MaskIP(dissect.TopSrcIPs[i].IP))
 				srcC = fmt.Sprintf("%d", dissect.TopSrcIPs[i].Count)
 			}
 			if i < len(dissect.TopDstIPs) {
-				dstIP = model.MaskIP(dissect.TopDstIPs[i].IP)
+				dstIP = resolveIP(model.MaskIP(dissect.TopDstIPs[i].IP))
 				dstC = fmt.Sprintf("%d", dissect.TopDstIPs[i].Count)
 			}
 			lines = append(lines, fmt.Sprintf("  %-20s %6s    %-20s %6s",
@@ -1517,7 +1581,7 @@ func renderConntrackIntelligence(snap *model.Snapshot, rates *model.RateSnapshot
 		for i := 0; i < 5; i++ {
 			if i < len(snap.Global.TopRemoteIPs) {
 				r := snap.Global.TopRemoteIPs[i]
-				lines = append(lines, fmt.Sprintf("  %-20s %6d", model.MaskIP(r.IP), r.Connections))
+				lines = append(lines, fmt.Sprintf("  %-20s %6d", resolveIP(model.MaskIP(r.IP)), r.Connections))
 			} else {
 				lines = append(lines, "")
 			}

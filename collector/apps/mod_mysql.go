@@ -16,9 +16,18 @@ import (
 	"github.com/ftahirops/xtop/model"
 )
 
-type mysqlModule struct{}
+type mysqlModule struct {
+	// Per-PID previous status counters for delta-based rate calculation
+	prevStatus map[int]map[string]int64
+	prevTime   map[int]time.Time
+}
 
-func NewMySQLModule() AppModule { return &mysqlModule{} }
+func NewMySQLModule() AppModule {
+	return &mysqlModule{
+		prevStatus: make(map[int]map[string]int64),
+		prevTime:   make(map[int]time.Time),
+	}
+}
 
 func (m *mysqlModule) Type() string        { return "mysql" }
 func (m *mysqlModule) DisplayName() string { return "MySQL" }
@@ -101,6 +110,11 @@ func (m *mysqlModule) Collect(app *DetectedApp, secrets *AppSecrets) model.AppIn
 		if secrets == nil || secrets.MySQL == nil || (secrets.MySQL.User == "" && secrets.MySQL.Password == "") {
 			inst.NeedsCreds = true
 		}
+	}
+
+	// Delta-based real-time rate calculation
+	if inst.HasDeepMetrics {
+		m.computeDeltaRates(&inst)
 	}
 
 	// Health scoring
@@ -253,49 +267,7 @@ func collectMySQLTier2(inst *model.AppInstance, secrets *AppSecrets, maxConns in
 	// Computed metrics from SHOW GLOBAL STATUS
 	computeMySQLDerivedMetrics(dm)
 
-	// QPS and per-command rates
-	uptime := inst.UptimeSec
-	if uptime > 0 {
-		if questions, ok := dm["Questions"]; ok {
-			q, _ := strconv.ParseInt(questions, 10, 64)
-			if q > 0 {
-				qps := float64(q) / float64(uptime)
-				dm["queries_per_sec"] = fmt.Sprintf("%.1f", qps)
-			}
-		}
-		perCmdKeys := []struct {
-			statusKey string
-			metricKey string
-		}{
-			{"Com_select", "selects_per_sec"},
-			{"Com_insert", "inserts_per_sec"},
-			{"Com_update", "updates_per_sec"},
-			{"Com_delete", "deletes_per_sec"},
-			{"Com_commit", "commits_per_sec"},
-		}
-		for _, ck := range perCmdKeys {
-			if v, ok := dm[ck.statusKey]; ok {
-				cnt, _ := strconv.ParseInt(v, 10, 64)
-				if cnt > 0 {
-					rate := float64(cnt) / float64(uptime)
-					dm[ck.metricKey] = fmt.Sprintf("%.1f", rate)
-				}
-			}
-		}
-		// Bytes per second
-		if v, ok := dm["Bytes_received"]; ok {
-			b, _ := strconv.ParseInt(v, 10, 64)
-			if b > 0 {
-				dm["bytes_in_per_sec"] = fmt.Sprintf("%d", b/int64(uptime))
-			}
-		}
-		if v, ok := dm["Bytes_sent"]; ok {
-			b, _ := strconv.ParseInt(v, 10, 64)
-			if b > 0 {
-				dm["bytes_out_per_sec"] = fmt.Sprintf("%d", b/int64(uptime))
-			}
-		}
-	}
+	// QPS and per-command rates computed in Collect() via delta-based calculation
 
 	// 2. SHOW FULL PROCESSLIST — count active queries, sleeping connections, top queries, per-host breakdown
 	collectProcessList(inst, secrets)
@@ -357,6 +329,75 @@ func computeMySQLDerivedMetrics(dm map[string]string) {
 		pct := locksWaited / (locksWaited + locksImmediate) * 100
 		dm["table_lock_contention"] = fmt.Sprintf("%.2f", pct)
 	}
+}
+
+// computeDeltaRates computes real-time per-second rates using delta between current
+// and previous GLOBAL STATUS counter values. Falls back to lifetime average on first tick.
+func (m *mysqlModule) computeDeltaRates(inst *model.AppInstance) {
+	dm := inst.DeepMetrics
+	pid := inst.PID
+	now := time.Now()
+
+	// Parse current counter values
+	curr := make(map[string]int64)
+	rateKeys := []string{"Questions", "Com_select", "Com_insert", "Com_update", "Com_delete", "Com_commit", "Com_rollback", "Bytes_received", "Bytes_sent"}
+	for _, key := range rateKeys {
+		if v, ok := dm[key]; ok {
+			cnt, _ := strconv.ParseInt(v, 10, 64)
+			curr[key] = cnt
+		}
+	}
+
+	prev, hasPrev := m.prevStatus[pid]
+	prevT, hasTime := m.prevTime[pid]
+
+	// Store current for next tick
+	m.prevStatus[pid] = curr
+	m.prevTime[pid] = now
+
+	var elapsed float64
+	var base map[string]int64
+	if hasPrev && hasTime {
+		elapsed = now.Sub(prevT).Seconds()
+		base = prev
+	}
+
+	// If no previous data or elapsed too small, fall back to lifetime average
+	if elapsed < 1.0 {
+		elapsed = float64(inst.UptimeSec)
+		base = nil // use zero as base (= lifetime average)
+	}
+	if elapsed <= 0 {
+		return
+	}
+
+	deltaRate := func(key string) float64 {
+		c := curr[key]
+		if c <= 0 {
+			return 0
+		}
+		var prev int64
+		if base != nil {
+			prev = base[key]
+		}
+		delta := c - prev
+		if delta < 0 {
+			delta = c // counter reset
+		}
+		return float64(delta) / elapsed
+	}
+
+	dm["queries_per_sec"] = fmt.Sprintf("%.1f", deltaRate("Questions"))
+	dm["selects_per_sec"] = fmt.Sprintf("%.1f", deltaRate("Com_select"))
+	dm["inserts_per_sec"] = fmt.Sprintf("%.1f", deltaRate("Com_insert"))
+	dm["updates_per_sec"] = fmt.Sprintf("%.1f", deltaRate("Com_update"))
+	dm["deletes_per_sec"] = fmt.Sprintf("%.1f", deltaRate("Com_delete"))
+	dm["commits_per_sec"] = fmt.Sprintf("%.1f", deltaRate("Com_commit"))
+
+	bytesIn := deltaRate("Bytes_received")
+	bytesOut := deltaRate("Bytes_sent")
+	dm["bytes_in_per_sec"] = fmt.Sprintf("%d", int64(bytesIn))
+	dm["bytes_out_per_sec"] = fmt.Sprintf("%d", int64(bytesOut))
 }
 
 // processListEntry holds a parsed row from SHOW FULL PROCESSLIST.
