@@ -68,6 +68,8 @@ type kfreeskbProgramSpecs struct {
 // It can be passed ebpf.CollectionSpec.Assign.
 type kfreeskbMapSpecs struct {
 	DropAccum *ebpf.MapSpec `ebpf:"drop_accum"`
+	DropLoc   *ebpf.MapSpec `ebpf:"drop_loc"`
+	DropProto *ebpf.MapSpec `ebpf:"drop_proto"`
 }
 
 // kfreeskbVariableSpecs contains global variables before they are loaded into the kernel.
@@ -97,11 +99,15 @@ func (o *kfreeskbObjects) Close() error {
 // It can be passed to loadKfreeskbObjects or ebpf.CollectionSpec.LoadAndAssign.
 type kfreeskbMaps struct {
 	DropAccum *ebpf.Map `ebpf:"drop_accum"`
+	DropLoc   *ebpf.Map `ebpf:"drop_loc"`
+	DropProto *ebpf.Map `ebpf:"drop_proto"`
 }
 
 func (m *kfreeskbMaps) Close() error {
 	return _KfreeskbClose(
 		m.DropAccum,
+		m.DropLoc,
+		m.DropProto,
 	)
 }
 

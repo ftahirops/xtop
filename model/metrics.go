@@ -547,6 +547,8 @@ type SentinelData struct {
 
 	// Network sentinels
 	PktDrops     []PktDropEntry
+	PktDropLocs  []PktDropLocation // kernel functions where drops happen
+	PktDropProto []PktDropProto    // which protocols are being dropped
 	TCPResets    []TCPResetEntry
 	StateChanges []SockStateEntry
 
@@ -587,6 +589,20 @@ type PktDropEntry struct {
 	ReasonStr string
 	Count     uint64
 	Rate      float64
+}
+
+// PktDropLocation holds where in the kernel packets are being dropped.
+type PktDropLocation struct {
+	Function string  // resolved kernel function name
+	Rate     float64 // drops/s at this location
+	Count    uint64
+}
+
+// PktDropProto holds which protocol's packets are being dropped.
+type PktDropProto struct {
+	Proto string  // "IPv4", "IPv6", "ARP"
+	Rate  float64 // drops/s for this protocol
+	Count uint64
 }
 
 // TCPResetEntry holds a BPF-traced TCP RST event per PID.

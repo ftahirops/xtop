@@ -3125,23 +3125,29 @@ func renderDockerDetail(app model.AppInstance, stackCursor int, stackExpanded []
 			}
 
 			// Container table
-			cName := 22
+			cName := 20
 			cState := 10
 			cCPU := 7
-			cMem := 10
-			cMemPct := 6
-			cNet := 16
-			cRestart := 5
-			cImage := 28
+			cMem := 9
+			cMemPct := 5
+			cNetRx := 9
+			cNetTx := 9
+			cBlkR := 9
+			cBlkW := 9
+			cRst := 4
+			cImage := 24
 
-			hdr := fmt.Sprintf(" %s%s%s%s%s%s%s%s",
+			hdr := fmt.Sprintf(" %s%s%s%s%s%s%s%s%s%s%s",
 				styledPad(dimStyle.Render("Name"), cName),
 				styledPad(dimStyle.Render("State"), cState),
 				styledPad(dimStyle.Render("CPU%"), cCPU),
 				styledPad(dimStyle.Render("Mem"), cMem),
 				styledPad(dimStyle.Render("Mem%"), cMemPct),
-				styledPad(dimStyle.Render("Net I/O"), cNet),
-				styledPad(dimStyle.Render("Rst"), cRestart),
+				styledPad(dimStyle.Render("Net RX"), cNetRx),
+				styledPad(dimStyle.Render("Net TX"), cNetTx),
+				styledPad(dimStyle.Render("Blk R"), cBlkR),
+				styledPad(dimStyle.Render("Blk W"), cBlkW),
+				styledPad(dimStyle.Render("Rst"), cRst),
 				styledPad(dimStyle.Render("Image"), cImage))
 			sb.WriteString(boxRow(hdr, iw) + "\n")
 			sb.WriteString(boxMid(iw) + "\n")
@@ -3156,7 +3162,10 @@ func renderDockerDetail(app model.AppInstance, stackCursor int, stackExpanded []
 				cpuStr := "—"
 				memStr := "—"
 				memPctStr := "—"
-				netStr := "—"
+				netRx := "—"
+				netTx := "—"
+				blkR := "—"
+				blkW := "—"
 				rstStr := "—"
 
 				if c.State == "running" {
@@ -3175,8 +3184,10 @@ func renderDockerDetail(app model.AppInstance, stackCursor int, stackExpanded []
 							memPctStr = warnStyle.Render(memPctStr)
 						}
 					}
-					netStr = fmt.Sprintf("%s/%s",
-						appFmtBytesShort(c.NetRxBytes), appFmtBytesShort(c.NetTxBytes))
+					netRx = appFmtBytesShort(c.NetRxBytes)
+					netTx = appFmtBytesShort(c.NetTxBytes)
+					blkR = appFmtBytesShort(c.BlockRead)
+					blkW = appFmtBytesShort(c.BlockWrite)
 				}
 				if c.RestartCount > 0 {
 					rstStr = warnStyle.Render(fmt.Sprintf("%d", c.RestartCount))
@@ -3189,30 +3200,59 @@ func renderDockerDetail(app model.AppInstance, stackCursor int, stackExpanded []
 					imageStr = imageStr[:cImage-4] + "..."
 				}
 
-				row := fmt.Sprintf(" %s%s%s%s%s%s%s%s",
+				row := fmt.Sprintf(" %s%s%s%s%s%s%s%s%s%s%s",
 					styledPad(valueStyle.Render(name), cName),
 					styledPad(stateStr, cState),
 					styledPad(cpuStr, cCPU),
 					styledPad(valueStyle.Render(memStr), cMem),
 					styledPad(memPctStr, cMemPct),
-					styledPad(dimStyle.Render(netStr), cNet),
-					styledPad(rstStr, cRestart),
+					styledPad(valueStyle.Render(netRx), cNetRx),
+					styledPad(valueStyle.Render(netTx), cNetTx),
+					styledPad(valueStyle.Render(blkR), cBlkR),
+					styledPad(valueStyle.Render(blkW), cBlkW),
+					styledPad(rstStr, cRst),
 					styledPad(dimStyle.Render(imageStr), cImage))
 				sb.WriteString(boxRow(row, iw) + "\n")
 			}
 
-			// Published ports (compact, one line)
-			var pubPorts []string
+			// Published ports (compact, deduplicated, show public vs local)
+			type portInfo struct {
+				host, container int
+				isPublic        bool
+			}
+			portKey := map[string]*portInfo{}
+			var portOrder []string
 			for _, c := range stack.Containers {
 				for _, p := range c.Ports {
 					if p.HostPort > 0 {
-						pubPorts = append(pubPorts, fmt.Sprintf("%d→%d", p.HostPort, p.ContainerPort))
+						key := fmt.Sprintf("%d:%d", p.HostPort, p.ContainerPort)
+						if pi, ok := portKey[key]; ok {
+							if dockerPortIsPublic(p.HostIP) {
+								pi.isPublic = true
+							}
+						} else {
+							portKey[key] = &portInfo{
+								host: p.HostPort, container: p.ContainerPort,
+								isPublic: dockerPortIsPublic(p.HostIP),
+							}
+							portOrder = append(portOrder, key)
+						}
 					}
 				}
 			}
-			if len(pubPorts) > 0 {
+			if len(portOrder) > 0 {
 				sb.WriteString(boxMid(iw) + "\n")
-				sb.WriteString(boxRow("  "+dimStyle.Render("Ports: ")+valueStyle.Render(strings.Join(pubPorts, "  ")), iw) + "\n")
+				var portStrs []string
+				for _, k := range portOrder {
+					pi := portKey[k]
+					label := fmt.Sprintf("%d→%d", pi.host, pi.container)
+					if pi.isPublic {
+						portStrs = append(portStrs, warnStyle.Render(label+" public"))
+					} else {
+						portStrs = append(portStrs, okStyle.Render(label+" local"))
+					}
+				}
+				sb.WriteString(boxRow("  "+dimStyle.Render("Ports: ")+strings.Join(portStrs, "  "), iw) + "\n")
 			}
 
 			// Stack issues (diagnostics only)
@@ -3298,6 +3338,11 @@ func dockerOrchBadge(orch string) string {
 }
 
 // dockerColorNonZero colors non-zero values as warnings.
+// dockerPortIsPublic returns true if the host IP binding is publicly accessible.
+func dockerPortIsPublic(hostIP string) bool {
+	return hostIP == "" || hostIP == "0.0.0.0" || hostIP == "::"
+}
+
 func dockerColorNonZero(s string) string {
 	if s != "" && s != "0" {
 		return warnStyle.Render(s)

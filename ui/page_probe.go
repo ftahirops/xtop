@@ -80,7 +80,7 @@ func renderSentinelSection(snap *model.Snapshot, width int) string {
 	if len(sent.PktDrops) > 0 {
 		var parts []string
 		for _, d := range sent.PktDrops {
-			if len(parts) >= 4 {
+			if len(parts) >= 5 {
 				break
 			}
 			parts = append(parts, fmt.Sprintf("%s:%.0f", d.ReasonStr, d.Rate))
@@ -90,6 +90,34 @@ func renderSentinelSection(snap *model.Snapshot, width int) string {
 			warnStyle.Render(fmt.Sprintf("%.0f/s", sent.PktDropRate)),
 			dimStyle.Render("("+strings.Join(parts, " ")+")"))
 		sb.WriteString(boxRow(line, innerW) + "\n")
+
+		// Drop locations — where in kernel
+		if len(sent.PktDropLocs) > 0 {
+			var locParts []string
+			for _, loc := range sent.PktDropLocs {
+				if len(locParts) >= 3 || loc.Rate < 1 {
+					break
+				}
+				locParts = append(locParts, fmt.Sprintf("%s:%.0f/s", loc.Function, loc.Rate))
+			}
+			sb.WriteString(boxRow(fmt.Sprintf("  %s %s",
+				styledPad(dimStyle.Render("  Drop site:"), 14),
+				dimStyle.Render(strings.Join(locParts, "  "))), innerW) + "\n")
+		}
+		// Drop protocols
+		if len(sent.PktDropProto) > 0 {
+			var protoParts []string
+			for _, p := range sent.PktDropProto {
+				if p.Rate >= 1 {
+					protoParts = append(protoParts, fmt.Sprintf("%s:%.0f/s", p.Proto, p.Rate))
+				}
+			}
+			if len(protoParts) > 0 {
+				sb.WriteString(boxRow(fmt.Sprintf("  %s %s",
+					styledPad(dimStyle.Render("  Protocol:"), 14),
+					dimStyle.Render(strings.Join(protoParts, "  "))), innerW) + "\n")
+			}
+		}
 	} else {
 		sb.WriteString(boxRow(fmt.Sprintf("  %s %s",
 			styledPad(titleStyle.Render("Pkt Drops:"), 14),

@@ -1023,6 +1023,59 @@ func isPrivateIPStr(ip string) bool {
 
 // ---------- Network Score ----------
 // Evidence groups: Drops, Retransmits, Conntrack, SoftIRQ, TCP state issues
+// isBenignDropReasonStr returns true for drop reasons that are normal TCP lifecycle.
+func isBenignDropReasonStr(reason string) bool {
+	switch reason {
+	case "NOT_SPECIFIED", "NO_SOCKET", "SOCKET_FILTER", "TCP_FLAGS",
+		"TCP_ZEROWINDOW", "TCP_OLD_DATA", "TCP_OVERWINDOW",
+		"TCP_OFOMERGE", "SKB_CONSUMED":
+		return true
+	}
+	return false
+}
+
+// dropReasonImpact returns a human-readable impact description for a BPF drop reason.
+func dropReasonImpact(reason string) string {
+	switch reason {
+	case "NETFILTER_DROP":
+		return "firewall rules (iptables/nftables) actively rejecting traffic"
+	case "NO_SOCKET":
+		return "packets arriving for closed/non-existent connections"
+	case "SOCKET_RCVBUFF":
+		return "application not reading fast enough — receive buffer full"
+	case "PROTO_MEM":
+		return "kernel TCP/UDP memory pressure — system under memory stress"
+	case "QDISC_DROP":
+		return "outbound queue full — network interface congested"
+	case "FULL_RING":
+		return "NIC ring buffer full — interface can't keep up with packet rate"
+	case "NOMEM":
+		return "kernel out of memory for network buffers"
+	case "IP_OUTNOROUTES":
+		return "no route to destination — routing table missing entries"
+	case "TCP_CSUM":
+		return "TCP checksum mismatch — possible hardware/driver issue"
+	case "PKT_TOO_SMALL":
+		return "malformed packets — possible attack or driver bug"
+	case "SOCKET_BACKLOG":
+		return "socket backlog full — application accept() too slow"
+	case "NOT_SPECIFIED":
+		return "generic kernel drop — no specific reason recorded"
+	case "TCP_FLAGS":
+		return "normal TCP lifecycle (FIN/RST handling)"
+	case "TCP_OLD_DATA":
+		return "retransmit arrived after ACK — normal on busy connections"
+	case "TCP_ZEROWINDOW":
+		return "TCP flow control — receiver window full"
+	case "SOCKET_FILTER":
+		return "BPF socket filter drop (tcpdump/iptables match)"
+	case "SKB_CONSUMED":
+		return "packet consumed normally — not an actual drop"
+	default:
+		return "kernel packet drop"
+	}
+}
+
 func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEntry {
 	r := model.RCAEntry{Bottleneck: BottleneckNetwork}
 	if rates == nil {
@@ -1166,9 +1219,58 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEn
 	// Sentinel: BPF-measured packet drops and TCP resets
 	if sent := curr.Global.Sentinel; sent.Active {
 		if sent.PktDropRate > 0 {
+			// Build reason breakdown — only non-benign reasons
+			dropDetail := fmt.Sprintf("BPF pkt drops=%.0f/s", sent.PktDropRate)
+			var topReasons []string
+			var topReason string
+			for _, d := range sent.PktDrops {
+				if d.Rate < 1 {
+					continue
+				}
+				if isBenignDropReasonStr(d.ReasonStr) {
+					continue
+				}
+				if topReason == "" {
+					topReason = d.ReasonStr
+				}
+				if len(topReasons) < 3 {
+					topReasons = append(topReasons, fmt.Sprintf("%s:%.0f/s", d.ReasonStr, d.Rate))
+				}
+			}
+			if len(topReasons) > 0 {
+				dropDetail += " — " + strings.Join(topReasons, ", ")
+			}
+			if topReason != "" {
+				dropDetail += " | " + dropReasonImpact(topReason)
+			}
+			// Add kernel function where drops happen (the real "where")
+			if len(sent.PktDropLocs) > 0 {
+				var locParts []string
+				for _, loc := range sent.PktDropLocs {
+					if len(locParts) >= 2 || loc.Rate < 1 {
+						break
+					}
+					locParts = append(locParts, fmt.Sprintf("%s:%.0f/s", loc.Function, loc.Rate))
+				}
+				if len(locParts) > 0 {
+					dropDetail += " @ " + strings.Join(locParts, ", ")
+				}
+			}
+			// Add protocol breakdown
+			if len(sent.PktDropProto) > 0 {
+				var protoParts []string
+				for _, p := range sent.PktDropProto {
+					if p.Rate >= 1 {
+						protoParts = append(protoParts, fmt.Sprintf("%s:%.0f/s", p.Proto, p.Rate))
+					}
+				}
+				if len(protoParts) > 0 {
+					dropDetail += " proto=" + strings.Join(protoParts, ",")
+				}
+			}
 			r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("net.sentinel.drops", model.DomainNetwork,
 				sent.PktDropRate, 1, 100, true, 0.95,
-				fmt.Sprintf("BPF pkt drops=%.0f/s", sent.PktDropRate), "1s",
+				dropDetail, "1s",
 				nil, nil))
 		}
 		if sent.TCPResetRate > 0 {

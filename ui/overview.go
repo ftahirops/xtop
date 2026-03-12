@@ -1295,6 +1295,18 @@ func renderRCAInline(result *model.AnalysisResult) string {
 	return sb.String()
 }
 
+// isBenignSentinelDrop returns true for drop reasons that are normal TCP lifecycle,
+// not actual problems. These are excluded from the overview headline.
+func isBenignSentinelDrop(reason string) bool {
+	switch reason {
+	case "NOT_SPECIFIED", "NO_SOCKET", "SOCKET_FILTER", "TCP_FLAGS",
+		"TCP_ZEROWINDOW", "TCP_OLD_DATA", "TCP_OVERWINDOW",
+		"TCP_OFOMERGE", "SKB_CONSUMED":
+		return true
+	}
+	return false
+}
+
 // renderProbeStatusLine renders the sentinel + probe status. Always produces exactly 1 line.
 // Pass nil for idle state (no probe engine available yet).
 func renderProbeStatusLine(pm probeQuerier, snap *model.Snapshot) string {
@@ -1306,10 +1318,18 @@ func renderProbeStatusLine(pm probeQuerier, snap *model.Snapshot) string {
 		sb.WriteString(titleStyle.Render("Sentinel:"))
 		sb.WriteString(" ")
 		sent := snap.Global.Sentinel
-		// Show key rates inline
+		// Show key rates with reason breakdown and severity coloring
 		var parts []string
 		if sent.PktDropRate > 0 {
-			parts = append(parts, fmt.Sprintf("Drops:%.0f/s", sent.PktDropRate))
+			// Build drop string with top non-benign reason
+			dropStr := fmt.Sprintf("Drops:%.0f/s", sent.PktDropRate)
+			for _, d := range sent.PktDrops {
+				if d.Rate >= 1 && !isBenignSentinelDrop(d.ReasonStr) {
+					dropStr += fmt.Sprintf(" [%s:%.0f/s]", d.ReasonStr, d.Rate)
+					break
+				}
+			}
+			parts = append(parts, dropStr)
 		}
 		if sent.TCPResetRate > 0 {
 			parts = append(parts, fmt.Sprintf("RSTs:%.0f/s", sent.TCPResetRate))
@@ -1326,7 +1346,14 @@ func renderProbeStatusLine(pm probeQuerier, snap *model.Snapshot) string {
 		if len(parts) == 0 {
 			sb.WriteString(okStyle.Render("ok"))
 		} else {
-			sb.WriteString(warnStyle.Render(strings.Join(parts, " ")))
+			// Color by severity: >100/s drops or any OOM = crit, else warn
+			isCrit := sent.PktDropRate > 100 || len(sent.OOMKills) > 0
+			text := strings.Join(parts, " | ")
+			if isCrit {
+				sb.WriteString(critStyle.Render(text))
+			} else {
+				sb.WriteString(warnStyle.Render(text))
+			}
 		}
 		sb.WriteString(dimStyle.Render(" | "))
 	}

@@ -4,6 +4,9 @@ package ebpf
 
 import (
 	"fmt"
+	"os"
+	"strings"
+	"sync"
 
 	"github.com/cilium/ebpf/link"
 )
@@ -17,6 +20,18 @@ type kfreeskbProbe struct {
 type KfreeSkbResult struct {
 	Reason uint32
 	Count  uint64
+}
+
+// KfreeSkbLocResult holds a drop location (kernel function addr) and count.
+type KfreeSkbLocResult struct {
+	Addr  uint64
+	Count uint64
+}
+
+// KfreeSkbProtoResult holds a drop protocol and count.
+type KfreeSkbProtoResult struct {
+	Proto uint16
+	Count uint64
 }
 
 func attachKfreeSkb() (*kfreeskbProbe, error) {
@@ -55,11 +70,121 @@ func (p *kfreeskbProbe) read() ([]KfreeSkbResult, error) {
 	return results, nil
 }
 
+// readLocations reads the drop_loc map (kernel function address → count).
+func (p *kfreeskbProbe) readLocations() ([]KfreeSkbLocResult, error) {
+	var results []KfreeSkbLocResult
+	var addr uint64
+	var val kfreeskbDropVal
+
+	iter := p.objs.DropLoc.Iterate()
+	for iter.Next(&addr, &val) {
+		if val.Count == 0 {
+			continue
+		}
+		results = append(results, KfreeSkbLocResult{
+			Addr:  addr,
+			Count: val.Count,
+		})
+	}
+	if err := iter.Err(); err != nil {
+		return results, fmt.Errorf("iterate drop_loc map: %w", err)
+	}
+	return results, nil
+}
+
+// readProtocols reads the drop_proto map (protocol → count).
+func (p *kfreeskbProbe) readProtocols() ([]KfreeSkbProtoResult, error) {
+	var results []KfreeSkbProtoResult
+	var proto uint16
+	var val kfreeskbDropVal
+
+	iter := p.objs.DropProto.Iterate()
+	for iter.Next(&proto, &val) {
+		if val.Count == 0 {
+			continue
+		}
+		results = append(results, KfreeSkbProtoResult{
+			Proto: proto,
+			Count: val.Count,
+		})
+	}
+	if err := iter.Err(); err != nil {
+		return results, fmt.Errorf("iterate drop_proto map: %w", err)
+	}
+	return results, nil
+}
+
 func (p *kfreeskbProbe) close() {
 	for _, l := range p.links {
 		l.Close()
 	}
 	p.objs.Close()
+}
+
+// ksymCache caches resolved kernel symbols to avoid re-reading /proc/kallsyms.
+var ksymCache = struct {
+	sync.Mutex
+	m map[uint64]string
+}{m: make(map[uint64]string)}
+
+// resolveKsym resolves a kernel address to a function name using /proc/kallsyms.
+// Results are cached.
+func resolveKsym(addr uint64) string {
+	ksymCache.Lock()
+	if name, ok := ksymCache.m[addr]; ok {
+		ksymCache.Unlock()
+		return name
+	}
+	ksymCache.Unlock()
+
+	data, err := os.ReadFile("/proc/kallsyms")
+	if err != nil {
+		return fmt.Sprintf("0x%x", addr)
+	}
+	// Find the closest symbol <= addr
+	var bestName string
+	var bestAddr uint64
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+		var symAddr uint64
+		if _, err := fmt.Sscanf(fields[0], "%x", &symAddr); err != nil {
+			continue
+		}
+		if symAddr <= addr && symAddr > bestAddr {
+			bestAddr = symAddr
+			bestName = fields[2]
+		}
+		if symAddr > addr {
+			break
+		}
+	}
+	result := bestName
+	if result == "" {
+		result = fmt.Sprintf("0x%x", addr)
+	}
+	ksymCache.Lock()
+	ksymCache.m[addr] = result
+	ksymCache.Unlock()
+	return result
+}
+
+// protoString converts an ETH_P_ protocol number to a name.
+func protoString(proto uint16) string {
+	switch proto {
+	case 0x0800:
+		return "IPv4"
+	case 0x86DD:
+		return "IPv6"
+	case 0x0806:
+		return "ARP"
+	case 0x8100:
+		return "VLAN"
+	default:
+		return fmt.Sprintf("0x%04x", proto)
+	}
 }
 
 // isBenignDropReason returns true for SKB_DROP_REASON codes that are normal

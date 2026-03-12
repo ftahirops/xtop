@@ -40,12 +40,14 @@ type SentinelManager struct {
 	outbound    *outboundProbe
 
 	// Previous values for delta computation
-	prevDrops    map[uint32]uint64
-	prevResets   map[uint32]uint64
-	prevStates   map[uint32]uint64 // packed oldstate<<16|newstate
-	prevRetrans  map[uint32]uint32
-	prevThrottle map[uint64]uint64
-	lastRead     time.Time
+	prevDrops     map[uint32]uint64
+	prevDropLocs  map[uint64]uint64
+	prevDropProto map[uint16]uint64
+	prevResets    map[uint32]uint64
+	prevStates    map[uint32]uint64 // packed oldstate<<16|newstate
+	prevRetrans   map[uint32]uint32
+	prevThrottle  map[uint64]uint64
+	lastRead      time.Time
 
 	// Previous values for security sentinel delta computation
 	prevSynCount  map[string]uint64 // SrcIP → previous SynCount
@@ -69,8 +71,10 @@ type SentinelManager struct {
 // Collect() call does not block the TUI startup.
 func NewSentinelManager() *SentinelManager {
 	s := &SentinelManager{
-		prevDrops:    make(map[uint32]uint64),
-		prevResets:   make(map[uint32]uint64),
+		prevDrops:     make(map[uint32]uint64),
+		prevDropLocs:  make(map[uint64]uint64),
+		prevDropProto: make(map[uint16]uint64),
+		prevResets:    make(map[uint32]uint64),
 		prevStates:   make(map[uint32]uint64),
 		prevRetrans:  make(map[uint32]uint32),
 		prevThrottle: make(map[uint64]uint64),
@@ -157,6 +161,62 @@ func (s *SentinelManager) Collect(snap *model.Snapshot) error {
 			if len(sent.PktDrops) > 20 {
 				sent.PktDrops = sent.PktDrops[:20]
 			}
+		}
+	}
+
+	// Read drop locations (kernel functions where drops happen)
+	if s.kfreeskb != nil {
+		locs, err := s.kfreeskb.readLocations()
+		if err == nil {
+			for _, loc := range locs {
+				prev := s.prevDropLocs[loc.Addr]
+				var delta uint64
+				if loc.Count >= prev {
+					delta = loc.Count - prev
+				}
+				s.prevDropLocs[loc.Addr] = loc.Count
+				if delta > 0 {
+					rate := float64(delta) / elapsed
+					funcName := resolveKsym(loc.Addr)
+					sent.PktDropLocs = append(sent.PktDropLocs, model.PktDropLocation{
+						Function: funcName,
+						Rate:     rate,
+						Count:    loc.Count,
+					})
+				}
+			}
+			sort.Slice(sent.PktDropLocs, func(i, j int) bool {
+				return sent.PktDropLocs[i].Rate > sent.PktDropLocs[j].Rate
+			})
+			if len(sent.PktDropLocs) > 10 {
+				sent.PktDropLocs = sent.PktDropLocs[:10]
+			}
+		}
+	}
+
+	// Read drop protocols
+	if s.kfreeskb != nil {
+		protos, err := s.kfreeskb.readProtocols()
+		if err == nil {
+			for _, p := range protos {
+				prev := s.prevDropProto[p.Proto]
+				var delta uint64
+				if p.Count >= prev {
+					delta = p.Count - prev
+				}
+				s.prevDropProto[p.Proto] = p.Count
+				if delta > 0 {
+					rate := float64(delta) / elapsed
+					sent.PktDropProto = append(sent.PktDropProto, model.PktDropProto{
+						Proto: protoString(p.Proto),
+						Rate:  rate,
+						Count: p.Count,
+					})
+				}
+			}
+			sort.Slice(sent.PktDropProto, func(i, j int) bool {
+				return sent.PktDropProto[i].Rate > sent.PktDropProto[j].Rate
+			})
 		}
 	}
 
