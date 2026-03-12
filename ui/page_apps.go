@@ -8,10 +8,13 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/ftahirops/xtop/model"
 )
 
-func renderAppsPage(snap *model.Snapshot, selectedIdx int, detailMode bool, width, height int) string {
+func renderAppsPage(snap *model.Snapshot, selectedIdx int, detailMode bool,
+	stackCursor int, stackExpanded []bool, containerIdx int,
+	width, height int) string {
 	var sb strings.Builder
 	iw := pageInnerW(width)
 
@@ -20,7 +23,7 @@ func renderAppsPage(snap *model.Snapshot, selectedIdx int, detailMode bool, widt
 	if detailMode && selectedIdx < len(instances) {
 		app := instances[selectedIdx]
 		if app.AppType == "docker" {
-			return renderDockerDetail(app, iw)
+			return renderDockerDetail(app, stackCursor, stackExpanded, containerIdx, iw)
 		}
 		return renderAppsDetail(app, iw)
 	}
@@ -3022,85 +3025,56 @@ func renderTraefikDeepMetrics(app model.AppInstance, iw int) string {
 
 // ── Docker Detail ──────────────────────────────────────────────────────
 
-func renderDockerDetail(app model.AppInstance, iw int) string {
+func renderDockerDetail(app model.AppInstance, stackCursor int, stackExpanded []bool, containerIdx int, iw int) string {
 	var sb strings.Builder
 	dm := app.DeepMetrics
 
 	sb.WriteString(appDetailHeader(app))
 
-	// Compact side-by-side: Daemon Info (left) | Summary + Disk (right)
+	// ── Daemon overview (compact 2-column) ───────────────────────────
 	leftW := iw/2 - 1
-	rightW := iw - leftW - 3
-
-	// Build left column: DAEMON
 	var left strings.Builder
 	left.WriteString(dimStyle.Render("DOCKER DAEMON") + "\n")
-	dkvs := []kv{
+	for _, item := range []kv{
 		{"Version", appFmtDash(app.Version)},
 		{"PID", fmt.Sprintf("%d", app.PID)},
 		{"Uptime", fmtUptime(app.UptimeSec)},
-		{"RSS", appFmtMem(app.RSSMB)},
-		{"Threads", fmt.Sprintf("%d", app.Threads)},
-		{"FDs", fmt.Sprintf("%d", app.FDs)},
 		{"Storage", dm["Storage Driver"]},
 		{"Cgroup", dm["Cgroup Driver"]},
 		{"OS", dm["OS"]},
 		{"Kernel", dm["Kernel"]},
-		{"CPUs", dm["CPUs"]},
-		{"Memory", dm["Total Memory"]},
-	}
-	for _, item := range dkvs {
+	} {
 		if item.Val == "" {
 			continue
 		}
 		left.WriteString(fmt.Sprintf(" %-10s %s\n", item.Key+":", valueStyle.Render(item.Val)))
 	}
-
-	// Build right column: SUMMARY + DISK USAGE
 	var right strings.Builder
-	right.WriteString(dimStyle.Render("CONTAINERS") + "\n")
 	running := dm["Running"]
 	stopped := dm["Stopped"]
 	paused := dm["Paused"]
-	total := dm["Total Containers"]
-	right.WriteString(fmt.Sprintf(" Total: %s  Run: %s  Stop: %s  Pause: %s\n",
-		valueStyle.Render(total), okStyle.Render(running),
-		func() string {
-			if stopped != "" && stopped != "0" {
-				return warnStyle.Render(stopped)
-			}
-			return dimStyle.Render(stopped)
-		}(),
-		func() string {
-			if paused != "" && paused != "0" {
-				return warnStyle.Render(paused)
-			}
-			return dimStyle.Render(paused)
-		}()))
-	right.WriteString(fmt.Sprintf(" Images: %s\n", valueStyle.Render(dm["Images"])))
+	right.WriteString(dimStyle.Render("SUMMARY") + "\n")
+	right.WriteString(fmt.Sprintf(" Containers: %s  Run: %s  Stop: %s  Pause: %s\n",
+		valueStyle.Render(dm["Total Containers"]), okStyle.Render(running),
+		dockerColorNonZero(stopped), dockerColorNonZero(paused)))
+	right.WriteString(fmt.Sprintf(" Images: %s  Orch: %s\n",
+		valueStyle.Render(dm["Images"]),
+		dockerOrchBadge(app.OrchestrationType)))
 	right.WriteString("\n")
-
-	right.WriteString(dimStyle.Render("DISK USAGE") + "\n")
+	right.WriteString(dimStyle.Render("DISK") + "\n")
 	if dm["images_total_size"] != "" {
-		right.WriteString(fmt.Sprintf(" Images:      %s", valueStyle.Render(dm["images_total_size"])))
+		right.WriteString(fmt.Sprintf(" Images: %s", valueStyle.Render(dm["images_total_size"])))
 		if dm["images_reclaimable"] != "" {
-			right.WriteString(dimStyle.Render(" (reclaimable: " + dm["images_reclaimable"] + ")"))
+			right.WriteString(dimStyle.Render(" (rec: " + dm["images_reclaimable"] + ")"))
 		}
 		right.WriteString("\n")
 	}
 	if dm["volumes_count"] != "" {
-		right.WriteString(fmt.Sprintf(" Volumes:     %s  (%s vols)\n",
+		right.WriteString(fmt.Sprintf(" Volumes: %s (%s)\n",
 			valueStyle.Render(dm["volumes_size"]), valueStyle.Render(dm["volumes_count"])))
 	}
-	if dm["buildcache_count"] != "" {
-		right.WriteString(fmt.Sprintf(" Build Cache: %s  (%s layers)\n",
-			valueStyle.Render(dm["buildcache_size"]), valueStyle.Render(dm["buildcache_count"])))
-	}
 	if dm["containers_rw_size"] != "" {
-		right.WriteString(fmt.Sprintf(" Containers:  %s writable\n", valueStyle.Render(dm["containers_rw_size"])))
-	}
-	if dm["networks_count"] != "" {
-		right.WriteString(fmt.Sprintf(" Networks:    %s\n", valueStyle.Render(dm["networks_count"])))
+		right.WriteString(fmt.Sprintf(" Writable: %s\n", valueStyle.Render(dm["containers_rw_size"])))
 	}
 
 	sb.WriteString(boxTop(iw) + "\n")
@@ -3111,195 +3085,347 @@ func renderDockerDetail(app model.AppInstance, iw int) string {
 		}
 	}
 	sb.WriteString(boxBot(iw) + "\n")
-	_ = rightW
 
-	// Per-container table — single row per container
-	if len(app.Containers) > 0 {
-		sb.WriteString("  " + titleStyle.Render("CONTAINERS") + "\n")
-		sb.WriteString(boxTop(iw) + "\n")
+	// ── Stack sections (collapsible) ─────────────────────────────────
+	if len(app.Stacks) > 0 {
+		sb.WriteString("\n  " + titleStyle.Render("STACKS") +
+			"  " + dimStyle.Render(fmt.Sprintf("(%d stacks, %d containers)",
+				len(app.Stacks), len(app.Containers))) + "\n\n")
 
-		cName := 24
-		cState := 10
-		cCPU := 7
-		cMem := 12
-		cMemPct := 5
-		cNetRx := 10
-		cNetTx := 10
-		cBlkR := 10
-		cBlkW := 10
-		cPIDs := 5
-		cImage := 30
+		for i, stack := range app.Stacks {
+			selected := i == stackCursor
+			expanded := i < len(stackExpanded) && stackExpanded[i]
 
-		hdr := fmt.Sprintf(" %s%s%s%s%s%s%s%s%s%s%s",
-			styledPad(dimStyle.Render("Name"), cName),
-			styledPad(dimStyle.Render("State"), cState),
-			styledPad(dimStyle.Render("CPU%"), cCPU),
-			styledPad(dimStyle.Render("Mem"), cMem),
-			styledPad(dimStyle.Render("Mem%"), cMemPct),
-			styledPad(dimStyle.Render("Net RX"), cNetRx),
-			styledPad(dimStyle.Render("Net TX"), cNetTx),
-			styledPad(dimStyle.Render("Blk R"), cBlkR),
-			styledPad(dimStyle.Render("Blk W"), cBlkW),
-			styledPad(dimStyle.Render("PIDs"), cPIDs),
-			styledPad(dimStyle.Render("Image"), cImage))
-		sb.WriteString(boxRow(hdr, iw) + "\n")
-		sb.WriteString(boxMid(iw) + "\n")
+			// Stack header: ▶/▼ [badge] name — health — container count
+			badge := dockerStackBadge(stack.Type)
+			healthBadge := dockerStackHealthBadge(stack.HealthScore)
+			summary := fmt.Sprintf("%s %s  %s  %s",
+				badge, valueStyle.Render(stack.Name),
+				healthBadge,
+				dimStyle.Render(fmt.Sprintf("%d containers", len(stack.Containers))))
+			if len(stack.Issues) > 0 {
+				summary += "  " + warnStyle.Render(fmt.Sprintf("%d issues", len(stack.Issues)))
+			}
+			sb.WriteString(renderNetSectionHeader("", summary, selected, expanded, iw))
 
-		for _, c := range app.Containers {
-			name := c.Name
-			if len(name) > cName-1 {
-				name = name[:cName-4] + "..."
+			if !expanded {
+				continue
 			}
 
-			// State with health/restart indicators
-			stateStr := c.State
-			switch c.State {
-			case "running":
-				stateStr = okStyle.Render("run")
-				if c.Health == "unhealthy" {
-					stateStr = critStyle.Render("unheal")
-				} else if c.Health == "healthy" {
-					stateStr = okStyle.Render("healthy")
+			// Working dir / compose file
+			if stack.WorkingDir != "" {
+				sb.WriteString(boxTop(iw) + "\n")
+				sb.WriteString(boxRow("  "+dimStyle.Render("Dir: ")+valueStyle.Render(stack.WorkingDir), iw) + "\n")
+				if stack.ComposeFile != "" {
+					sb.WriteString(boxRow("  "+dimStyle.Render("File: ")+valueStyle.Render(stack.ComposeFile), iw) + "\n")
 				}
-			case "exited":
-				if c.ExitCode != 0 {
-					stateStr = critStyle.Render(fmt.Sprintf("exit:%d", c.ExitCode))
+				sb.WriteString(boxMid(iw) + "\n")
+			} else {
+				sb.WriteString(boxTop(iw) + "\n")
+			}
+
+			// Container table
+			cName := 22
+			cState := 10
+			cCPU := 7
+			cMem := 10
+			cMemPct := 6
+			cNet := 16
+			cRestart := 5
+			cImage := 28
+
+			hdr := fmt.Sprintf(" %s%s%s%s%s%s%s%s",
+				styledPad(dimStyle.Render("Name"), cName),
+				styledPad(dimStyle.Render("State"), cState),
+				styledPad(dimStyle.Render("CPU%"), cCPU),
+				styledPad(dimStyle.Render("Mem"), cMem),
+				styledPad(dimStyle.Render("Mem%"), cMemPct),
+				styledPad(dimStyle.Render("Net I/O"), cNet),
+				styledPad(dimStyle.Render("Rst"), cRestart),
+				styledPad(dimStyle.Render("Image"), cImage))
+			sb.WriteString(boxRow(hdr, iw) + "\n")
+			sb.WriteString(boxMid(iw) + "\n")
+
+			for _, c := range stack.Containers {
+				name := c.Name
+				if len(name) > cName-1 {
+					name = name[:cName-4] + "..."
+				}
+
+				stateStr := dockerContainerStateStr(c)
+				cpuStr := "—"
+				memStr := "—"
+				memPctStr := "—"
+				netStr := "—"
+				rstStr := "—"
+
+				if c.State == "running" {
+					cpuStr = fmt.Sprintf("%.1f%%", c.CPUPct)
+					if c.CPUPct > 80 {
+						cpuStr = critStyle.Render(cpuStr)
+					} else if c.CPUPct > 50 {
+						cpuStr = warnStyle.Render(cpuStr)
+					}
+					memStr = appFmtBytesShort(c.MemUsedBytes)
+					if c.MemLimitBytes > 0 && c.MemLimitBytes < 1e18 {
+						memPctStr = fmt.Sprintf("%.0f%%", c.MemPct)
+						if c.MemPct > 90 {
+							memPctStr = critStyle.Render(memPctStr)
+						} else if c.MemPct > 75 {
+							memPctStr = warnStyle.Render(memPctStr)
+						}
+					}
+					netStr = fmt.Sprintf("%s/%s",
+						appFmtBytesShort(c.NetRxBytes), appFmtBytesShort(c.NetTxBytes))
+				}
+				if c.RestartCount > 0 {
+					rstStr = warnStyle.Render(fmt.Sprintf("%d", c.RestartCount))
 				} else {
-					stateStr = dimStyle.Render("exited")
+					rstStr = dimStyle.Render("0")
 				}
-			case "paused":
-				stateStr = warnStyle.Render("paused")
-			default:
-				stateStr = dimStyle.Render(c.State)
-			}
-			if c.RestartCount > 0 {
-				stateStr = stateStr + warnStyle.Render(fmt.Sprintf("R%d", c.RestartCount))
-			}
 
-			cpuStr := "—"
-			memStr := "—"
-			memPctStr := "—"
-			netRx := "—"
-			netTx := "—"
-			blkR := "—"
-			blkW := "—"
-			pidStr := "—"
-
-			if c.State == "running" {
-				cpuStr = fmt.Sprintf("%.1f%%", c.CPUPct)
-				memStr = appFmtBytesShort(c.MemUsedBytes)
-				if c.MemLimitBytes > 0 && c.MemLimitBytes < 1e18 {
-					memPctStr = fmt.Sprintf("%.0f%%", c.MemPct)
+				imageStr := c.Image
+				if len(imageStr) > cImage-1 {
+					imageStr = imageStr[:cImage-4] + "..."
 				}
-				netRx = appFmtBytesShort(c.NetRxBytes)
-				netTx = appFmtBytesShort(c.NetTxBytes)
-				blkR = appFmtBytesShort(c.BlockRead)
-				blkW = appFmtBytesShort(c.BlockWrite)
-				pidStr = fmt.Sprintf("%d", c.PIDs)
+
+				row := fmt.Sprintf(" %s%s%s%s%s%s%s%s",
+					styledPad(valueStyle.Render(name), cName),
+					styledPad(stateStr, cState),
+					styledPad(cpuStr, cCPU),
+					styledPad(valueStyle.Render(memStr), cMem),
+					styledPad(memPctStr, cMemPct),
+					styledPad(dimStyle.Render(netStr), cNet),
+					styledPad(rstStr, cRestart),
+					styledPad(dimStyle.Render(imageStr), cImage))
+				sb.WriteString(boxRow(row, iw) + "\n")
 			}
 
-			imageStr := c.Image
-			if len(imageStr) > cImage-1 {
-				imageStr = imageStr[:cImage-4] + "..."
+			// Container details: ports, mounts, networks, limits, issues
+			for _, c := range stack.Containers {
+				details := dockerContainerDetails(c)
+				if len(details) > 0 {
+					sb.WriteString(boxMid(iw) + "\n")
+					sb.WriteString(boxRow("  "+valueStyle.Render(c.Name)+
+						"  "+dimStyle.Render(c.Status), iw) + "\n")
+					for _, d := range details {
+						sb.WriteString(boxRow(d, iw) + "\n")
+					}
+				}
 			}
 
-			row := fmt.Sprintf(" %s%s%s%s%s%s%s%s%s%s%s",
-				styledPad(valueStyle.Render(name), cName),
-				styledPad(stateStr, cState),
-				styledPad(valueStyle.Render(cpuStr), cCPU),
-				styledPad(valueStyle.Render(memStr), cMem),
-				styledPad(valueStyle.Render(memPctStr), cMemPct),
-				styledPad(valueStyle.Render(netRx), cNetRx),
-				styledPad(valueStyle.Render(netTx), cNetTx),
-				styledPad(valueStyle.Render(blkR), cBlkR),
-				styledPad(valueStyle.Render(blkW), cBlkW),
-				styledPad(valueStyle.Render(pidStr), cPIDs),
-				styledPad(dimStyle.Render(imageStr), cImage))
-			sb.WriteString(boxRow(row, iw) + "\n")
+			// Stack issues
+			if len(stack.Issues) > 0 {
+				sb.WriteString(boxMid(iw) + "\n")
+				sb.WriteString(boxRow("  "+warnStyle.Render("ISSUES"), iw) + "\n")
+				for _, issue := range stack.Issues {
+					sb.WriteString(boxRow("  "+critStyle.Render("\u25cf")+" "+valueStyle.Render(issue), iw) + "\n")
+				}
+			}
+
+			// Stack networks
+			if len(stack.Networks) > 0 {
+				sb.WriteString(boxMid(iw) + "\n")
+				sb.WriteString(boxRow("  "+dimStyle.Render("Networks:"), iw) + "\n")
+				for _, n := range stack.Networks {
+					net := fmt.Sprintf("    %s  drv=%s", valueStyle.Render(n.Name), dimStyle.Render(n.Driver))
+					if n.Subnet != "" {
+						net += "  " + dimStyle.Render(n.Subnet)
+					}
+					sb.WriteString(boxRow(net, iw) + "\n")
+				}
+			}
+
+			sb.WriteString(boxBot(iw) + "\n")
 		}
-		sb.WriteString(boxBot(iw) + "\n\n")
+	} else if len(app.Containers) > 0 {
+		// Fallback: no stacks, just flat container list (shouldn't happen with new collector)
+		sb.WriteString(renderDockerFlatContainers(app, iw))
 	}
 
-	// IMAGES table
-	if dm["images_count"] != "" {
-		var imgLines []string
-		imgLines = append(imgLines, dimStyle.Render(fmt.Sprintf(" %-40s %10s %s", "REPOSITORY:TAG", "SIZE", "CONTAINERS")))
-		for i := 0; i < 10; i++ {
-			iname := dm[fmt.Sprintf("img_%d_name", i)]
-			if iname == "" {
+	sb.WriteString(pageFooter("j/k:Navigate  Enter:Expand  A:All  C:Collapse  b:Back  Y:Apps"))
+	return sb.String()
+}
+
+// dockerContainerStateStr renders the state with health/restart indicators.
+func dockerContainerStateStr(c model.AppDockerContainer) string {
+	switch c.State {
+	case "running":
+		if c.Health == "unhealthy" {
+			return critStyle.Render("unhealthy")
+		} else if c.Health == "healthy" {
+			return okStyle.Render("healthy")
+		}
+		return okStyle.Render("running")
+	case "exited":
+		if c.ExitCode != 0 {
+			return critStyle.Render(fmt.Sprintf("exit:%d", c.ExitCode))
+		}
+		return dimStyle.Render("exited")
+	case "paused":
+		return warnStyle.Render("paused")
+	default:
+		return dimStyle.Render(c.State)
+	}
+}
+
+// dockerContainerDetails returns detail lines for a container's inspect data.
+func dockerContainerDetails(c model.AppDockerContainer) []string {
+	var lines []string
+
+	// Ports
+	if len(c.Ports) > 0 {
+		var ports []string
+		for _, p := range c.Ports {
+			if p.HostPort > 0 {
+				ports = append(ports, fmt.Sprintf("%s:%d→%d/%s",
+					p.HostIP, p.HostPort, p.ContainerPort, p.Protocol))
+			} else {
+				ports = append(ports, fmt.Sprintf("%d/%s", p.ContainerPort, p.Protocol))
+			}
+		}
+		lines = append(lines, "    "+dimStyle.Render("Ports: ")+valueStyle.Render(strings.Join(ports, ", ")))
+	}
+
+	// Mounts (show first 3)
+	if len(c.Mounts) > 0 {
+		for i, m := range c.Mounts {
+			if i >= 3 {
+				lines = append(lines, fmt.Sprintf("    "+dimStyle.Render("  ... +%d more mounts"), len(c.Mounts)-3))
 				break
 			}
-			size := dm[fmt.Sprintf("img_%d_size", i)]
-			ctrs := dm[fmt.Sprintf("img_%d_containers", i)]
-			dispName := iname
-			if len(dispName) > 40 {
-				dispName = dispName[:37] + "..."
+			ro := ""
+			if m.ReadOnly {
+				ro = dimStyle.Render(" (ro)")
 			}
-			imgLines = append(imgLines, fmt.Sprintf(" %-40s %10s %s",
-				dispName, valueStyle.Render(size), valueStyle.Render(ctrs)))
+			lines = append(lines, fmt.Sprintf("    "+dimStyle.Render("Mount: ")+"%s → %s%s",
+				dimStyle.Render(truncStr(m.Source, 30)),
+				valueStyle.Render(truncStr(m.Target, 25)), ro))
 		}
-		sb.WriteString(boxSection("IMAGES ("+dm["images_count"]+" total, "+dm["images_total_size"]+")", imgLines, iw))
 	}
 
-	// NETWORKS table
-	if dm["networks_count"] != "" {
-		var netLines []string
-		netLines = append(netLines, dimStyle.Render(fmt.Sprintf(" %-24s %-12s %s", "NAME", "DRIVER", "SCOPE")))
-		for i := 0; i < 10; i++ {
-			nname := dm[fmt.Sprintf("net_%d_name", i)]
-			if nname == "" {
-				break
-			}
-			driver := dm[fmt.Sprintf("net_%d_driver", i)]
-			scope := dm[fmt.Sprintf("net_%d_scope", i)]
-			netLines = append(netLines, fmt.Sprintf(" %-24s %-12s %s", nname, valueStyle.Render(driver), dimStyle.Render(scope)))
+	// Networks
+	if len(c.Networks) > 0 {
+		var nets []string
+		for _, n := range c.Networks {
+			nets = append(nets, fmt.Sprintf("%s(%s)", n.Name, n.IP))
 		}
-		sb.WriteString(boxSection("NETWORKS", netLines, iw))
+		lines = append(lines, "    "+dimStyle.Render("Nets: ")+dimStyle.Render(strings.Join(nets, ", ")))
 	}
 
-	// HEALTH DIAGNOSTICS
-	{
-		var hissues []string
-		if s := dm["Stopped"]; s != "" && s != "0" {
-			hissues = append(hissues, warnStyle.Render("!! "+s+" stopped containers"))
-		}
-		if s := dm["Paused"]; s != "" && s != "0" {
-			hissues = append(hissues, warnStyle.Render("!! "+s+" paused containers"))
-		}
-		for _, c := range app.Containers {
-			if c.Health == "unhealthy" {
-				hissues = append(hissues, critStyle.Render("!! "+c.Name+" is UNHEALTHY"))
-			}
-			if c.RestartCount > 0 {
-				hissues = append(hissues, warnStyle.Render(fmt.Sprintf("!! %s has %d restarts", c.Name, c.RestartCount)))
-			}
-			if c.State == "exited" && c.ExitCode != 0 {
-				hissues = append(hissues, critStyle.Render(fmt.Sprintf("!! %s exited with code %d", c.Name, c.ExitCode)))
-			}
-			if c.MemPct > 90 {
-				hissues = append(hissues, warnStyle.Render(fmt.Sprintf("!! %s memory at %.0f%%", c.Name, c.MemPct)))
-			}
-			if c.CPUPct > 80 {
-				hissues = append(hissues, warnStyle.Render(fmt.Sprintf("!! %s CPU at %.1f%%", c.Name, c.CPUPct)))
-			}
-		}
-		if len(hissues) == 0 {
-			hissues = append(hissues, okStyle.Render(" All containers healthy"))
-		}
-		sb.WriteString(boxSection("HEALTH DIAGNOSTICS", hissues, iw))
+	// Resource limits
+	var limits []string
+	if c.MemLimit > 0 {
+		limits = append(limits, fmt.Sprintf("mem=%s", appFmtBytesShort(float64(c.MemLimit))))
+	}
+	if c.CPUQuota > 0 {
+		limits = append(limits, fmt.Sprintf("cpu=%.1f cores", c.CPUQuota))
+	}
+	if len(limits) > 0 {
+		lines = append(lines, "    "+dimStyle.Render("Limits: ")+valueStyle.Render(strings.Join(limits, "  ")))
 	}
 
-	if len(app.HealthIssues) > 0 {
-		sb.WriteString("  " + titleStyle.Render("HEALTH ISSUES") + "\n")
-		sb.WriteString(boxTop(iw) + "\n")
-		for _, issue := range app.HealthIssues {
-			row := "  " + critStyle.Render("\u25cf") + " " + valueStyle.Render(issue)
-			sb.WriteString(boxRow(row, iw) + "\n")
-		}
-		sb.WriteString(boxBot(iw) + "\n\n")
+	// Flags: restart policy, privileged, no healthcheck
+	var flags []string
+	if c.RestartPolicy != "" && c.RestartPolicy != "no" {
+		flags = append(flags, "restart="+c.RestartPolicy)
+	} else if c.RestartPolicy == "" || c.RestartPolicy == "no" {
+		flags = append(flags, warnStyle.Render("no-restart"))
+	}
+	if c.Privileged {
+		flags = append(flags, critStyle.Render("PRIVILEGED"))
+	}
+	if !c.HasHealthChk {
+		flags = append(flags, dimStyle.Render("no-healthcheck"))
+	}
+	if c.User != "" {
+		flags = append(flags, "user="+c.User)
+	}
+	if len(flags) > 0 {
+		lines = append(lines, "    "+dimStyle.Render("Flags: ")+strings.Join(flags, "  "))
 	}
 
-	sb.WriteString(pageFooter("k:Back  Y:Apps"))
+	return lines
+}
+
+// dockerStackBadge returns a colored badge for stack type.
+func dockerStackBadge(stype string) string {
+	switch stype {
+	case "compose":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Render("[compose]")
+	case "swarm":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("13")).Render("[swarm]")
+	case "k8s":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Render("[k8s]")
+	default:
+		return dimStyle.Render("[standalone]")
+	}
+}
+
+// dockerStackHealthBadge returns a colored health badge for a stack.
+func dockerStackHealthBadge(score int) string {
+	if score >= 80 {
+		return okStyle.Render(fmt.Sprintf("H:%d", score))
+	} else if score >= 50 {
+		return warnStyle.Render(fmt.Sprintf("H:%d", score))
+	}
+	return critStyle.Render(fmt.Sprintf("H:%d", score))
+}
+
+// dockerOrchBadge renders the orchestration type.
+func dockerOrchBadge(orch string) string {
+	switch orch {
+	case "compose":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Render("compose")
+	case "swarm":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("13")).Render("swarm")
+	case "k8s":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Render("k8s")
+	case "mixed":
+		return warnStyle.Render("mixed")
+	default:
+		return dimStyle.Render("standalone")
+	}
+}
+
+// dockerColorNonZero colors non-zero values as warnings.
+func dockerColorNonZero(s string) string {
+	if s != "" && s != "0" {
+		return warnStyle.Render(s)
+	}
+	return dimStyle.Render(s)
+}
+
+// truncStr truncates a string to maxLen with ellipsis.
+func truncStr(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	if maxLen < 4 {
+		return s[:maxLen]
+	}
+	return s[:maxLen-3] + "..."
+}
+
+// renderDockerFlatContainers is a fallback for when stacks aren't available.
+func renderDockerFlatContainers(app model.AppInstance, iw int) string {
+	var sb strings.Builder
+	sb.WriteString("  " + titleStyle.Render("CONTAINERS") + "\n")
+	sb.WriteString(boxTop(iw) + "\n")
+	for _, c := range app.Containers {
+		name := c.Name
+		if len(name) > 30 {
+			name = name[:27] + "..."
+		}
+		stateStr := dockerContainerStateStr(c)
+		row := fmt.Sprintf(" %s  %s  CPU:%s  Mem:%s",
+			styledPad(valueStyle.Render(name), 30),
+			styledPad(stateStr, 10),
+			valueStyle.Render(fmt.Sprintf("%.1f%%", c.CPUPct)),
+			valueStyle.Render(appFmtBytesShort(c.MemUsedBytes)))
+		sb.WriteString(boxRow(row, iw) + "\n")
+	}
+	sb.WriteString(boxBot(iw) + "\n")
 	return sb.String()
 }
 

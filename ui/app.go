@@ -180,8 +180,11 @@ type Model struct {
 	probeAutoExpanded    bool      // auto-expand done after probe completes
 
 	// Apps page
-	appsSelectedIdx int  // cursor in app list
-	appsDetailMode  bool // true = drill-down detail view
+	appsSelectedIdx      int    // cursor in app list
+	appsDetailMode       bool   // true = drill-down detail view
+	dockerStackCursor    int    // cursor in stack list (detail mode)
+	dockerStackExpanded  []bool // which stacks are expanded
+	dockerContainerIdx   int    // selected container within expanded stack
 
 	// Network page collapsible sections
 	netSectionCursor   int      // 0-5: highlighted section
@@ -482,6 +485,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.page == PageApps && m.appsDetailMode {
 				m.appsDetailMode = false
 				m.scroll = 0
+				m.dockerStackCursor = 0
+				m.dockerStackExpanded = nil
+				m.dockerContainerIdx = 0
 			} else {
 				m.page = PageOverview
 				m.scroll = 0
@@ -490,6 +496,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "j", "down":
 			if m.page == PageNetwork {
 				m.scroll++
+			} else if m.page == PageApps && m.appsDetailMode {
+				// Navigate stacks in docker detail
+				if m.snap != nil && m.appsSelectedIdx < len(m.snap.Global.Apps.Instances) {
+					app := m.snap.Global.Apps.Instances[m.appsSelectedIdx]
+					if app.AppType == "docker" && len(app.Stacks) > 0 {
+						if m.dockerStackCursor < len(app.Stacks)-1 {
+							m.dockerStackCursor++
+							m.dockerContainerIdx = 0
+						}
+					} else {
+						m.scroll++
+					}
+				}
 			} else if m.page == PageApps && !m.appsDetailMode {
 				if m.snap != nil && len(m.snap.Global.Apps.Instances) > 0 {
 					m.appsSelectedIdx = (m.appsSelectedIdx + 1) % len(m.snap.Global.Apps.Instances)
@@ -515,13 +534,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.scroll > 0 {
 					m.scroll--
 				}
+			} else if m.page == PageApps && m.appsDetailMode {
+				if m.snap != nil && m.appsSelectedIdx < len(m.snap.Global.Apps.Instances) {
+					app := m.snap.Global.Apps.Instances[m.appsSelectedIdx]
+					if app.AppType == "docker" && len(app.Stacks) > 0 {
+						if m.dockerStackCursor > 0 {
+							m.dockerStackCursor--
+							m.dockerContainerIdx = 0
+						}
+					} else if m.scroll > 0 {
+						m.scroll--
+					}
+				}
 			} else if m.page == PageApps && !m.appsDetailMode {
 				if m.snap != nil && len(m.snap.Global.Apps.Instances) > 0 {
 					m.appsSelectedIdx = (m.appsSelectedIdx + len(m.snap.Global.Apps.Instances) - 1) % len(m.snap.Global.Apps.Instances)
-				}
-			} else if m.page == PageApps && m.appsDetailMode {
-				if m.scroll > 0 {
-					m.scroll--
 				}
 			} else if m.page == PageCgroups {
 				if m.cgSelected > 0 {
@@ -570,6 +597,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.snap != nil && m.appsSelectedIdx < len(m.snap.Global.Apps.Instances) {
 					m.appsDetailMode = true
 					m.scroll = 0
+					app := m.snap.Global.Apps.Instances[m.appsSelectedIdx]
+					if app.AppType == "docker" {
+						m.dockerStackCursor = 0
+						m.dockerContainerIdx = 0
+						m.dockerStackExpanded = make([]bool, len(app.Stacks))
+						// Auto-expand first stack
+						if len(app.Stacks) > 0 {
+							m.dockerStackExpanded[0] = true
+						}
+					}
+				}
+				return m, nil
+			}
+			// Docker detail: expand/collapse stack
+			if m.page == PageApps && m.appsDetailMode {
+				if m.snap != nil && m.appsSelectedIdx < len(m.snap.Global.Apps.Instances) {
+					app := m.snap.Global.Apps.Instances[m.appsSelectedIdx]
+					if app.AppType == "docker" && m.dockerStackCursor < len(m.dockerStackExpanded) {
+						m.dockerStackExpanded[m.dockerStackCursor] = !m.dockerStackExpanded[m.dockerStackCursor]
+						m.dockerContainerIdx = 0
+					}
 				}
 				return m, nil
 			}
@@ -709,7 +757,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.showExplain = !m.showExplain
 			}
 		case "A":
-			if m.page == PageNetwork {
+			if m.page == PageApps && m.appsDetailMode && m.dockerStackExpanded != nil {
+				for i := range m.dockerStackExpanded {
+					m.dockerStackExpanded[i] = true
+				}
+			} else if m.page == PageNetwork {
 				for i := range m.netSectionExpanded {
 					m.netSectionExpanded[i] = true
 				}
@@ -742,7 +794,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.saveMsgTime = time.Now()
 			}
 		case "C":
-			if m.page == PageNetwork {
+			if m.page == PageApps && m.appsDetailMode && m.dockerStackExpanded != nil {
+				for i := range m.dockerStackExpanded {
+					m.dockerStackExpanded[i] = false
+				}
+			} else if m.page == PageNetwork {
 				for i := range m.netSectionExpanded {
 					m.netSectionExpanded[i] = false
 				}
@@ -1048,7 +1104,9 @@ func (m Model) View() string {
 		case PageProxmox:
 			content = renderProxmoxPage(m.snap, m.rates, m.result, smartDisks, m.probeManager, renderW, m.height)
 		case PageApps:
-			content = renderAppsPage(m.snap, m.appsSelectedIdx, m.appsDetailMode, renderW, m.height)
+			content = renderAppsPage(m.snap, m.appsSelectedIdx, m.appsDetailMode,
+				m.dockerStackCursor, m.dockerStackExpanded, m.dockerContainerIdx,
+				renderW, m.height)
 		}
 	}
 
