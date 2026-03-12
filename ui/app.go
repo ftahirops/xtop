@@ -497,18 +497,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.page == PageNetwork {
 				m.scroll++
 			} else if m.page == PageApps && m.appsDetailMode {
-				// Navigate stacks in docker detail
-				if m.snap != nil && m.appsSelectedIdx < len(m.snap.Global.Apps.Instances) {
-					app := m.snap.Global.Apps.Instances[m.appsSelectedIdx]
-					if app.AppType == "docker" && len(app.Stacks) > 0 {
-						if m.dockerStackCursor < len(app.Stacks)-1 {
-							m.dockerStackCursor++
-							m.dockerContainerIdx = 0
-						}
-					} else {
-						m.scroll++
-					}
-				}
+				m.scroll++
 			} else if m.page == PageApps && !m.appsDetailMode {
 				if m.snap != nil && len(m.snap.Global.Apps.Instances) > 0 {
 					m.appsSelectedIdx = (m.appsSelectedIdx + 1) % len(m.snap.Global.Apps.Instances)
@@ -535,16 +524,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.scroll--
 				}
 			} else if m.page == PageApps && m.appsDetailMode {
-				if m.snap != nil && m.appsSelectedIdx < len(m.snap.Global.Apps.Instances) {
-					app := m.snap.Global.Apps.Instances[m.appsSelectedIdx]
-					if app.AppType == "docker" && len(app.Stacks) > 0 {
-						if m.dockerStackCursor > 0 {
-							m.dockerStackCursor--
-							m.dockerContainerIdx = 0
-						}
-					} else if m.scroll > 0 {
-						m.scroll--
-					}
+				if m.scroll > 0 {
+					m.scroll--
 				}
 			} else if m.page == PageApps && !m.appsDetailMode {
 				if m.snap != nil && len(m.snap.Global.Apps.Instances) > 0 {
@@ -694,6 +675,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "tab":
 			if m.explainPanelOpen {
 				m.explainFocused = !m.explainFocused
+			} else if m.page == PageApps && m.appsDetailMode && m.dockerStackExpanded != nil {
+				if len(m.dockerStackExpanded) > 0 {
+					m.dockerStackCursor = (m.dockerStackCursor + 1) % len(m.dockerStackExpanded)
+				}
 			} else if m.page == PageApps && !m.appsDetailMode {
 				if m.snap != nil && len(m.snap.Global.Apps.Instances) > 0 {
 					m.appsSelectedIdx = (m.appsSelectedIdx + 1) % len(m.snap.Global.Apps.Instances)
@@ -710,6 +695,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "shift+tab":
 			if m.explainPanelOpen {
 				m.explainFocused = !m.explainFocused
+			} else if m.page == PageApps && m.appsDetailMode && m.dockerStackExpanded != nil {
+				if len(m.dockerStackExpanded) > 0 {
+					m.dockerStackCursor = (m.dockerStackCursor + len(m.dockerStackExpanded) - 1) % len(m.dockerStackExpanded)
+				}
 			} else if m.page == PageNetwork && !m.netFocusMode {
 				m.netSectionCursor = (m.netSectionCursor + 5) % 6
 			} else if m.page == PageProbe && m.probeManager != nil && m.probeManager.State() == engine.ProbeDone {

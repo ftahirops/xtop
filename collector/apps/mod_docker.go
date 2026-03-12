@@ -399,11 +399,11 @@ func (m *dockerModule) Collect(app *DetectedApp, _ *AppSecrets) model.AppInstanc
 		if st.HealthScore < 0 {
 			st.HealthScore = 0
 		}
-		// Get compose working dir from first container with it
+		// Get compose working dir and file from first container with it
 		for _, c := range st.Containers {
 			if c.StackType == "compose" {
-				// Working dir comes from inspect labels
-				st.WorkingDir = c.Command // will be overridden below
+				st.WorkingDir = c.Command    // temporarily stored working dir
+				st.ComposeFile = c.Entrypoint // temporarily stored compose file
 				break
 			}
 		}

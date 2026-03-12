@@ -3201,38 +3201,25 @@ func renderDockerDetail(app model.AppInstance, stackCursor int, stackExpanded []
 				sb.WriteString(boxRow(row, iw) + "\n")
 			}
 
-			// Container details: ports, mounts, networks, limits, issues
+			// Published ports (compact, one line)
+			var pubPorts []string
 			for _, c := range stack.Containers {
-				details := dockerContainerDetails(c)
-				if len(details) > 0 {
-					sb.WriteString(boxMid(iw) + "\n")
-					sb.WriteString(boxRow("  "+valueStyle.Render(c.Name)+
-						"  "+dimStyle.Render(c.Status), iw) + "\n")
-					for _, d := range details {
-						sb.WriteString(boxRow(d, iw) + "\n")
+				for _, p := range c.Ports {
+					if p.HostPort > 0 {
+						pubPorts = append(pubPorts, fmt.Sprintf("%d→%d", p.HostPort, p.ContainerPort))
 					}
 				}
 			}
+			if len(pubPorts) > 0 {
+				sb.WriteString(boxMid(iw) + "\n")
+				sb.WriteString(boxRow("  "+dimStyle.Render("Ports: ")+valueStyle.Render(strings.Join(pubPorts, "  ")), iw) + "\n")
+			}
 
-			// Stack issues
+			// Stack issues (diagnostics only)
 			if len(stack.Issues) > 0 {
 				sb.WriteString(boxMid(iw) + "\n")
-				sb.WriteString(boxRow("  "+warnStyle.Render("ISSUES"), iw) + "\n")
 				for _, issue := range stack.Issues {
 					sb.WriteString(boxRow("  "+critStyle.Render("\u25cf")+" "+valueStyle.Render(issue), iw) + "\n")
-				}
-			}
-
-			// Stack networks
-			if len(stack.Networks) > 0 {
-				sb.WriteString(boxMid(iw) + "\n")
-				sb.WriteString(boxRow("  "+dimStyle.Render("Networks:"), iw) + "\n")
-				for _, n := range stack.Networks {
-					net := fmt.Sprintf("    %s  drv=%s", valueStyle.Render(n.Name), dimStyle.Render(n.Driver))
-					if n.Subnet != "" {
-						net += "  " + dimStyle.Render(n.Subnet)
-					}
-					sb.WriteString(boxRow(net, iw) + "\n")
 				}
 			}
 
@@ -3243,7 +3230,7 @@ func renderDockerDetail(app model.AppInstance, stackCursor int, stackExpanded []
 		sb.WriteString(renderDockerFlatContainers(app, iw))
 	}
 
-	sb.WriteString(pageFooter("j/k:Navigate  Enter:Expand  A:All  C:Collapse  b:Back  Y:Apps"))
+	sb.WriteString(pageFooter("j/k:Scroll  Tab:Section  Enter:Expand  A:All  C:Collapse  b:Back"))
 	return sb.String()
 }
 
@@ -3269,84 +3256,6 @@ func dockerContainerStateStr(c model.AppDockerContainer) string {
 	}
 }
 
-// dockerContainerDetails returns detail lines for a container's inspect data.
-func dockerContainerDetails(c model.AppDockerContainer) []string {
-	var lines []string
-
-	// Ports
-	if len(c.Ports) > 0 {
-		var ports []string
-		for _, p := range c.Ports {
-			if p.HostPort > 0 {
-				ports = append(ports, fmt.Sprintf("%s:%d→%d/%s",
-					p.HostIP, p.HostPort, p.ContainerPort, p.Protocol))
-			} else {
-				ports = append(ports, fmt.Sprintf("%d/%s", p.ContainerPort, p.Protocol))
-			}
-		}
-		lines = append(lines, "    "+dimStyle.Render("Ports: ")+valueStyle.Render(strings.Join(ports, ", ")))
-	}
-
-	// Mounts (show first 3)
-	if len(c.Mounts) > 0 {
-		for i, m := range c.Mounts {
-			if i >= 3 {
-				lines = append(lines, fmt.Sprintf("    "+dimStyle.Render("  ... +%d more mounts"), len(c.Mounts)-3))
-				break
-			}
-			ro := ""
-			if m.ReadOnly {
-				ro = dimStyle.Render(" (ro)")
-			}
-			lines = append(lines, fmt.Sprintf("    "+dimStyle.Render("Mount: ")+"%s → %s%s",
-				dimStyle.Render(truncStr(m.Source, 30)),
-				valueStyle.Render(truncStr(m.Target, 25)), ro))
-		}
-	}
-
-	// Networks
-	if len(c.Networks) > 0 {
-		var nets []string
-		for _, n := range c.Networks {
-			nets = append(nets, fmt.Sprintf("%s(%s)", n.Name, n.IP))
-		}
-		lines = append(lines, "    "+dimStyle.Render("Nets: ")+dimStyle.Render(strings.Join(nets, ", ")))
-	}
-
-	// Resource limits
-	var limits []string
-	if c.MemLimit > 0 {
-		limits = append(limits, fmt.Sprintf("mem=%s", appFmtBytesShort(float64(c.MemLimit))))
-	}
-	if c.CPUQuota > 0 {
-		limits = append(limits, fmt.Sprintf("cpu=%.1f cores", c.CPUQuota))
-	}
-	if len(limits) > 0 {
-		lines = append(lines, "    "+dimStyle.Render("Limits: ")+valueStyle.Render(strings.Join(limits, "  ")))
-	}
-
-	// Flags: restart policy, privileged, no healthcheck
-	var flags []string
-	if c.RestartPolicy != "" && c.RestartPolicy != "no" {
-		flags = append(flags, "restart="+c.RestartPolicy)
-	} else if c.RestartPolicy == "" || c.RestartPolicy == "no" {
-		flags = append(flags, warnStyle.Render("no-restart"))
-	}
-	if c.Privileged {
-		flags = append(flags, critStyle.Render("PRIVILEGED"))
-	}
-	if !c.HasHealthChk {
-		flags = append(flags, dimStyle.Render("no-healthcheck"))
-	}
-	if c.User != "" {
-		flags = append(flags, "user="+c.User)
-	}
-	if len(flags) > 0 {
-		lines = append(lines, "    "+dimStyle.Render("Flags: ")+strings.Join(flags, "  "))
-	}
-
-	return lines
-}
 
 // dockerStackBadge returns a colored badge for stack type.
 func dockerStackBadge(stype string) string {

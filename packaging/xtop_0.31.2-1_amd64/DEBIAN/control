@@ -1,0 +1,52 @@
+Package: xtop
+Version: 0.31.2-1
+Section: admin
+Priority: optional
+Architecture: amd64
+Depends: libc6
+Installed-Size: 17128
+Maintainer: Farhan Tahir <farhan.003@gmail.com>
+Homepage: https://github.com/ftahirops/xtop
+Description: Incident-first root-cause analysis console for Linux
+ xtop is a terminal-based system monitor that goes beyond traditional
+ tools like htop by correlating signals across CPU, memory, IO, network,
+ and cgroups to produce ranked root-cause hypotheses with evidence and
+ confidence scores.
+ .
+ Instead of showing raw metrics, xtop answers: What is the bottleneck?
+ Who is causing it? How confident are we? What should I do?
+ .
+ Key features:
+  - CLI subcommands: xtop why, xtop top, xtop proc for instant diagnosis
+  - Impact scoring: composite per-process impact (CPU/PSI/IO/Mem/Net weighted)
+  - Deep per-PID analysis: memory, IO, FDs, network connections
+  - Local daemon API: Unix socket for instant subcommand queries
+  - CPU flamegraphs: xtop flame <pid> with ASCII renderer
+  - Safe autopilot: CPU throttle, process isolation, IO nice with auto-rollback
+  - SLO policies: define and monitor service level objectives
+  - Application identity intelligence: resolve java/python/node to real app names
+  - Modular language runtime detection: JVM, .NET, Python, Node.js, Go
+  - JVM intelligence: hsperfdata parsing for GC, heap, threads, class counts
+  - .NET Core on Linux: EventPipe diagnostics (GC, threadpool, allocations)
+  - Cross-signal correlation: cause-effect detection across domains
+  - Multi-resolution ring buffers: 1s + 10s + 60s aggregation
+  - SQLite incident persistence with fingerprinting and recurrence tracking
+  - eBPF network security intelligence: SYN flood, port scan, DNS tunneling, C2 beacon detection
+  - PSI (Pressure Stall Information) pressure tracking
+  - Cgroup-aware throttling and limit detection
+  - Evidence-based RCA with confidence scoring
+  - eBPF probes: off-CPU, IO latency, lock contention, TCP retransmits
+  - Sentinel probes: always-on BPF monitoring (drops, resets, OOM, throttle)
+  - Watchdog: auto-triggered deep probes on RCA bottleneck detection
+  - DiskGuard: filesystem space monitor with auto-contain (SIGSTOP/SIGCONT)
+  - Causal chain reconstruction and anomaly onset tracking
+  - 15 auto-detected application modules with deep health diagnostics
+  - Full RCA for MySQL, PostgreSQL, Redis, Elasticsearch, MongoDB
+  - Full RCA for Nginx, Apache, HAProxy, PHP-FPM, RabbitMQ
+  - Kafka, Caddy, Traefik, Memcached, Docker diagnostics
+  - Advanced RCA: Gregg USE method, PSI acceleration, slab leak, IRQ imbalance detection
+  - Statistical RCA intelligence: EWMA baselines, z-score anomaly, Pearson correlation
+  - Holt double exponential trend forecasting, seasonal hour-of-day awareness
+  - Per-process behavior profiling with deviation detection
+  - Google SRE Golden Signal approximation from /proc data
+  - Causal strength learning: observed vs hardcoded rule weight blending
