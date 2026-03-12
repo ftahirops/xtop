@@ -134,6 +134,21 @@ var predefinedPairs = []crossSignalPair{
 	{"sec.dns.tunnel", "sec.dns.anomaly", "DNS tunneling causing elevated query anomaly"},
 	{"sec.beacon", "sec.outbound.exfil", "C2 beacon associated with data exfiltration"},
 
+	// Memory extended
+	{"mem.psi.acceleration", "mem.reclaim.direct", "Sudden memory pressure spike triggering direct reclaim"},
+	{"mem.slab.leak", "mem.available.low", "Unreclaimable slab growth consuming available memory"},
+	{"mem.alloc.stall", "mem.psi", "Allocation stalls adding to memory PSI pressure"},
+
+	// CPU extended
+	{"cpu.iowait", "io.disk.latency", "CPU IOWait driven by elevated disk latency"},
+	{"cpu.irq.imbalance", "net.drops", "IRQ imbalance on single CPU causing packet drops"},
+
+	// Network extended
+	{"net.drops.rx", "net.tcp.retrans", "Inbound drops triggering TCP retransmits"},
+	{"net.tcp.synsent", "net.tcp.attemptfails", "SYN_SENT accumulation correlating with connection failures"},
+	{"net.tcp.timewait", "net.ephemeral", "TIME_WAIT churn consuming ephemeral ports"},
+	{"net.ephemeral", "net.tcp.attemptfails", "Ephemeral port exhaustion preventing new connections"},
+
 	// Proxmox VM domain
 	{"pve.vm.throttle", "cpu.runqueue", "VM CPU throttling driving host run queue saturation"},
 	{"pve.vm.oom", "mem.available.low", "VM OOM kills depleting host available memory"},
@@ -254,6 +269,23 @@ func shortLabel(id string) string {
 		"net.softirq":          "softirq",
 		"net.tcp.state":        "tcp-state",
 		"net.closewait":        "CLOSE_WAIT",
+		"net.drops.rx":         "RX drops",
+		"net.drops.tx":         "TX drops",
+		"net.tcp.timewait":     "TIME_WAIT",
+		"net.tcp.synsent":      "SYN_SENT",
+		"net.ephemeral":        "eph-ports",
+		"net.udp.errors":       "UDP errors",
+		"net.tcp.resets":       "TCP RSTs",
+		"net.tcp.attemptfails": "conn-fails",
+		"cpu.iowait":           "IOWait",
+		"cpu.irq.imbalance":    "IRQ imbalance",
+		"mem.psi.acceleration": "mem PSI spike",
+		"mem.slab.leak":        "slab leak",
+		"mem.alloc.stall":      "alloc-stall",
+		"mem.swap.in":          "swap-in",
+		"mem.swap.out":         "swap-out",
+		"io.disk.queuedepth":   "disk-queue",
+		"io.inode.pressure":    "inode-pressure",
 		"net.sentinel.drops":            "BPF drops",
 		"net.sentinel.resets":           "BPF resets",
 		"net.conntrack.drops":           "ct-drops",

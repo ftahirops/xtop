@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/ftahirops/xtop/model"
 )
@@ -105,7 +106,7 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History) 
 				}
 			}
 		}
-		result.Health = hist.alert.Update(result.Health, hasCritEvidence)
+		result.Health = hist.alert.Update(result.Health, result.PrimaryScore, hasCritEvidence)
 	}
 
 	// Propagate system identity
@@ -175,6 +176,9 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History) 
 	// Blame attribution: identify top offenders
 	result.Blame = ComputeBlame(result, curr, rates)
 
+	// Statistical intelligence
+	runStatisticalAnalysis(result, curr, rates, hist)
+
 	return result
 }
 
@@ -197,16 +201,26 @@ func analyzeIO(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEntry {
 		}
 	}
 
+	// Brendan Gregg USE method: find worst device by IOPS-weighted latency
+	// Ignore idle devices (< 10 IOPS) — USB sticks, unused LUNs produce noise
 	var worstAwait, worstUtil float64
 	var worstDev string
+	var worstQueueDepth uint64
+	var worstQueueDev string
 	if rates != nil {
 		for _, d := range rates.DiskRates {
-			if d.AvgAwaitMs > worstAwait {
+			totalIOPS := d.ReadIOPS + d.WriteIOPS
+			// Only consider devices with meaningful IO activity
+			if totalIOPS >= 10 && d.AvgAwaitMs > worstAwait {
 				worstAwait = d.AvgAwaitMs
 				worstDev = d.Name
 			}
-			if d.UtilPct > worstUtil {
+			if totalIOPS >= 10 && d.UtilPct > worstUtil {
 				worstUtil = d.UtilPct
+			}
+			if d.QueueDepth > worstQueueDepth {
+				worstQueueDepth = d.QueueDepth
+				worstQueueDev = d.Name
 			}
 		}
 	}
@@ -218,14 +232,27 @@ func analyzeIO(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEntry {
 		dirtyPct = float64(mem.Dirty) / float64(mem.Total) * 100
 	}
 
-	// Filesystem space
+	// Filesystem space + inode pressure
 	var worstFreePct float64 = 100
 	var worstMount string
+	var worstGrowthBPS float64
+	var worstInodePct float64
+	var worstInodeMount string
 	if rates != nil {
 		for _, mr := range rates.MountRates {
 			if mr.FreePct < worstFreePct {
 				worstFreePct = mr.FreePct
 				worstMount = mr.MountPoint
+				worstGrowthBPS = mr.GrowthBytesPerSec
+			}
+		}
+	}
+	for _, m := range curr.Global.Mounts {
+		if m.TotalInodes > 0 {
+			inodePct := float64(m.UsedInodes) / float64(m.TotalInodes) * 100
+			if inodePct > worstInodePct {
+				worstInodePct = inodePct
+				worstInodeMount = m.MountPoint
 			}
 		}
 	}
@@ -244,24 +271,48 @@ func analyzeIO(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEntry {
 		nil, nil))
 	w, c = threshold("io.disk.latency", 20, 80)
 	r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("io.disk.latency", model.DomainIO,
-		worstAwait, w, c, false, 0.7,
+		worstAwait, w, c, true, 0.8, // measured=true: from /proc/diskstats
 		fmt.Sprintf("%s await=%.0fms", worstDev, worstAwait), "1s",
 		nil, map[string]string{"device": worstDev}))
 	w, c = threshold("io.disk.util", 70, 95)
 	r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("io.disk.util", model.DomainIO,
-		worstUtil, w, c, false, 0.7,
+		worstUtil, w, c, true, 0.8, // measured=true: from /proc/diskstats
 		fmt.Sprintf("%s util=%.0f%%", worstDev, worstUtil), "1s",
 		nil, map[string]string{"device": worstDev}))
+
+	// Queue depth: saturation indicator (Gregg USE: Saturation for disk)
+	w, c = threshold("io.disk.queuedepth", 4, 16)
+	r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("io.disk.queuedepth", model.DomainIO,
+		float64(worstQueueDepth), w, c, true, 0.7,
+		fmt.Sprintf("%s queue=%d", worstQueueDev, worstQueueDepth), "1s",
+		nil, map[string]string{"device": worstQueueDev}))
+
 	w, c = threshold("io.writeback", 5, 20)
 	r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("io.writeback", model.DomainIO,
 		dirtyPct, w, c, false, 0.6,
 		fmt.Sprintf("dirty pages=%.1f%% of RAM", dirtyPct), "1s",
 		nil, nil))
+
+	// Filesystem full: gate by growth rate — static full disk with no writes is not urgent
+	fsUsedPct := 100 - worstFreePct
+	fsConf := 0.9
+	if fsUsedPct < 95 && worstGrowthBPS <= 0 {
+		fsConf = 0.4 // dampen confidence when not actively growing
+	}
 	w, c = threshold("io.fsfull", 85, 95)
 	r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("io.fsfull", model.DomainIO,
-		100-worstFreePct, w, c, true, 0.9,
-		fmt.Sprintf("%s %.0f%% used", worstMount, 100-worstFreePct), "1s",
+		fsUsedPct, w, c, true, fsConf,
+		fmt.Sprintf("%s %.0f%% used", worstMount, fsUsedPct), "1s",
 		nil, map[string]string{"mount": worstMount}))
+
+	// Inode exhaustion: can cause "no space left" even with free disk space
+	if worstInodePct > 0 {
+		w, c = threshold("io.inode.pressure", 80, 95)
+		r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("io.inode.pressure", model.DomainIO,
+			worstInodePct, w, c, true, 0.8,
+			fmt.Sprintf("%s inodes=%.0f%% used", worstInodeMount, worstInodePct), "1s",
+			nil, map[string]string{"mount": worstInodeMount}))
+	}
 
 	// v2 switchover: weighted scoring replaces clamp-based
 	v2Score := weightedDomainScore(r.EvidenceV2)
@@ -333,16 +384,24 @@ func analyzeMemory(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEnt
 	}
 	availPct := float64(mem.Available) / float64(mem.Total) * 100
 
-	var swapIOMBs, directPct, majFaultRate, directReclaimRate float64
+	var swapInRate, swapOutRate, directPct, majFaultRate, directReclaimRate, allocStallRate float64
+	var slabUnreclaimDelta int64
 	if rates != nil {
-		swapIOMBs = rates.SwapInRate + rates.SwapOutRate
+		swapInRate = rates.SwapInRate
+		swapOutRate = rates.SwapOutRate
 		totalScan := rates.DirectReclaimRate + rates.KswapdRate
 		if totalScan > 0 {
 			directPct = rates.DirectReclaimRate / totalScan
 		}
 		majFaultRate = rates.MajFaultRate
 		directReclaimRate = rates.DirectReclaimRate
+		allocStallRate = rates.AllocStallRate
+		slabUnreclaimDelta = rates.SUnreclaimDelta
 	}
+
+	// Kernel slab metrics (Gregg: check slab for kernel memory leaks)
+	slabUnreclaimMB := float64(mem.SUnreclaim) / (1024 * 1024)
+	slabPctOfTotal := float64(mem.SUnreclaim) / float64(mem.Total) * 100
 
 	// --- v2 evidence ---
 	usedPct := 100 - availPct
@@ -355,10 +414,47 @@ func analyzeMemory(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEnt
 	oomDetected := oomDelta > 0
 	oomVal := float64(oomDelta)
 
+	// PSI acceleration: sudden onset detection (Facebook TSA method)
+	// If avg10 >> avg300, pressure is spiking rapidly
+	memPSIAvg10 := curr.Global.PSI.Memory.Some.Avg10
+	memPSIAvg300 := curr.Global.PSI.Memory.Some.Avg300
+	psiAcceleration := false
+	if memPSIAvg300 > 0.5 && memPSIAvg10 > 2*memPSIAvg300 {
+		psiAcceleration = true
+	}
+
+	// Dynamic available threshold: scale for large-memory systems
+	// On 256GB box, 15% free = 38GB (fine). Use min(85%, absoluteFloor)
+	// Google SRE: "alert on symptoms not causes" — use absolute floor
+	totalGB := float64(mem.Total) / (1024 * 1024 * 1024)
+	availWarn := float64(85)
+	availCrit := float64(95)
+	if totalGB > 32 {
+		// On large systems, 500MB free is the real danger zone
+		absFloor := 500.0 / (totalGB * 1024) * 100 // 500MB as % of total
+		if absFloor > 5 {
+			absFloor = 5
+		}
+		dynCrit := 100 - absFloor
+		if dynCrit < availCrit {
+			availCrit = dynCrit
+		}
+		dynWarn := dynCrit - 5
+		if dynWarn < availWarn {
+			availWarn = dynWarn
+		}
+	}
+
+	// Direct reclaim confidence: dampen when PSI shows no pressure
+	// (Gregg: direct reclaim from cache pressure is normal, only meaningful with PSI)
+	reclaimConf := 0.7
+	if memSome < 0.01 {
+		reclaimConf = 0.35 // much less confident without PSI confirmation
+	}
+
 	w, c := threshold("mem.psi", 5, 20)
-	w2, c2 := threshold("mem.available.low", 85, 95)
+	w2, c2 := threshold("mem.available.low", availWarn, availCrit)
 	w3, c3 := threshold("mem.reclaim.direct", 10, 500)
-	w4, c4 := threshold("mem.swap.activity", 2, 50)
 	w5, c5 := threshold("mem.major.faults", 10, 200)
 	w6, c6 := threshold("mem.oom.kills", 1, 1)
 	r.EvidenceV2 = append(r.EvidenceV2,
@@ -371,22 +467,51 @@ func analyzeMemory(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEnt
 			fmt.Sprintf("MemAvailable=%.1f%% (%s free)", availPct, formatB(mem.Available)), "1s",
 			nil, nil),
 		emitEvidence("mem.reclaim.direct", model.DomainMemory,
-			directReclaimRate, w3, c3, false, 0.7,
+			directReclaimRate, w3, c3, true, reclaimConf, // measured from vmstat, confidence gated by PSI
 			fmt.Sprintf("direct reclaim=%.0f pages/s", directReclaimRate), "1s",
 			nil, nil),
-		emitEvidence("mem.swap.activity", model.DomainMemory,
-			swapIOMBs, w4, c4, true, 0.8,
-			fmt.Sprintf("swap IO=%.1f MB/s", swapIOMBs), "1s",
+		// Split swap: swap-in is worse than swap-out (Gregg: swap-in = demand paging failure)
+		emitEvidence("mem.swap.in", model.DomainMemory,
+			swapInRate, 1, 30, true, 0.85,
+			fmt.Sprintf("swap in=%.1f MB/s", swapInRate), "1s",
+			nil, nil),
+		emitEvidence("mem.swap.out", model.DomainMemory,
+			swapOutRate, 2, 50, true, 0.7,
+			fmt.Sprintf("swap out=%.1f MB/s", swapOutRate), "1s",
 			nil, nil),
 		emitEvidence("mem.major.faults", model.DomainMemory,
-			majFaultRate, w5, c5, false, 0.7,
+			majFaultRate, w5, c5, true, 0.7, // measured from vmstat
 			fmt.Sprintf("major faults=%.0f/s", majFaultRate), "1s",
 			nil, nil),
 		emitEvidence("mem.oom.kills", model.DomainMemory,
 			oomVal, w6, c6, true, 1.0,
-			fmt.Sprintf("OOM kills=%d in last 1s", oomDelta), "1s",
+			fmt.Sprintf("OOM kills=%d in last tick", oomDelta), "1s",
 			nil, nil),
 	)
+
+	// PSI acceleration: rapid onset detection (Meta TSA: detect rate-of-change)
+	if psiAcceleration {
+		r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("mem.psi.acceleration", model.DomainMemory,
+			memPSIAvg10, memPSIAvg300, memPSIAvg300*3, true, 0.85,
+			fmt.Sprintf("MEM PSI spike: avg10=%.1f%% vs avg300=%.1f%% (%.1fx)", memPSIAvg10, memPSIAvg300, memPSIAvg10/memPSIAvg300), "avg10",
+			nil, nil))
+	}
+
+	// Kernel slab leak: unreclaimable slab growing (Gregg: check slabtop for kernel leaks)
+	if slabPctOfTotal > 5 && slabUnreclaimDelta > 0 {
+		r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("mem.slab.leak", model.DomainMemory,
+			slabPctOfTotal, 5, 15, false, 0.7,
+			fmt.Sprintf("slab unreclaimable=%.0fMB (%.1f%% of RAM, growing)", slabUnreclaimMB, slabPctOfTotal), "1s",
+			nil, nil))
+	}
+
+	// Allocation stalls: processes blocked in page allocator (Gregg: allocstall = direct evidence)
+	if allocStallRate > 0 {
+		r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("mem.alloc.stall", model.DomainMemory,
+			allocStallRate, 1, 100, true, 0.85,
+			fmt.Sprintf("alloc stalls=%.0f/s", allocStallRate), "1s",
+			nil, nil))
+	}
 
 	// .NET allocation storm evidence: high alloc rate + threadpool queuing
 	for _, dn := range curr.Global.DotNet {
@@ -478,20 +603,33 @@ func analyzeMemory(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEnt
 	if memFull > 0.01 {
 		r.Evidence = append(r.Evidence, fmt.Sprintf("MEM PSI full=%.1f%%", memFull*100))
 	}
+	if psiAcceleration {
+		r.Evidence = append(r.Evidence, fmt.Sprintf("PSI spike: avg10=%.1f%% vs avg300=%.1f%%", memPSIAvg10, memPSIAvg300))
+	}
 	if availPct < 15 {
 		r.Evidence = append(r.Evidence, fmt.Sprintf("MemAvailable=%.1f%% (%s)", availPct, formatB(mem.Available)))
 	}
-	if swapIOMBs > 0.1 {
-		r.Evidence = append(r.Evidence, fmt.Sprintf("Swap IO=%.1f MB/s", swapIOMBs))
+	swapIOMBs := swapInRate + swapOutRate
+	if swapInRate > 0.1 {
+		r.Evidence = append(r.Evidence, fmt.Sprintf("Swap in=%.1f MB/s (demand paging)", swapInRate))
+	}
+	if swapOutRate > 0.1 {
+		r.Evidence = append(r.Evidence, fmt.Sprintf("Swap out=%.1f MB/s", swapOutRate))
 	}
 	if directReclaimRate > 0 {
 		r.Evidence = append(r.Evidence, fmt.Sprintf("Direct reclaim=%.0f pages/s (ratio=%.0f%%)", directReclaimRate, directPct*100))
+	}
+	if allocStallRate > 0 {
+		r.Evidence = append(r.Evidence, fmt.Sprintf("Alloc stalls=%.0f/s", allocStallRate))
 	}
 	if majFaultRate > 10 {
 		r.Evidence = append(r.Evidence, fmt.Sprintf("Major faults=%.0f/s", majFaultRate))
 	}
 	if oomDetected {
-		r.Evidence = append(r.Evidence, fmt.Sprintf("OOM kills=%d in last 1s", oomDelta))
+		r.Evidence = append(r.Evidence, fmt.Sprintf("OOM kills=%d in last tick", oomDelta))
+	}
+	if slabPctOfTotal > 5 {
+		r.Evidence = append(r.Evidence, fmt.Sprintf("Slab unreclaimable=%.0fMB (%.1f%%)", slabUnreclaimMB, slabPctOfTotal))
 	}
 
 	// Chain
@@ -502,6 +640,9 @@ func analyzeMemory(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEnt
 		}
 		if directReclaimRate > 0 {
 			r.Chain = append(r.Chain, "Kernel reclaiming pages synchronously")
+		}
+		if allocStallRate > 0 {
+			r.Chain = append(r.Chain, "Allocation stalls blocking processes")
 		}
 		r.Chain = append(r.Chain, "Allocation stall risk")
 	}
@@ -623,10 +764,12 @@ func analyzeCPU(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEntry 
 	if nCPUs == 0 {
 		nCPUs = 1
 	}
-	running := float64(curr.Global.CPU.LoadAvg.Running)
-	rqRatio := running / float64(nCPUs)
+	// Use Load1 for run queue: kernel-smoothed average, not instantaneous procs_running
+	// (Gregg: Load1 is already a 1-minute EWMA, less noise than point-in-time sample)
+	rqRatio := curr.Global.CPU.LoadAvg.Load1 / float64(nCPUs)
+	running := curr.Global.CPU.LoadAvg.Load1 // for display
 
-	var ctxRate, busyPct, stealPct float64
+	var ctxRate, busyPct, stealPct, iowaitPct float64
 	var maxThrottlePct float64
 	var maxThrottleCg string
 
@@ -634,6 +777,7 @@ func analyzeCPU(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEntry 
 		ctxRate = rates.CtxSwitchRate
 		busyPct = rates.CPUBusyPct
 		stealPct = rates.CPUStealPct
+		iowaitPct = rates.CPUIOWaitPct
 		for _, cg := range rates.CgroupRates {
 			if cg.ThrottlePct > maxThrottlePct {
 				maxThrottlePct = cg.ThrottlePct
@@ -643,6 +787,28 @@ func analyzeCPU(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEntry 
 	}
 
 	csPerCore := ctxRate / float64(nCPUs)
+
+	// Per-CPU IRQ imbalance detection (Gregg: check /proc/softirqs per CPU)
+	var irqImbalanceRatio float64
+	if len(curr.Global.CPU.PerCPU) > 1 && rates != nil {
+		var maxSoftIRQ, sumSoftIRQ float64
+		// Approximate per-CPU softIRQ from per-CPU time breakdown
+		for _, cpu := range curr.Global.CPU.PerCPU {
+			cpuTotal := cpu.Total()
+			if cpuTotal == 0 {
+				continue
+			}
+			sirqPct := float64(cpu.SoftIRQ) / float64(cpuTotal) * 100
+			sumSoftIRQ += sirqPct
+			if sirqPct > maxSoftIRQ {
+				maxSoftIRQ = sirqPct
+			}
+		}
+		avgSoftIRQ := sumSoftIRQ / float64(len(curr.Global.CPU.PerCPU))
+		if avgSoftIRQ > 0.1 {
+			irqImbalanceRatio = maxSoftIRQ / avgSoftIRQ
+		}
+	}
 
 	// --- v2 evidence ---
 	w, c := threshold("cpu.psi", 5, 20)
@@ -738,6 +904,34 @@ func analyzeCPU(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEntry 
 				sent.ThrottleRate, 1, 50, true, 0.95,
 				fmt.Sprintf("BPF throttle=%.0f/s (%s)", sent.ThrottleRate, topCg), "1s",
 				nil, nil))
+		}
+	}
+
+	// IOWait evidence: CPU time waiting on IO (cross-domain signal, Gregg USE: Errors for CPU)
+	if iowaitPct > 5 {
+		w6, c6 := threshold("cpu.iowait", 10, 30)
+		r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("cpu.iowait", model.DomainCPU,
+			iowaitPct, w6, c6, true, 0.8,
+			fmt.Sprintf("CPU iowait=%.1f%%", iowaitPct), "1s",
+			nil, nil))
+	}
+
+	// IRQ imbalance: single CPU handling disproportionate softIRQ load (Gregg: check /proc/softirqs)
+	if irqImbalanceRatio > 3 {
+		w7, c7 := threshold("cpu.irq.imbalance", 5, 10)
+		r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("cpu.irq.imbalance", model.DomainCPU,
+			irqImbalanceRatio, w7, c7, true, 0.65,
+			fmt.Sprintf("softIRQ imbalance ratio=%.1fx (one CPU hot)", irqImbalanceRatio), "1s",
+			nil, nil))
+	}
+
+	// Dampen GC pause confidence when run queue is healthy (no CPU contention = GC is not the bottleneck)
+	rqStrength := normalize(rqRatio, 1.0, 2.0)
+	if rqStrength < 0.1 {
+		for i := range r.EvidenceV2 {
+			if r.EvidenceV2[i].ID == "dotnet.gc.pause" || r.EvidenceV2[i].ID == "jvm.gc.pause" {
+				r.EvidenceV2[i].Confidence *= 0.5
+			}
 		}
 	}
 
@@ -864,23 +1058,31 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEn
 	if rates.OutSegRate > 0 {
 		retransRatio = retransRate / rates.OutSegRate * 100
 	}
-	// Composite TCP state: TIME_WAIT + SYN_SENT (CLOSE_WAIT split to net.closewait)
-	tcpStateVal := float64(st.TimeWait)
-	if synScaled := float64(st.SynSent) * 200; synScaled > tcpStateVal {
-		tcpStateVal = synScaled
+
+	// Retrans confidence: dampen when absolute rate is very low (< 5/s is normal background)
+	retransConf := 0.8
+	if retransRate < 5 {
+		retransConf = 0.4
 	}
+
+	// Split RX/TX drops for directional attribution
+	var totalRxDrops, totalTxDrops float64
+	for _, nr := range rates.NetRates {
+		totalRxDrops += nr.RxDropsPS
+		totalTxDrops += nr.TxDropsPS
+	}
+
 	w, c := threshold("net.drops", 1, 100)
 	w2, c2 := threshold("net.tcp.retrans", 1, 5)
 	w3, c3 := threshold("net.conntrack", 70, 95)
 	w4, c4 := threshold("net.softirq", 5, 25)
-	w5, c5 := threshold("net.tcp.state", 3000, 15000)
 	r.EvidenceV2 = append(r.EvidenceV2,
 		emitEvidence("net.drops", model.DomainNetwork,
 			totalDrops, w, c, true, 0.8,
-			fmt.Sprintf("net drops=%.0f/s", totalDrops), "1s",
+			fmt.Sprintf("net drops=%.0f/s (rx=%.0f tx=%.0f)", totalDrops, totalRxDrops, totalTxDrops), "1s",
 			nil, nil),
 		emitEvidence("net.tcp.retrans", model.DomainNetwork,
-			retransRatio, w2, c2, true, 0.8,
+			retransRatio, w2, c2, true, retransConf,
 			fmt.Sprintf("retrans=%.0f/s (%.1f%% ratio)", retransRate, retransRatio), "1s",
 			nil, nil),
 		emitEvidence("net.conntrack", model.DomainNetwork,
@@ -891,11 +1093,75 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEn
 			rates.CPUSoftIRQPct, w4, c4, false, 0.6,
 			fmt.Sprintf("softirq CPU=%.1f%%", rates.CPUSoftIRQPct), "1s",
 			nil, nil),
-		emitEvidence("net.tcp.state", model.DomainNetwork,
-			tcpStateVal, w5, c5, false, 0.6,
-			fmt.Sprintf("TW=%d SYN=%d", st.TimeWait, st.SynSent), "1s",
-			nil, nil),
 	)
+
+	// Split RX/TX drop evidence for directional diagnosis
+	if totalRxDrops > 0.5 {
+		wRx, cRx := threshold("net.drops.rx", 1, 100)
+		r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("net.drops.rx", model.DomainNetwork,
+			totalRxDrops, wRx, cRx, true, 0.85,
+			fmt.Sprintf("RX drops=%.0f/s (inbound buffer overflow)", totalRxDrops), "1s",
+			nil, nil))
+	}
+	if totalTxDrops > 0.5 {
+		wTx, cTx := threshold("net.drops.tx", 1, 50)
+		r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("net.drops.tx", model.DomainNetwork,
+			totalTxDrops, wTx, cTx, true, 0.7,
+			fmt.Sprintf("TX drops=%.0f/s (outbound queue full)", totalTxDrops), "1s",
+			nil, nil))
+	}
+
+	// Split TIME_WAIT and SYN_SENT into separate evidence (different root causes)
+	if st.TimeWait > 500 {
+		wTw, cTw := threshold("net.tcp.timewait", 3000, 15000)
+		r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("net.tcp.timewait", model.DomainNetwork,
+			float64(st.TimeWait), wTw, cTw, true, 0.6,
+			fmt.Sprintf("TIME_WAIT=%d (connection churn)", st.TimeWait), "1s",
+			nil, nil))
+	}
+	if st.SynSent > 5 {
+		wSs, cSs := threshold("net.tcp.synsent", 10, 100)
+		r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("net.tcp.synsent", model.DomainNetwork,
+			float64(st.SynSent), wSs, cSs, true, 0.85,
+			fmt.Sprintf("SYN_SENT=%d (upstream unreachable/slow)", st.SynSent), "1s",
+			nil, nil))
+	}
+
+	// Ephemeral port exhaustion (Gregg USE: Saturation for network stack)
+	if ephPct > 30 {
+		wEph, cEph := threshold("net.ephemeral", 50, 85)
+		r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("net.ephemeral", model.DomainNetwork,
+			ephPct, wEph, cEph, true, 0.9,
+			fmt.Sprintf("ephemeral ports=%.0f%% (%d/%d)", ephPct, eph.InUse, ephRange), "1s",
+			nil, nil))
+	}
+
+	// UDP errors (USE: Errors for UDP)
+	if rates.UDPErrRate > 0.5 {
+		wUdp, cUdp := threshold("net.udp.errors", 1, 50)
+		r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("net.udp.errors", model.DomainNetwork,
+			rates.UDPErrRate, wUdp, cUdp, true, 0.7,
+			fmt.Sprintf("UDP errors=%.1f/s (InErrors+RcvbufErrors)", rates.UDPErrRate), "1s",
+			nil, nil))
+	}
+
+	// TCP resets (connection rejections / aborts — Google SRE: Error signal)
+	if rates.TCPResetRate > 1 {
+		wRst, cRst := threshold("net.tcp.resets", 5, 100)
+		r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("net.tcp.resets", model.DomainNetwork,
+			rates.TCPResetRate, wRst, cRst, true, 0.75,
+			fmt.Sprintf("TCP RSTs=%.0f/s", rates.TCPResetRate), "1s",
+			nil, nil))
+	}
+
+	// TCP connection attempt failures (Google SRE: Error signal)
+	if rates.TCPAttemptFailRate > 1 {
+		wAf, cAf := threshold("net.tcp.attemptfails", 5, 100)
+		r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("net.tcp.attemptfails", model.DomainNetwork,
+			rates.TCPAttemptFailRate, wAf, cAf, true, 0.8,
+			fmt.Sprintf("TCP attempt fails=%.0f/s", rates.TCPAttemptFailRate), "1s",
+			nil, nil))
+	}
 
 	// Sentinel: BPF-measured packet drops and TCP resets
 	if sent := curr.Global.Sentinel; sent.Active {
@@ -1015,8 +1281,8 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEn
 				maxDests = fr.UniqueDestCount
 			}
 		}
-		if maxDests >= 50 {
-			ws, cs := threshold("sec.lateral", 50, 200)
+		if maxDests >= 200 {
+			ws, cs := threshold("sec.lateral", 200, 500)
 			r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("sec.lateral", model.DomainNetwork,
 				float64(maxDests), ws, cs, true, 0.75,
 				fmt.Sprintf("Lateral movement: %d unique destinations from single PID", maxDests), "3s",
@@ -1400,5 +1666,216 @@ func fmtAge(seconds int) string {
 		return fmt.Sprintf("%dh", h)
 	}
 	return fmt.Sprintf("%dh%dm", h, m)
+}
+
+// runStatisticalAnalysis feeds evidence into statistical trackers and populates results.
+func runStatisticalAnalysis(result *model.AnalysisResult, curr *model.Snapshot, rates *model.RateSnapshot, hist *History) {
+	if hist == nil {
+		return
+	}
+
+	// 1. Collect all evidence values from this tick
+	evidenceMap := make(map[string]float64)
+	for _, rca := range result.RCA {
+		for _, ev := range rca.EvidenceV2 {
+			evidenceMap[ev.ID] = ev.Value
+		}
+	}
+
+	// 2. Update baselines + z-scores + forecaster + seasonal
+	hour := time.Now().Hour()
+	for id, val := range evidenceMap {
+		hist.Baselines.Update(id, val)
+		hist.ZScores.Push(id, val)
+		hist.Forecaster.Update(id, val)
+		hist.Seasonal.Update(id, val, hour)
+	}
+
+	// 3. Update correlator with all pairs
+	hist.Correlator.UpdateFromEvidence(evidenceMap)
+
+	// 4. Detect baseline anomalies (>3 sigma from EWMA)
+	for id, val := range evidenceMap {
+		if hist.Baselines.IsAnomaly(id, val, 3.0) {
+			mean, std, _ := hist.Baselines.Get(id)
+			z := hist.Baselines.ZScore(id, val)
+			result.BaselineAnomalies = append(result.BaselineAnomalies, model.BaselineAnomaly{
+				EvidenceID: id,
+				Value:      val,
+				Baseline:   mean,
+				StdDev:     std,
+				ZScore:     z,
+				Sigma:      z,
+			})
+		}
+	}
+
+	// 5. Detect z-score anomalies (>3 sigma from sliding window)
+	for id, val := range evidenceMap {
+		z := hist.ZScores.ZScore(id, val)
+		if z > 3.0 || z < -3.0 {
+			mean, std, _ := hist.ZScores.MeanStd(id)
+			result.ZScoreAnomalies = append(result.ZScoreAnomalies, model.ZScoreAnomaly{
+				EvidenceID: id,
+				Value:      val,
+				WindowMean: mean,
+				WindowStd:  std,
+				ZScore:     z,
+			})
+		}
+	}
+
+	// 6. Surface top correlations
+	topCorr := hist.Correlator.TopCorrelations(0.7, 5)
+	for _, tc := range topCorr {
+		strength := "moderate"
+		if tc.R > 0.85 || tc.R < -0.85 {
+			strength = "strong"
+		}
+		result.Correlations = append(result.Correlations, model.MetricCorrelation{
+			MetricA:     tc.A,
+			MetricB:     tc.B,
+			Coefficient: tc.R,
+			Samples:     tc.N,
+			Strength:    strength,
+		})
+	}
+
+	// 7. Build Golden Signal summary
+	result.GoldenSignals = buildGoldenSignals(curr, rates)
+
+	// 8. Process behavior profiling — detect processes deviating from their learned profile
+	if rates != nil && len(rates.ProcessRates) > 0 {
+		tracked := 0
+		for _, pr := range rates.ProcessRates {
+			if tracked >= 20 {
+				break
+			}
+			if pr.CPUPct < 0.5 && pr.ReadMBs+pr.WriteMBs < 0.1 {
+				continue
+			}
+			tracked++
+			// Key by Comm (not PID) to avoid unbounded map growth from short-lived processes
+			cpuID := "proc." + pr.Comm + ".cpu"
+			ioID := "proc." + pr.Comm + ".io"
+
+			hist.Baselines.Update(cpuID, pr.CPUPct)
+			hist.Baselines.Update(ioID, pr.ReadMBs+pr.WriteMBs)
+
+			if hist.Baselines.IsAnomaly(cpuID, pr.CPUPct, 3.0) {
+				mean, std, _ := hist.Baselines.Get(cpuID)
+				result.ProcessAnomalies = append(result.ProcessAnomalies, model.ProcessAnomaly{
+					PID: pr.PID, Comm: pr.Comm, Metric: "cpu_pct",
+					Current: pr.CPUPct, Baseline: mean, StdDev: std,
+					Sigma: hist.Baselines.ZScore(cpuID, pr.CPUPct),
+				})
+			}
+			if hist.Baselines.IsAnomaly(ioID, pr.ReadMBs+pr.WriteMBs, 3.0) {
+				mean, std, _ := hist.Baselines.Get(ioID)
+				result.ProcessAnomalies = append(result.ProcessAnomalies, model.ProcessAnomaly{
+					PID: pr.PID, Comm: pr.Comm, Metric: "io_mbs",
+					Current: pr.ReadMBs + pr.WriteMBs, Baseline: mean, StdDev: std,
+					Sigma: hist.Baselines.ZScore(ioID, pr.ReadMBs+pr.WriteMBs),
+				})
+			}
+		}
+		if len(result.ProcessAnomalies) > 5 {
+			sort.Slice(result.ProcessAnomalies, func(i, j int) bool {
+				return result.ProcessAnomalies[i].Sigma > result.ProcessAnomalies[j].Sigma
+			})
+			result.ProcessAnomalies = result.ProcessAnomalies[:5]
+		}
+	}
+
+	// 9. Feed causal learning observations
+	// Snapshot signalOnsets under hist.mu, then release before calling Observe
+	// to avoid nested locking (hist.mu → CausalLearner.mu).
+	hist.mu.RLock()
+	onsetsCopy := make(map[string]time.Time, len(hist.signalOnsets))
+	for k, v := range hist.signalOnsets {
+		onsetsCopy[k] = v
+	}
+	hist.mu.RUnlock()
+
+	for _, rule := range causalRules {
+		_, causeFired := evidenceMap[rule.from]
+		_, effectFired := evidenceMap[rule.to]
+		if causeFired || effectFired {
+			causeOnset, cOK := onsetsCopy[rule.from]
+			effectOnset, eOK := onsetsCopy[rule.to]
+			causeFirst := false
+			if cOK && eOK {
+				causeFirst = !causeOnset.After(effectOnset)
+			} else if cOK && !eOK {
+				causeFirst = true
+			}
+			hist.CausalLearner.Observe(rule.rule, causeFired, effectFired, causeFirst)
+		}
+	}
+}
+
+// buildGoldenSignals approximates Google SRE Golden Signals from /proc data.
+func buildGoldenSignals(curr *model.Snapshot, rates *model.RateSnapshot) *model.GoldenSignalSummary {
+	gs := &model.GoldenSignalSummary{}
+	if curr == nil {
+		return gs
+	}
+
+	// Latency: worst disk await + max PSI stall
+	if rates != nil {
+		for _, d := range rates.DiskRates {
+			if d.AvgAwaitMs > gs.DiskLatencyMs {
+				gs.DiskLatencyMs = d.AvgAwaitMs
+			}
+		}
+	}
+	psiMax := curr.Global.PSI.CPU.Some.Avg10
+	if curr.Global.PSI.Memory.Some.Avg10 > psiMax {
+		psiMax = curr.Global.PSI.Memory.Some.Avg10
+	}
+	if curr.Global.PSI.IO.Full.Avg10 > psiMax {
+		psiMax = curr.Global.PSI.IO.Full.Avg10
+	}
+	gs.PSIStallPct = psiMax
+
+	// Traffic: TCP segments + bytes
+	if rates != nil {
+		gs.TCPSegmentsPerSec = rates.InSegRate + rates.OutSegRate
+		var totalMBs float64
+		for _, nr := range rates.NetRates {
+			totalMBs += nr.RxMBs + nr.TxMBs
+		}
+		gs.NetBytesPerSec = totalMBs * 1024 * 1024 // convert MB/s → B/s
+
+		// Error: drops + retrans + resets + OOM
+		var totalDrops float64
+		for _, nr := range rates.NetRates {
+			totalDrops += nr.RxDropsPS + nr.TxDropsPS
+		}
+		gs.ErrorRate = totalDrops + rates.RetransRate + rates.TCPResetRate + float64(rates.OOMKillDelta)
+
+		// Saturation: max of conntrack%, ephemeral%, runqueue/cores, PSI
+		sat := psiMax / 100 // normalize to 0-1
+		if curr.Global.Conntrack.Max > 0 {
+			ctPct := float64(curr.Global.Conntrack.Count) / float64(curr.Global.Conntrack.Max)
+			if ctPct > sat {
+				sat = ctPct
+			}
+		}
+		nCPUs := curr.Global.CPU.NumCPUs
+		if nCPUs == 0 {
+			nCPUs = 1
+		}
+		rqRatio := curr.Global.CPU.LoadAvg.Load1 / float64(nCPUs)
+		if rqRatio > 1 {
+			rqRatio = 1
+		}
+		if rqRatio > sat {
+			sat = rqRatio
+		}
+		gs.SaturationPct = sat * 100
+	}
+
+	return gs
 }
 

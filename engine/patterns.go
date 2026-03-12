@@ -220,6 +220,57 @@ var patternLibrary = []Pattern{
 		Narrative: "Conntrack hash contention — search_restart spikes, bucket sizing or CPU/IRQ imbalance",
 	},
 	{
+		Name:     "Slab Memory Leak",
+		Priority: 52,
+		Conditions: []PatternCondition{
+			{EvidenceID: "mem.slab.leak"},
+			{EvidenceID: "mem.available.low"},
+		},
+		MinMatch:  2,
+		Narrative: "Kernel slab memory leak — unreclaimable slab growing, consuming available memory",
+	},
+	{
+		Name:     "Memory PSI Acceleration",
+		Priority: 88,
+		Conditions: []PatternCondition{
+			{EvidenceID: "mem.psi.acceleration"},
+			{EvidenceID: "mem.reclaim.direct"},
+		},
+		MinMatch:  2,
+		Narrative: "Sudden memory pressure onset — PSI accelerating with direct reclaim active",
+	},
+	{
+		Name:     "Ephemeral Port Exhaustion",
+		Priority: 56,
+		Conditions: []PatternCondition{
+			{EvidenceID: "net.ephemeral"},
+			{EvidenceID: "net.tcp.timewait"},
+		},
+		MinMatch:  2,
+		Narrative: "Ephemeral port exhaustion — TIME_WAIT sockets consuming available ports",
+	},
+	{
+		Name:     "IOWait Cascade",
+		Priority: 72,
+		Conditions: []PatternCondition{
+			{EvidenceID: "cpu.iowait"},
+			{EvidenceID: "io.disk.latency"},
+			{EvidenceID: "io.psi"},
+		},
+		MinMatch:  2,
+		Narrative: "CPU IOWait cascade — disk latency causing CPU stalls waiting on IO",
+	},
+	{
+		Name:     "Upstream Unreachable",
+		Priority: 58,
+		Conditions: []PatternCondition{
+			{EvidenceID: "net.tcp.synsent"},
+			{EvidenceID: "net.tcp.attemptfails"},
+		},
+		MinMatch:  2,
+		Narrative: "Upstream unreachable — connections failing with SYN_SENT accumulation",
+	},
+	{
 		Name:     "Memory Leak",
 		Priority: 45,
 		Conditions: []PatternCondition{

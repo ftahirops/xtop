@@ -34,6 +34,9 @@ var narrativeTemplates = []narrativeRule{
 	{ids: []string{"cpu.sentinel.throttle"}, text: "CPU throttling detected by BPF sentinel"},
 
 	// Memory
+	{ids: []string{"mem.psi.acceleration", "mem.reclaim.direct"}, text: "Sudden memory pressure onset — PSI spiking with direct reclaim active"},
+	{ids: []string{"mem.slab.leak", "mem.available.low"}, text: "Kernel slab leak — unreclaimable memory growing, consuming available RAM"},
+	{ids: []string{"mem.alloc.stall", "mem.psi"}, text: "Allocation stall storm — processes blocking on memory allocation"},
 	{ids: []string{"mem.reclaim.direct", "mem.psi"}, text: "Direct reclaim storm — kernel blocking on memory allocation"},
 	{ids: []string{"mem.swap.activity", "mem.psi"}, text: "Swap thrashing — heavy swap IO causing memory pressure"},
 	{ids: []string{"mem.available.low", "mem.psi"}, text: "Memory exhaustion — available memory critically low"},
@@ -43,6 +46,8 @@ var narrativeTemplates = []narrativeRule{
 	{ids: []string{"mem.sentinel.reclaim"}, text: "Direct reclaim events detected by BPF sentinel"},
 
 	// IO
+	{ids: []string{"cpu.iowait", "io.disk.latency", "io.psi"}, minMatch: 2, text: "CPU IOWait cascade — disk latency stalling CPU on IO completion"},
+	{ids: []string{"io.disk.queuedepth", "io.disk.latency"}, text: "Disk queue saturated — deep queue driving elevated latency"},
 	{ids: []string{"io.disk.util", "io.dstate", "io.disk.latency"}, minMatch: 2, text: "Disk IO saturation causing D-state threads"},
 	{ids: []string{"io.fsfull"}, text: "Filesystem nearing capacity"},
 	{ids: []string{"io.writeback", "io.disk.latency"}, text: "Writeback flood driving disk latency"},
@@ -61,6 +66,10 @@ var narrativeTemplates = []narrativeRule{
 	{ids: []string{"sec.lateral"}, text: "Lateral movement — process connecting to many internal hosts"},
 
 	// Network
+	{ids: []string{"net.ephemeral", "net.tcp.timewait"}, text: "Ephemeral port exhaustion — TIME_WAIT churn consuming available ports"},
+	{ids: []string{"net.tcp.synsent", "net.tcp.attemptfails"}, text: "Upstream unreachable — SYN_SENT accumulation with connection failures"},
+	{ids: []string{"net.drops.rx", "net.tcp.retrans"}, text: "Inbound buffer overflow — RX drops driving TCP retransmits"},
+	{ids: []string{"cpu.irq.imbalance", "net.drops"}, text: "IRQ imbalance — single CPU overloaded with network interrupts causing drops"},
 	{ids: []string{"net.tcp.retrans", "net.drops"}, text: "Network congestion — retransmits with packet drops"},
 	{ids: []string{"net.closewait"}, text: "Socket leak — CLOSE_WAIT accumulating, application not closing connections"},
 	{ids: []string{"net.conntrack", "net.drops"}, text: "Conntrack exhaustion — table full causing packet drops"},
@@ -103,6 +112,23 @@ func BuildNarrative(result *model.AnalysisResult, curr *model.Snapshot, rates *m
 
 	n.Evidence = selectTopEvidence(result, 4)
 	n.Impact = estimateImpact(result, curr, rates)
+
+	// Enrich narrative with statistical findings
+	if len(result.BaselineAnomalies) > 0 {
+		top := result.BaselineAnomalies[0]
+		n.Evidence = append(n.Evidence, fmt.Sprintf("- %s deviating %.1f sigma from baseline (%.1f vs normal %.1f)",
+			top.EvidenceID, top.Sigma, top.Value, top.Baseline))
+	}
+	if len(result.Correlations) > 0 {
+		top := result.Correlations[0]
+		n.Evidence = append(n.Evidence, fmt.Sprintf("- %s and %s correlated (r=%.2f, %s)",
+			top.MetricA, top.MetricB, top.Coefficient, top.Strength))
+	}
+	if len(result.ProcessAnomalies) > 0 {
+		top := result.ProcessAnomalies[0]
+		n.Evidence = append(n.Evidence, fmt.Sprintf("- %s (PID %d) %s: %.1f vs baseline %.1f (%.1f sigma)",
+			top.Comm, top.PID, top.Metric, top.Current, top.Baseline, top.Sigma))
+	}
 
 	return n
 }

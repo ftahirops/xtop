@@ -67,8 +67,18 @@ func runDoctor(cfg Config) error {
 	ticker := engine.Ticker(eng)
 
 	// Collect two snapshots for rate calculation
+	showProgress := !cfg.JSONMode && !cfg.MDMode && !cfg.CronMode
+	if showProgress {
+		fmt.Fprintf(os.Stderr, "\r  Collecting baseline snapshot...")
+	}
 	ticker.Tick()
+	if showProgress {
+		fmt.Fprintf(os.Stderr, "\r  Waiting %s for rate calculation...", cfg.Interval)
+	}
 	time.Sleep(cfg.Interval)
+	if showProgress {
+		fmt.Fprintf(os.Stderr, "\r  Collecting second snapshot...      ")
+	}
 	snap, rates, result := ticker.Tick()
 
 	if snap == nil {
@@ -81,6 +91,10 @@ func runDoctor(cfg Config) error {
 		Hostname:  hostname,
 	}
 
+	if showProgress {
+		fmt.Fprintf(os.Stderr, "\r  Running health checks...           ")
+	}
+
 	// RCA-based checks (from existing engine data)
 	report.Checks = append(report.Checks, checkCPU(snap, rates, result)...)
 	report.Checks = append(report.Checks, checkMemory(snap, rates, result)...)
@@ -90,6 +104,10 @@ func runDoctor(cfg Config) error {
 	report.Checks = append(report.Checks, checkInodeUsage(snap, rates)...)
 	report.Checks = append(report.Checks, checkFileless(snap)...)
 
+	if showProgress {
+		fmt.Fprintf(os.Stderr, "\r  Checking external services...      ")
+	}
+
 	// External tool checks (graceful skip if missing)
 	report.Checks = append(report.Checks, checkSystemdFailed()...)
 	report.Checks = append(report.Checks, checkDockerDisk()...)
@@ -97,8 +115,16 @@ func runDoctor(cfg Config) error {
 	report.Checks = append(report.Checks, checkNTPSync()...)
 	report.Checks = append(report.Checks, checkSSLCerts()...)
 
+	if showProgress {
+		fmt.Fprintf(os.Stderr, "\r  Detecting active services...       ")
+	}
+
 	// Active service detection (auto-detects running services)
 	report.Checks = append(report.Checks, checkActiveServices()...)
+
+	if showProgress {
+		fmt.Fprintf(os.Stderr, "\r                                     \r")
+	}
 
 	// Compute worst status
 	for _, c := range report.Checks {

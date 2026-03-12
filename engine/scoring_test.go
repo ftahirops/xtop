@@ -195,28 +195,26 @@ func TestAlertStateUpdate(t *testing.T) {
 	as := NewAlertState(3)
 
 	// Should start at OK
-	h := as.Update(model.HealthOK, false)
+	h := as.Update(model.HealthOK, 0, false)
 	if h != model.HealthOK {
 		t.Errorf("initial health = %v, want OK", h)
 	}
 
-	// 4 ticks at Critical — should still be OK (not sustained)
-	for i := 0; i < 4; i++ {
-		h = as.Update(model.HealthCritical, false)
-	}
+	// 1 tick at Critical — should still be OK (escalation requires 2 ticks)
+	h = as.Update(model.HealthCritical, 70, false)
 	if h != model.HealthOK {
-		t.Errorf("after 4 ticks at Critical = %v, want OK (not sustained)", h)
+		t.Errorf("after 1 tick at Critical = %v, want OK (not sustained)", h)
 	}
 
-	// 5th tick — should transition to Critical
-	h = as.Update(model.HealthCritical, false)
+	// 2nd tick — should transition to Critical (fast escalation = 2 ticks)
+	h = as.Update(model.HealthCritical, 70, false)
 	if h != model.HealthCritical {
-		t.Errorf("after 5 ticks at Critical = %v, want Critical", h)
+		t.Errorf("after 2 ticks at Critical = %v, want Critical", h)
 	}
 
 	// Instant override: should bypass sustained requirement
 	as2 := NewAlertState(3)
-	h = as2.Update(model.HealthCritical, true)
+	h = as2.Update(model.HealthCritical, 70, true)
 	if h != model.HealthCritical {
 		t.Errorf("crit evidence bypass = %v, want Critical", h)
 	}
@@ -224,7 +222,7 @@ func TestAlertStateUpdate(t *testing.T) {
 	// Trust gate respected: Inconclusive should NOT escalate to Critical
 	as3 := NewAlertState(3)
 	for i := 0; i < 10; i++ {
-		h = as3.Update(model.HealthInconclusive, false)
+		h = as3.Update(model.HealthInconclusive, 10, false)
 	}
 	if h != model.HealthInconclusive {
 		t.Errorf("inconclusive sustained = %v, want Inconclusive", h)

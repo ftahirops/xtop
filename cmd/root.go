@@ -1,12 +1,16 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -19,7 +23,7 @@ import (
 )
 
 // Version is set at build time via ldflags.
-var Version = "0.29.2"
+var Version = "0.31.0"
 
 // Config holds CLI configuration.
 type Config struct {
@@ -100,8 +104,8 @@ Shell Widget:
   -tmux-status      Output tmux-formatted status segment
 
 Options:
-  -interval N       Collection interval in seconds (default: 1)
-  -history N        Snapshots to keep in ring buffer (default: 300, ~5 min at 1s)
+  -interval N       Collection interval in seconds (default: 3)
+  -history N        Snapshots to keep in ring buffer (default: 600, ~30 min at 3s)
   -section NAME     Section to display in -watch mode (default: overview)
                     Sections: overview, cpu, mem, io, net, cgroup, rca
   -count N          Number of iterations for -watch mode (0 = infinite, default: 0)
@@ -242,6 +246,8 @@ func Run() error {
 	flag.BoolVar(&cfg.CronInstall, "cron-install", false, "Print crontab line for automated health checks")
 	// Privacy
 	flag.BoolVar(&cfg.MaskIPs, "mask-ips", false, "Mask IP addresses in output (for demos/screenshots)")
+	var updateMode bool
+	flag.BoolVar(&updateMode, "update", false, "Check for latest release on GitHub and install it")
 
 	flag.Usage = printUsage
 	flag.Parse()
@@ -250,6 +256,11 @@ func Run() error {
 	if showVersion {
 		fmt.Printf("xtop v%s\n", Version)
 		return nil
+	}
+
+	// -update: self-update from GitHub releases
+	if updateMode {
+		return runSelfUpdate()
 	}
 
 	// Support positional arg for interval: `xtop 5` = `xtop --interval 5`
@@ -315,9 +326,10 @@ func Run() error {
 	}
 
 	var promStore *engine.MetricsStore
+	var promSrv *http.Server
 	if cfg.PromEnabled {
 		promStore = engine.NewMetricsStore()
-		srv := &http.Server{
+		promSrv = &http.Server{
 			Addr:              cfg.PromAddr,
 			Handler:           promStore.Handler(),
 			ReadHeaderTimeout: 10 * time.Second,
@@ -326,9 +338,14 @@ func Run() error {
 			IdleTimeout:       60 * time.Second,
 		}
 		go func() {
-			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			if err := promSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 				fmt.Fprintf(os.Stderr, "Prometheus endpoint failed: %v\n", err)
 			}
+		}()
+		defer func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			promSrv.Shutdown(ctx)
 		}()
 		fmt.Fprintf(os.Stderr, "Prometheus metrics listening on %s\n", cfg.PromAddr)
 	}
@@ -641,4 +658,209 @@ func runReplay(cfg Config, wrap func(engine.Ticker) engine.Ticker) error {
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	_, err = p.Run()
 	return err
+}
+
+// ghRelease represents the minimal GitHub release API response.
+type ghRelease struct {
+	TagName string    `json:"tag_name"`
+	Assets  []ghAsset `json:"assets"`
+}
+
+type ghAsset struct {
+	Name               string `json:"name"`
+	BrowserDownloadURL string `json:"browser_download_url"`
+}
+
+const ghReleaseURL = "https://api.github.com/repos/ftahirops/xtop/releases/latest"
+
+// runSelfUpdate checks GitHub for the latest release and installs it.
+func runSelfUpdate() error {
+	fmt.Printf("xtop self-update — current version: v%s\n", Version)
+	fmt.Println("Checking GitHub for latest release...")
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	req, err := http.NewRequest("GET", ghReleaseURL, nil)
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("fetch latest release: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("GitHub API returned %d", resp.StatusCode)
+	}
+
+	var rel ghRelease
+	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
+		return fmt.Errorf("decode release: %w", err)
+	}
+
+	latestTag := strings.TrimPrefix(rel.TagName, "v")
+	if latestTag == Version {
+		fmt.Printf("Already up to date (v%s).\n", Version)
+		return nil
+	}
+	if !semverNewer(latestTag, Version) {
+		fmt.Printf("Already up to date (v%s). Latest release is v%s.\n", Version, latestTag)
+		return nil
+	}
+
+	fmt.Printf("New version available: v%s → v%s\n", Version, latestTag)
+
+	// Find the right asset for this architecture
+	arch := runtime.GOARCH
+	if arch == "amd64" {
+		arch = "amd64"
+	}
+
+	// Try .deb first, then raw binary
+	var assetURL, assetName string
+	debPattern := fmt.Sprintf("xtop_%s-1_%s.deb", latestTag, arch)
+	binPattern := fmt.Sprintf("xtop-%s-linux-%s", latestTag, arch)
+
+	for _, a := range rel.Assets {
+		if a.Name == debPattern {
+			assetURL = a.BrowserDownloadURL
+			assetName = a.Name
+			break
+		}
+	}
+	if assetURL == "" {
+		for _, a := range rel.Assets {
+			if a.Name == binPattern || strings.Contains(a.Name, "linux") && strings.Contains(a.Name, arch) {
+				assetURL = a.BrowserDownloadURL
+				assetName = a.Name
+				break
+			}
+		}
+	}
+
+	if assetURL == "" {
+		return fmt.Errorf("no compatible asset found for linux/%s in release v%s", arch, latestTag)
+	}
+
+	fmt.Printf("Downloading %s...\n", assetName)
+
+	tmpDir := os.TempDir()
+	tmpFile := filepath.Join(tmpDir, assetName)
+
+	dresp, err := client.Get(assetURL)
+	if err != nil {
+		return fmt.Errorf("download asset: %w", err)
+	}
+	defer dresp.Body.Close()
+
+	if dresp.StatusCode != 200 {
+		return fmt.Errorf("download returned %d", dresp.StatusCode)
+	}
+
+	f, err := os.Create(tmpFile)
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+
+	written, err := io.Copy(f, dresp.Body)
+	f.Close()
+	if err != nil {
+		os.Remove(tmpFile)
+		return fmt.Errorf("write download: %w", err)
+	}
+
+	fmt.Printf("Downloaded %.1f MB\n", float64(written)/1024/1024)
+
+	// Install based on asset type
+	if strings.HasSuffix(assetName, ".deb") {
+		fmt.Println("Installing .deb package...")
+		cmd := exec.Command("dpkg", "-i", tmpFile)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			os.Remove(tmpFile)
+			return fmt.Errorf("dpkg install failed: %w", err)
+		}
+		os.Remove(tmpFile)
+	} else if strings.HasSuffix(assetName, ".rpm") {
+		fmt.Println("Installing .rpm package...")
+		cmd := exec.Command("rpm", "-U", tmpFile)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			os.Remove(tmpFile)
+			return fmt.Errorf("rpm install failed: %w", err)
+		}
+		os.Remove(tmpFile)
+	} else {
+		// Raw binary — install to /usr/local/bin/xtop
+		dest := "/usr/local/bin/xtop"
+		if err := os.Chmod(tmpFile, 0755); err != nil {
+			os.Remove(tmpFile)
+			return fmt.Errorf("chmod: %w", err)
+		}
+		// Rename is atomic if on the same filesystem, otherwise copy
+		if err := os.Rename(tmpFile, dest); err != nil {
+			// Cross-device — copy instead
+			src, err2 := os.Open(tmpFile)
+			if err2 != nil {
+				os.Remove(tmpFile)
+				return fmt.Errorf("open temp: %w", err2)
+			}
+			dst, err2 := os.Create(dest)
+			if err2 != nil {
+				src.Close()
+				os.Remove(tmpFile)
+				return fmt.Errorf("create dest: %w", err2)
+			}
+			_, err2 = io.Copy(dst, src)
+			src.Close()
+			dst.Close()
+			os.Remove(tmpFile)
+			if err2 != nil {
+				return fmt.Errorf("copy binary: %w", err2)
+			}
+			os.Chmod(dest, 0755)
+		}
+		fmt.Printf("Installed to %s\n", dest)
+	}
+
+	fmt.Printf("xtop updated to v%s successfully!\n", latestTag)
+	return nil
+}
+
+// semverNewer returns true if version a is strictly newer than version b.
+// Compares major.minor.patch numerically.
+func semverNewer(a, b string) bool {
+	pa := parseSemver(a)
+	pb := parseSemver(b)
+	for i := 0; i < 3; i++ {
+		if pa[i] > pb[i] {
+			return true
+		}
+		if pa[i] < pb[i] {
+			return false
+		}
+	}
+	return false
+}
+
+func parseSemver(v string) [3]int {
+	v = strings.TrimPrefix(v, "v")
+	parts := strings.SplitN(v, ".", 3)
+	var r [3]int
+	for i, p := range parts {
+		if i >= 3 {
+			break
+		}
+		// Strip any pre-release suffix (e.g. "1-beta")
+		if idx := strings.IndexAny(p, "-+"); idx >= 0 {
+			p = p[:idx]
+		}
+		n, _ := strconv.Atoi(p)
+		r[i] = n
+	}
+	return r
 }

@@ -2,6 +2,7 @@ package engine
 
 import (
 	"strings"
+	"sync"
 
 	"github.com/ftahirops/xtop/model"
 )
@@ -47,8 +48,8 @@ var causalRules = []causalRule{
 	// Network domain
 	{"net.tcp.retrans", "net.softirq", "retrans→softirq", 0.5},
 	{"net.conntrack", "net.drops", "conntrack→drops", 0.7},
-	{"net.tcp.state", "net.conntrack", "tcpstate→conntrack", 0.5},
-	{"net.tcp.state", "net.drops", "tcpstate→drops", 0.4},
+	{"net.tcp.timewait", "net.conntrack", "timewait→conntrack", 0.5},
+	{"net.tcp.synsent", "net.drops", "synsent→drops", 0.4},
 	{"net.closewait", "net.conntrack", "closewait→conntrack", 0.5},
 	{"net.drops", "net.tcp.retrans", "drops→retrans", 0.6},
 	{"net.conntrack", "net.conntrack.drops", "conntrack→ctdrops", 0.9},
@@ -65,6 +66,25 @@ var causalRules = []causalRule{
 	{"sec.beacon", "sec.outbound.exfil", "beacon→exfil", 0.6},
 	{"sec.tcp.flags", "sec.portscan", "tcpflags→portscan", 0.8},
 	{"sec.synflood", "cpu.busy", "synflood→cpubusy", 0.5},
+
+	// Memory extended
+	{"mem.psi.acceleration", "mem.reclaim.direct", "psiaccel→reclaim", 0.85},
+	{"mem.slab.leak", "mem.available.low", "slableak→lowmem", 0.7},
+	{"mem.alloc.stall", "mem.psi", "allocstall→mempsi", 0.8},
+	{"mem.swap.in", "io.disk.latency", "swapin→iolatency", 0.7},
+
+	// CPU extended
+	{"cpu.iowait", "io.disk.latency", "iowait→iolatency", 0.8},
+	{"cpu.iowait", "io.psi", "iowait→iopsi", 0.7},
+	{"cpu.irq.imbalance", "net.drops", "irqimbalance→drops", 0.6},
+
+	// Network extended
+	{"net.drops.rx", "net.tcp.retrans", "rxdrops→retrans", 0.7},
+	{"net.tcp.synsent", "net.tcp.attemptfails", "synsent→attemptfails", 0.8},
+	{"net.ephemeral", "net.tcp.attemptfails", "ephemeral→attemptfails", 0.85},
+	{"net.tcp.resets", "net.tcp.retrans", "resets→retrans", 0.5},
+	{"net.tcp.timewait", "net.ephemeral", "timewait→ephemeral", 0.7},
+	{"net.udp.errors", "net.drops", "udperrors→drops", 0.4},
 
 	// .NET domain
 	{"dotnet.gc.pause", "cpu.runqueue", "gcpause→runqueue", 0.7},
@@ -261,4 +281,56 @@ func linearize(dag *model.CausalDAG, firedMap map[string]model.Evidence) string 
 	}
 
 	return strings.Join(parts, " → ")
+}
+
+// CausalLearner tracks how often causal rules' predictions hold true.
+// For each rule, it counts: times both fired, times cause preceded effect.
+type CausalLearner struct {
+	mu    sync.RWMutex
+	stats map[string]*causalRuleStats
+}
+
+type causalRuleStats struct {
+	BothFired   int64
+	CauseFirst  int64
+	EffectFirst int64
+}
+
+// NewCausalLearner creates a causal learning tracker.
+func NewCausalLearner() *CausalLearner {
+	return &CausalLearner{
+		stats: make(map[string]*causalRuleStats),
+	}
+}
+
+// Observe records whether a causal rule's prediction held for this tick.
+func (cl *CausalLearner) Observe(rule string, causeFired, effectFired bool, causeFirst bool) {
+	cl.mu.Lock()
+	defer cl.mu.Unlock()
+	s, ok := cl.stats[rule]
+	if !ok {
+		s = &causalRuleStats{}
+		cl.stats[rule] = s
+	}
+	if causeFired && effectFired {
+		s.BothFired++
+		if causeFirst {
+			s.CauseFirst++
+		} else {
+			s.EffectFirst++
+		}
+	}
+}
+
+// LearnedWeight returns a blended weight: 70% hardcoded + 30% observed.
+// Returns the hardcoded weight if insufficient observations (<20).
+func (cl *CausalLearner) LearnedWeight(rule string, hardcodedWeight float64) float64 {
+	cl.mu.RLock()
+	defer cl.mu.RUnlock()
+	s, ok := cl.stats[rule]
+	if !ok || s.BothFired < 20 {
+		return hardcodedWeight
+	}
+	observedWeight := float64(s.CauseFirst) / float64(s.BothFired)
+	return 0.7*hardcodedWeight + 0.3*observedWeight
 }

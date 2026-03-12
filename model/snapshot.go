@@ -171,13 +171,15 @@ type RateSnapshot struct {
 	CtxSwitchRate float64 // total estimated
 
 	// Memory rates (pages/s → MB/s)
-	SwapInRate      float64 // MB/s
-	SwapOutRate     float64
-	PgFaultRate     float64 // pages/s
-	MajFaultRate    float64
+	SwapInRate        float64 // MB/s
+	SwapOutRate       float64
+	PgFaultRate       float64 // pages/s
+	MajFaultRate      float64
 	DirectReclaimRate float64 // pages/s
-	KswapdRate      float64
-	OOMKillDelta    uint64  // OOM kills since last tick (delta, not cumulative)
+	KswapdRate        float64
+	OOMKillDelta      uint64  // OOM kills since last tick (delta, not cumulative)
+	AllocStallRate    float64 // alloc stalls/s from VMStat.AllocStall delta
+	SUnreclaimDelta   int64   // SUnreclaim change in bytes (slab leak detection)
 
 	// Disks
 	DiskRates  []DiskRate
@@ -188,7 +190,9 @@ type RateSnapshot struct {
 	RetransRate  float64
 	InSegRate    float64
 	OutSegRate   float64
-	TCPResetRate float64
+	TCPResetRate       float64
+	TCPAttemptFailRate float64 // TCP connection attempt failures/s from /proc/net/snmp
+	TCPResetRateAgg    float64 // aggregate TCP reset rate from /proc/net/snmp (EstabResets)
 
 	// UDP
 	UDPInRate    float64
@@ -316,6 +320,13 @@ type AnalysisResult struct {
 
 	// Blame attribution
 	Blame []BlameEntry
+
+	// Statistical intelligence (v0.31.0)
+	BaselineAnomalies []BaselineAnomaly   // Evidence deviating from learned baseline
+	Correlations      []MetricCorrelation // Discovered metric correlations
+	ZScoreAnomalies   []ZScoreAnomaly     // Statistically unusual values vs recent window
+	ProcessAnomalies  []ProcessAnomaly    // Processes deviating from learned profile
+	GoldenSignals     *GoldenSignalSummary // Approximated Golden Signal metrics
 }
 
 // MetricChange represents a notable metric delta for the "what changed?" engine.
@@ -344,6 +355,7 @@ type ExhaustionPrediction struct {
 	CurrentPct float64 // current usage percent
 	TrendPerS  float64 // percentage-point change per second (positive = growing)
 	EstMinutes float64 // estimated minutes to exhaustion (-1 = not trending)
+	Confidence float64 // 0.0–1.0 confidence in the prediction (based on trend quality)
 }
 
 // EvidenceCheck is a single signal check with pass/fail.
@@ -504,4 +516,59 @@ type BlameEntry struct {
 	CgroupPath string
 	Metrics    map[string]string // "cpu" → "45.2%", "io" → "12 MB/s"
 	ImpactPct  float64
+}
+
+// BaselineAnomaly represents an evidence value that deviates from its learned EWMA baseline.
+type BaselineAnomaly struct {
+	EvidenceID string  // e.g. "cpu.busy"
+	Value      float64 // current value
+	Baseline   float64 // EWMA mean
+	StdDev     float64 // sqrt(EWMA variance)
+	ZScore     float64 // (value - mean) / stddev
+	Sigma      float64 // how many sigma above baseline
+}
+
+// MetricCorrelation represents a discovered Pearson correlation between two metrics.
+type MetricCorrelation struct {
+	MetricA     string  // evidence ID A
+	MetricB     string  // evidence ID B
+	Coefficient float64 // Pearson R (-1 to +1)
+	Samples     int64   // number of samples
+	Strength    string  // "strong"/"moderate"/"weak"
+}
+
+// ZScoreAnomaly represents a value that is statistically unusual vs recent history.
+type ZScoreAnomaly struct {
+	EvidenceID string  // e.g. "cpu.busy"
+	Value      float64 // current value
+	WindowMean float64 // mean over sliding window
+	WindowStd  float64 // stddev over sliding window
+	ZScore     float64 // (value - mean) / std
+}
+
+// ProcessAnomaly represents a process whose resource usage deviates from its learned profile.
+type ProcessAnomaly struct {
+	PID      int
+	Comm     string
+	Metric   string  // "cpu_pct", "rss_mb", "io_mbs"
+	Current  float64
+	Baseline float64
+	StdDev   float64
+	Sigma    float64
+}
+
+// GoldenSignalSummary approximates Google SRE Golden Signals from /proc data.
+type GoldenSignalSummary struct {
+	// Latency proxies
+	DiskLatencyMs float64 // worst disk await
+	TCPRTTMs      float64 // smoothed TCP RTT (if BPF available)
+	PSIStallPct   float64 // max PSI stall across domains
+	// Traffic proxies
+	TCPSegmentsPerSec float64 // in + out segments
+	NetBytesPerSec    float64 // total interface throughput
+	ConnAcceptRate    float64 // passive opens / sec
+	// Error proxies
+	ErrorRate float64 // drops + retrans + resets + OOM combined rate
+	// Saturation proxies
+	SaturationPct float64 // max of: conntrack%, ephemeral%, runqueue ratio, PSI
 }

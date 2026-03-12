@@ -379,6 +379,15 @@ func (m *dockerModule) Collect(app *DetectedApp, _ *AppSecrets) model.AppInstanc
 			inst.HealthIssues = append(inst.HealthIssues,
 				fmt.Sprintf("container '%s' memory at %.0f%%", dc.Name, dc.MemPct))
 		}
+		if dc.CPUPct > 80 {
+			inst.HealthScore -= 10
+			inst.HealthIssues = append(inst.HealthIssues,
+				fmt.Sprintf("container '%s' high CPU at %.1f%%", dc.Name, dc.CPUPct))
+		} else if dc.CPUPct > 50 {
+			inst.HealthScore -= 5
+			inst.HealthIssues = append(inst.HealthIssues,
+				fmt.Sprintf("container '%s' elevated CPU at %.1f%%", dc.Name, dc.CPUPct))
+		}
 		inst.Containers = append(inst.Containers, dc)
 	}
 

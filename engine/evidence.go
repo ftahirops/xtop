@@ -21,26 +21,62 @@ var evidenceWeightCategory = map[string]string{
 	"mem.major.faults":     "secondary",
 	"mem.oom.kills":        "psi", // OOM is highest priority
 
+	// Memory — runtime & kernel
+	"mem.psi.acceleration":  "psi",
+	"mem.slab.leak":         "queue",
+	"mem.alloc.stall":       "queue",
+	"mem.swap.in":           "latency",
+	"mem.swap.out":          "secondary",
+
 	// IO
 	"io.psi":               "psi",
 	"io.dstate":            "queue",
 	"io.disk.latency":      "latency",
 	"io.disk.util":         "latency",
+	"io.disk.queuedepth":   "queue",
+	"io.disk.flush":        "secondary",
 	"io.writeback":         "secondary",
 	"io.fsfull":            "secondary",
+	"io.inode.pressure":    "secondary",
 
 	// Network
 	"net.drops":            "latency",
+	"net.drops.rx":         "latency",
+	"net.drops.tx":         "secondary",
 	"net.tcp.retrans":      "psi",
 	"net.conntrack":        "queue",
 	"net.softirq":          "secondary",
-	"net.tcp.state":        "secondary",
+	"net.tcp.timewait":     "secondary",
+	"net.tcp.synsent":      "latency",
 	"net.closewait":              "queue",
+	"net.ephemeral":              "queue",
+	"net.udp.errors":             "secondary",
+	"net.tcp.resets":             "latency",
+	"net.tcp.attemptfails":       "latency",
 	"net.conntrack.drops":        "latency",
 	"net.conntrack.insertfail":   "latency",
 	"net.conntrack.growth":       "queue",
 	"net.conntrack.invalid":      "secondary",
 	"net.conntrack.hashcontention": "secondary",
+
+	// CPU — extended
+	"cpu.iowait":           "latency",
+	"cpu.irq.imbalance":    "secondary",
+
+	// Language runtimes
+	"dotnet.alloc.storm":     "latency",
+	"dotnet.threadpool.queue": "queue",
+	"dotnet.gc.pause":        "latency",
+	"jvm.gc.pause":           "latency",
+	"jvm.heap.pressure":      "queue",
+
+	// Proxmox VMs
+	"pve.vm.throttle":  "latency",
+	"pve.vm.cpupsi":    "secondary",
+	"pve.vm.oom":       "psi",
+	"pve.vm.swap":      "latency",
+	"pve.vm.memlimit":  "queue",
+	"pve.vm.mempsi":    "psi",
 
 	// Sentinel evidence
 	"net.sentinel.drops":    "latency",

@@ -1,10 +1,10 @@
 Package: xtop
-Version: 0.23.1-1
+Version: 0.31.0-1
 Section: admin
 Priority: optional
 Architecture: amd64
 Depends: libc6
-Installed-Size: 11140
+Installed-Size: 17128
 Maintainer: Farhan Tahir <farhan.003@gmail.com>
 Homepage: https://github.com/ftahirops/xtop
 Description: Incident-first root-cause analysis console for Linux
@@ -40,3 +40,13 @@ Description: Incident-first root-cause analysis console for Linux
   - Watchdog: auto-triggered deep probes on RCA bottleneck detection
   - DiskGuard: filesystem space monitor with auto-contain (SIGSTOP/SIGCONT)
   - Causal chain reconstruction and anomaly onset tracking
+  - 15 auto-detected application modules with deep health diagnostics
+  - Full RCA for MySQL, PostgreSQL, Redis, Elasticsearch, MongoDB
+  - Full RCA for Nginx, Apache, HAProxy, PHP-FPM, RabbitMQ
+  - Kafka, Caddy, Traefik, Memcached, Docker diagnostics
+  - Advanced RCA: Gregg USE method, PSI acceleration, slab leak, IRQ imbalance detection
+  - Statistical RCA intelligence: EWMA baselines, z-score anomaly, Pearson correlation
+  - Holt double exponential trend forecasting, seasonal hour-of-day awareness
+  - Per-process behavior profiling with deviation detection
+  - Google SRE Golden Signal approximation from /proc data
+  - Causal strength learning: observed vs hardcoded rule weight blending

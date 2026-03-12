@@ -341,6 +341,138 @@ func trackBiggestChange(result *model.AnalysisResult, hist *History) {
 	}
 }
 
+// isMonotonicTrend checks if a metric is consistently moving in one direction
+// over the lookback window. Returns true if >= 60% of sample-to-sample deltas
+// agree in sign with the overall trend direction.
+func isMonotonicTrend(hist *History, extractFn func(*model.Snapshot) float64, backIdx int) bool {
+	n := hist.Len()
+	if n-backIdx < 10 {
+		return true // not enough data, allow prediction
+	}
+
+	totalSteps := 0
+	agreeingSteps := 0
+	prevVal := extractFn(hist.Get(backIdx))
+
+	overall := extractFn(hist.Get(n-1)) - extractFn(hist.Get(backIdx))
+
+	// Sample every 5th tick to reduce noise
+	for i := backIdx + 5; i < n; i += 5 {
+		snap := hist.Get(i)
+		if snap == nil {
+			continue
+		}
+		curVal := extractFn(snap)
+		totalSteps++
+		step := curVal - prevVal
+		if (overall > 0 && step > 0) || (overall < 0 && step < 0) {
+			agreeingSteps++
+		}
+		prevVal = curVal
+	}
+
+	if totalSteps == 0 {
+		return true
+	}
+	return float64(agreeingSteps)/float64(totalSteps) >= 0.6
+}
+
+// recentTrendConsistency counts how many of the last N ticks (sample-to-sample)
+// agree with the overall trend direction. Returns the count of consistent ticks
+// and total ticks examined. This is used to gate confidence on noisy trends.
+func recentTrendConsistency(hist *History, extractFn func(*model.Snapshot) float64, recentTicks int) (consistent, total int) {
+	n := hist.Len()
+	startIdx := n - recentTicks
+	if startIdx < 1 {
+		startIdx = 1
+	}
+
+	// Overall direction from start to end of the recent window
+	startVal := extractFn(hist.Get(startIdx))
+	endVal := extractFn(hist.Get(n - 1))
+	overall := endVal - startVal
+
+	if abs(overall) < 1e-9 {
+		return 0, 0 // no movement at all
+	}
+
+	prev := extractFn(hist.Get(startIdx))
+	for i := startIdx + 1; i < n; i++ {
+		s := hist.Get(i)
+		if s == nil {
+			continue
+		}
+		cur := extractFn(s)
+		step := cur - prev
+		total++
+		if (overall > 0 && step > 0) || (overall < 0 && step < 0) {
+			consistent++
+		}
+		prev = cur
+	}
+	return consistent, total
+}
+
+// exhaustionConfidence computes a 0.0–1.0 confidence score for an exhaustion
+// prediction. It dampens confidence when the recent trend is noisy (fewer than
+// 3 consistent ticks) and scales up with more data and stronger monotonicity.
+func exhaustionConfidence(hist *History, extractFn func(*model.Snapshot) float64, backIdx int) float64 {
+	const recentWindow = 10 // look at last 10 ticks for trend quality
+
+	consistent, total := recentTrendConsistency(hist, extractFn, recentWindow)
+
+	// Base confidence from the isMonotonicTrend ratio over the full window
+	n := hist.Len()
+	fullSteps := 0
+	fullAgree := 0
+	prevVal := extractFn(hist.Get(backIdx))
+	overall := extractFn(hist.Get(n-1)) - prevVal
+	for i := backIdx + 5; i < n; i += 5 {
+		s := hist.Get(i)
+		if s == nil {
+			continue
+		}
+		cur := extractFn(s)
+		fullSteps++
+		step := cur - prevVal
+		if (overall > 0 && step > 0) || (overall < 0 && step < 0) {
+			fullAgree++
+		}
+		prevVal = cur
+	}
+
+	conf := 0.8 // default confidence
+	if fullSteps > 0 {
+		ratio := float64(fullAgree) / float64(fullSteps)
+		// Scale: 60% agreement = 0.5, 80% = 0.7, 100% = 0.95
+		conf = 0.5 + (ratio-0.6)*1.125
+		if conf > 0.95 {
+			conf = 0.95
+		}
+		if conf < 0.3 {
+			conf = 0.3
+		}
+	}
+
+	// Dampen if recent trend is very noisy: fewer than 3 consistent ticks
+	if total >= 3 && consistent < 3 {
+		conf = 0.3
+	}
+
+	return conf
+}
+
+// Minimum consumption rates below which predictions are suppressed (noise floor).
+// Memory: 0.1%/min = 0.001667%/s; Disk: 0.01%/min = 0.000167%/s.
+const (
+	minMemRatePerSec  = 0.1 / 60  // 0.1%/min → per second
+	minDiskRatePerSec = 0.01 / 60 // 0.01%/min → per second
+
+	// Hard cap: never predict exhaustion beyond 120 minutes regardless of
+	// observation window. This replaces the mixed 60/120 caps per resource.
+	maxExhaustionMinutes = 120.0
+)
+
 // trackExhaustion predicts when key resources will be exhausted based on trend.
 func trackExhaustion(result *model.AnalysisResult, hist *History) {
 	if hist == nil || hist.Len() < 30 {
@@ -367,20 +499,39 @@ func trackExhaustion(result *model.AnalysisResult, hist *History) {
 		return
 	}
 
+	// Don't predict farther than 2x observation window, capped at 120 min
+	maxPredictMin := elapsed / 60 * 2
+	if maxPredictMin > maxExhaustionMinutes {
+		maxPredictMin = maxExhaustionMinutes
+	}
+
 	// Memory available % (decreasing = bad)
 	if curr.Global.Memory.Total > 0 && old.Global.Memory.Total > 0 {
 		curAvailPct := float64(curr.Global.Memory.Available) / float64(curr.Global.Memory.Total) * 100
 		oldAvailPct := float64(old.Global.Memory.Available) / float64(old.Global.Memory.Total) * 100
 		trendPerSec := (curAvailPct - oldAvailPct) / elapsed
-		if trendPerSec < -0.01 { // Memory decreasing
-			minutesLeft := curAvailPct / (-trendPerSec) / 60
-			if minutesLeft < 60 && minutesLeft > 0 {
-				result.Exhaustions = append(result.Exhaustions, model.ExhaustionPrediction{
-					Resource:   "Memory",
-					CurrentPct: 100 - curAvailPct,
-					TrendPerS:  -trendPerSec,
-					EstMinutes: minutesLeft,
-				})
+		if trendPerSec < -0.05 { // Memory decreasing (5x more conservative)
+			memExtract := func(s *model.Snapshot) float64 {
+				if s.Global.Memory.Total == 0 {
+					return 0
+				}
+				return float64(s.Global.Memory.Available) / float64(s.Global.Memory.Total) * 100
+			}
+			consumeRatePerSec := -trendPerSec
+			if consumeRatePerSec < minMemRatePerSec {
+				// Rate too small — likely noise, skip
+			} else if isMonotonicTrend(hist, memExtract, backIdx) {
+				minutesLeft := curAvailPct / consumeRatePerSec / 60
+				if minutesLeft > 0 && minutesLeft <= maxPredictMin {
+					conf := exhaustionConfidence(hist, memExtract, backIdx)
+					result.Exhaustions = append(result.Exhaustions, model.ExhaustionPrediction{
+						Resource:   "Memory",
+						CurrentPct: 100 - curAvailPct,
+						TrendPerS:  consumeRatePerSec,
+						EstMinutes: minutesLeft,
+						Confidence: conf,
+					})
+				}
 			}
 		}
 	}
@@ -394,15 +545,27 @@ func trackExhaustion(result *model.AnalysisResult, hist *History) {
 		}
 		trendPerSec := (curPct - oldPct) / elapsed
 		remaining := 100 - curPct
-		if trendPerSec > 0.01 && remaining > 0 {
-			minutesLeft := remaining / trendPerSec / 60
-			if minutesLeft < 60 && minutesLeft > 0 {
-				result.Exhaustions = append(result.Exhaustions, model.ExhaustionPrediction{
-					Resource:   "Swap",
-					CurrentPct: curPct,
-					TrendPerS:  trendPerSec,
-					EstMinutes: minutesLeft,
-				})
+		if trendPerSec > 0.03 && remaining > 0 { // 3x more conservative
+			swapExtract := func(s *model.Snapshot) float64 {
+				if s.Global.Memory.SwapTotal == 0 {
+					return 0
+				}
+				return float64(s.Global.Memory.SwapUsed) / float64(s.Global.Memory.SwapTotal) * 100
+			}
+			if trendPerSec < minMemRatePerSec {
+				// Rate too small — likely noise, skip
+			} else if isMonotonicTrend(hist, swapExtract, backIdx) {
+				minutesLeft := remaining / trendPerSec / 60
+				if minutesLeft > 0 && minutesLeft <= maxPredictMin {
+					conf := exhaustionConfidence(hist, swapExtract, backIdx)
+					result.Exhaustions = append(result.Exhaustions, model.ExhaustionPrediction{
+						Resource:   "Swap",
+						CurrentPct: curPct,
+						TrendPerS:  trendPerSec,
+						EstMinutes: minutesLeft,
+						Confidence: conf,
+					})
+				}
 			}
 		}
 	}
@@ -413,15 +576,25 @@ func trackExhaustion(result *model.AnalysisResult, hist *History) {
 		oldPct := float64(old.Global.Conntrack.Count) / float64(old.Global.Conntrack.Max) * 100
 		trendPerSec := (curPct - oldPct) / elapsed
 		remaining := 100 - curPct
-		if trendPerSec > 0.01 && remaining > 0 {
-			minutesLeft := remaining / trendPerSec / 60
-			if minutesLeft < 60 && minutesLeft > 0 {
-				result.Exhaustions = append(result.Exhaustions, model.ExhaustionPrediction{
-					Resource:   "Conntrack",
-					CurrentPct: curPct,
-					TrendPerS:  trendPerSec,
-					EstMinutes: minutesLeft,
-				})
+		if trendPerSec > 0.05 && remaining > 0 { // 5x more conservative
+			ctExtract := func(s *model.Snapshot) float64 {
+				if s.Global.Conntrack.Max == 0 {
+					return 0
+				}
+				return float64(s.Global.Conntrack.Count) / float64(s.Global.Conntrack.Max) * 100
+			}
+			if isMonotonicTrend(hist, ctExtract, backIdx) {
+				minutesLeft := remaining / trendPerSec / 60
+				if minutesLeft > 0 && minutesLeft <= maxPredictMin {
+					conf := exhaustionConfidence(hist, ctExtract, backIdx)
+					result.Exhaustions = append(result.Exhaustions, model.ExhaustionPrediction{
+						Resource:   "Conntrack",
+						CurrentPct: curPct,
+						TrendPerS:  trendPerSec,
+						EstMinutes: minutesLeft,
+						Confidence: conf,
+					})
+				}
 			}
 		}
 	}
@@ -432,15 +605,25 @@ func trackExhaustion(result *model.AnalysisResult, hist *History) {
 		oldPct := float64(old.Global.FD.Allocated) / float64(old.Global.FD.Max) * 100
 		trendPerSec := (curPct - oldPct) / elapsed
 		remaining := 100 - curPct
-		if trendPerSec > 0.01 && remaining > 0 {
-			minutesLeft := remaining / trendPerSec / 60
-			if minutesLeft < 60 && minutesLeft > 0 {
-				result.Exhaustions = append(result.Exhaustions, model.ExhaustionPrediction{
-					Resource:   "File descriptors",
-					CurrentPct: curPct,
-					TrendPerS:  trendPerSec,
-					EstMinutes: minutesLeft,
-				})
+		if trendPerSec > 0.05 && remaining > 0 { // 5x more conservative
+			fdExtract := func(s *model.Snapshot) float64 {
+				if s.Global.FD.Max == 0 {
+					return 0
+				}
+				return float64(s.Global.FD.Allocated) / float64(s.Global.FD.Max) * 100
+			}
+			if isMonotonicTrend(hist, fdExtract, backIdx) {
+				minutesLeft := remaining / trendPerSec / 60
+				if minutesLeft > 0 && minutesLeft <= maxPredictMin {
+					conf := exhaustionConfidence(hist, fdExtract, backIdx)
+					result.Exhaustions = append(result.Exhaustions, model.ExhaustionPrediction{
+						Resource:   "File descriptors",
+						CurrentPct: curPct,
+						TrendPerS:  trendPerSec,
+						EstMinutes: minutesLeft,
+						Confidence: conf,
+					})
+				}
 			}
 		}
 	}
@@ -462,14 +645,28 @@ func trackExhaustion(result *model.AnalysisResult, hist *History) {
 		oldUsedPct := float64(om.UsedBytes) / float64(om.TotalBytes) * 100
 		trendPerSec := (curUsedPct - oldUsedPct) / elapsed
 		remaining := 100 - curUsedPct
-		if trendPerSec > 0.001 && remaining > 0 {
+		if trendPerSec > 0.005 && remaining > 0 { // 5x more conservative
+			// Minimum disk consumption rate filter
+			if trendPerSec < minDiskRatePerSec {
+				continue // rate too small — likely noise
+			}
 			minutesLeft := remaining / trendPerSec / 60
-			if minutesLeft < 120 && minutesLeft > 0 {
+			if minutesLeft > maxPredictMin {
+				continue // prediction horizon too far, unreliable
+			}
+			if minutesLeft > 0 && minutesLeft <= maxExhaustionMinutes {
+				// Disk doesn't use isMonotonicTrend per-mount, so use a simpler
+				// confidence: default 0.7, dampened if observation window is short.
+				conf := 0.7
+				if elapsed < 60 {
+					conf = 0.3
+				}
 				result.Exhaustions = append(result.Exhaustions, model.ExhaustionPrediction{
 					Resource:   "Disk " + m.MountPoint,
 					CurrentPct: curUsedPct,
 					TrendPerS:  trendPerSec,
 					EstMinutes: minutesLeft,
+					Confidence: conf,
 				})
 			}
 		}
@@ -485,14 +682,19 @@ func trackExhaustion(result *model.AnalysisResult, hist *History) {
 			oldPct := float64(oldEph.InUse) / float64(ephRange) * 100
 			trendPerSec := (curPct - oldPct) / elapsed
 			remaining := 100 - curPct
-			if trendPerSec > 0.01 && remaining > 0 {
+			if trendPerSec > 0.05 && remaining > 0 { // 5x more conservative
 				minutesLeft := remaining / trendPerSec / 60
-				if minutesLeft < 60 && minutesLeft > 0 {
+				if minutesLeft > 0 && minutesLeft <= maxPredictMin {
+					conf := 0.7
+					if elapsed < 60 {
+						conf = 0.3
+					}
 					result.Exhaustions = append(result.Exhaustions, model.ExhaustionPrediction{
 						Resource:   "Ephemeral ports",
 						CurrentPct: curPct,
 						TrendPerS:  trendPerSec,
 						EstMinutes: minutesLeft,
+						Confidence: conf,
 					})
 				}
 			}
@@ -504,16 +706,21 @@ func trackExhaustion(result *model.AnalysisResult, hist *History) {
 	cwOld := old.Global.TCPStates.CloseWait
 	if cwCur > 50 && cwCur > cwOld {
 		cwGrowthPerSec := float64(cwCur-cwOld) / elapsed
-		if cwGrowthPerSec > 0.01 {
+		if cwGrowthPerSec > 0.1 { // 10x more conservative
 			remaining := float64(10000 - cwCur) // predict time to 10K sockets
 			if remaining > 0 {
 				minutesLeft := remaining / cwGrowthPerSec / 60
-				if minutesLeft < 120 && minutesLeft > 0 {
+				if minutesLeft > 0 && minutesLeft <= maxPredictMin {
+					conf := 0.7
+					if elapsed < 60 {
+						conf = 0.3
+					}
 					result.Exhaustions = append(result.Exhaustions, model.ExhaustionPrediction{
 						Resource:   "CLOSE_WAIT sockets",
 						CurrentPct: float64(cwCur),
 						TrendPerS:  cwGrowthPerSec,
 						EstMinutes: minutesLeft,
+						Confidence: conf,
 					})
 				}
 			}

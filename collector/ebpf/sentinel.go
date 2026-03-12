@@ -65,8 +65,10 @@ type SentinelManager struct {
 }
 
 // NewSentinelManager creates a new sentinel manager.
+// Probe attachment starts immediately in a background goroutine so the first
+// Collect() call does not block the TUI startup.
 func NewSentinelManager() *SentinelManager {
-	return &SentinelManager{
+	s := &SentinelManager{
 		prevDrops:    make(map[uint32]uint64),
 		prevResets:   make(map[uint32]uint64),
 		prevStates:   make(map[uint32]uint64),
@@ -79,6 +81,17 @@ func NewSentinelManager() *SentinelManager {
 		prevOutBytes: make(map[string]uint64),
 		selfPID:      uint32(os.Getpid()),
 	}
+	// Start attaching probes in the background so the first Tick() is fast.
+	go func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if !s.attached {
+			s.attach()
+			s.attached = true
+			s.lastRead = time.Now()
+		}
+	}()
+	return s
 }
 
 // Name implements collector.Collector.
@@ -91,13 +104,10 @@ func (s *SentinelManager) Collect(snap *model.Snapshot) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Lazy attach on first call
+	// If background attach hasn't finished yet, skip this tick
 	if !s.attached {
-		s.attach()
-		s.attached = true
-		s.lastRead = time.Now()
-		snap.Global.Sentinel.Active = s.attachedCount > 0
-		snap.Global.Sentinel.AttachErr = s.attachErr
+		snap.Global.Sentinel.Active = false
+		snap.Global.Sentinel.AttachErr = "probes loading..."
 		return nil
 	}
 

@@ -18,6 +18,14 @@ type History struct {
 	alert        *AlertState
 	signalOnsets map[string]time.Time // evidence ID → first-seen time
 	mu           sync.RWMutex
+
+	// Statistical intelligence
+	Baselines     *BaselineTracker
+	ZScores       *ZScoreTracker
+	Correlator    *Correlator
+	Forecaster    *HoltForecaster
+	Seasonal      *SeasonalTracker
+	CausalLearner *CausalLearner
 }
 
 // NewHistory creates a ring buffer with the given capacity.
@@ -32,7 +40,13 @@ func NewHistory(capacity, intervalSec int) *History {
 		cap:          capacity,
 		anomaly:      &AnomalyState{},
 		alert:        NewAlertState(intervalSec),
-		signalOnsets: make(map[string]time.Time),
+		signalOnsets:  make(map[string]time.Time),
+		Baselines:     NewBaselineTracker(0.03),
+		ZScores:       NewZScoreTracker(60),
+		Correlator:    NewCorrelator(),
+		Forecaster:    NewHoltForecaster(0.3, 0.1),
+		Seasonal:      NewSeasonalTracker(0.02),
+		CausalLearner: NewCausalLearner(),
 	}
 }
 

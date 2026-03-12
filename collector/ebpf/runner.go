@@ -429,7 +429,12 @@ var domainPacks = map[string][]string{
 }
 
 // RunProbeCtxDomain runs only the probes relevant to a specific domain.
-func RunProbeCtxDomain(duration time.Duration, domain string) (*ProbeResults, error) {
+// Accepts a context for cancellation support (e.g. on TUI shutdown).
+func RunProbeCtxDomain(duration time.Duration, domain string, ctxOpts ...context.Context) (*ProbeResults, error) {
+	domainCtx := context.Background()
+	if len(ctxOpts) > 0 && ctxOpts[0] != nil {
+		domainCtx = ctxOpts[0]
+	}
 	packs, ok := domainPacks[domain]
 	if !ok {
 		return nil, fmt.Errorf("unknown domain: %s", domain)
@@ -764,8 +769,15 @@ func RunProbeCtxDomain(duration time.Duration, domain string) (*ProbeResults, er
 		return nil, fmt.Errorf("no domain probes attached: %v", results.Errors)
 	}
 
-	// Collect for duration
-	time.Sleep(duration)
+	// Collect for duration (cancellable via domainCtx if set)
+	select {
+	case <-time.After(duration):
+	case <-domainCtx.Done():
+		for _, p := range attached {
+			p.closer()
+		}
+		return nil, domainCtx.Err()
+	}
 
 	// Read all maps
 	for _, p := range attached {

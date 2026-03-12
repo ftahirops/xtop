@@ -65,6 +65,11 @@ func (p *dnsdeepProbe) read() ([]model.DNSTunnelIndicator, error) {
 		if val.TotalQueries > 0 {
 			avgQueryLen = int(val.TotalQueryBytes / val.TotalQueries)
 		}
+		// Only report entries that actually look suspicious:
+		// TXT ratio > 0.3 (30%) or avg query length > 80 chars
+		if txtRatio < 0.3 && avgQueryLen < 80 {
+			continue
+		}
 		results = append(results, model.DNSTunnelIndicator{
 			SrcIP:       formatIPv4(saddr),
 			TXTRatio:    txtRatio,

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math/bits"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -62,6 +63,12 @@ func (p *portscanProbe) read() ([]model.PortScanEntry, error) {
 	// Build set of IPs with established TCP connections — these are clients, not scanners
 	establishedIPs := getEstablishedRemoteIPs()
 
+	// If a proxy/LB is running, suppress port scan detection entirely —
+	// proxies generate RSTs to many ports as normal client traffic flows.
+	if hasProxyListening() {
+		return results, nil
+	}
+
 	iter := p.objs.ScanAccum.Iterate()
 	for iter.Next(&srcIP, &val) {
 		if isLoopback(srcIP) {
@@ -75,7 +82,8 @@ func (p *portscanProbe) read() ([]model.PortScanEntry, error) {
 		if val.FirstNs > 0 && nowNs > val.FirstNs {
 			durSec = float64(nowNs-val.FirstNs) / 1e9
 		}
-		if durSec > 60 && float64(val.RstCount)/durSec < 1.0 {
+		// Slow accumulation over long period = normal client churn, not a scan
+		if durSec > 60 && float64(val.RstCount)/durSec < 3.0 {
 			continue
 		}
 		// If this IP has active established connections, it's a client, not a scanner.
@@ -131,6 +139,68 @@ func getEstablishedRemoteIPs() map[string]bool {
 		f.Close()
 	}
 	return ips
+}
+
+// hasProxyListening checks if a reverse proxy / load balancer is among the
+// listening processes. On proxy servers, clients generate RSTs to many ephemeral
+// ports as a normal side-effect of proxied connections, causing false-positive
+// port scan detections.
+func hasProxyListening() bool {
+	proxyNames := map[string]bool{
+		"haproxy": true, "nginx": true, "envoy": true, "traefik": true,
+		"caddy": true, "squid": true, "varnish": true, "apache2": true,
+		"httpd": true, "lighttpd": true, "pound": true,
+	}
+	// Check /proc/net/tcp for LISTEN state (0A) and resolve owning process
+	f, err := os.Open("/proc/net/tcp")
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	listeningInodes := make(map[string]bool)
+	scanner := bufio.NewScanner(f)
+	scanner.Scan() // skip header
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) < 10 {
+			continue
+		}
+		if fields[3] == "0A" { // LISTEN
+			listeningInodes[fields[9]] = true
+		}
+	}
+	if len(listeningInodes) == 0 {
+		return false
+	}
+	// Walk /proc/*/fd to find which process owns listening sockets
+	procs, _ := filepath.Glob("/proc/[0-9]*/fd")
+	for _, fdDir := range procs {
+		pid := strings.Split(fdDir, "/")[2]
+		comm, err := os.ReadFile("/proc/" + pid + "/comm")
+		if err != nil {
+			continue
+		}
+		name := strings.TrimSpace(string(comm))
+		if !proxyNames[name] {
+			continue
+		}
+		// This is a proxy process — check if it owns any listening socket
+		fds, _ := os.ReadDir(fdDir)
+		for _, fd := range fds {
+			link, err := os.Readlink(fdDir + "/" + fd.Name())
+			if err != nil {
+				continue
+			}
+			if !strings.HasPrefix(link, "socket:[") {
+				continue
+			}
+			inode := link[8 : len(link)-1]
+			if listeningInodes[inode] {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (p *portscanProbe) close() {

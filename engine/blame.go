@@ -16,13 +16,13 @@ func ComputeBlame(result *model.AnalysisResult, curr *model.Snapshot, rates *mod
 	var entries []model.BlameEntry
 	switch result.PrimaryBottleneck {
 	case BottleneckCPU:
-		entries = blameCPU(rates)
+		entries = blameCPU(result, rates)
 	case BottleneckMemory:
 		entries = blameMemory(rates)
 	case BottleneckIO:
-		entries = blameIO(rates)
+		entries = blameIO(result, rates)
 	case BottleneckNetwork:
-		entries = blameNetwork(rates, curr)
+		entries = blameNetwork(result, rates, curr)
 	}
 
 	// Resolve application identity for all blame entries
@@ -37,7 +37,23 @@ func ComputeBlame(result *model.AnalysisResult, curr *model.Snapshot, rates *mod
 	return entries
 }
 
-func blameCPU(rates *model.RateSnapshot) []model.BlameEntry {
+// hasActiveEvidence checks whether any RCA entry for the given bottleneck has
+// a firing evidence item (warn or critical) with the specified ID prefix.
+func hasActiveEvidence(result *model.AnalysisResult, bottleneck, evidenceID string) bool {
+	for _, rca := range result.RCA {
+		if rca.Bottleneck != bottleneck {
+			continue
+		}
+		for _, ev := range rca.EvidenceV2 {
+			if ev.ID == evidenceID && ev.Severity != model.SeverityInfo {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func blameCPU(result *model.AnalysisResult, rates *model.RateSnapshot) []model.BlameEntry {
 	type agg struct {
 		comm       string
 		pid        int
@@ -46,6 +62,10 @@ func blameCPU(rates *model.RateSnapshot) []model.BlameEntry {
 		threads    int
 		ctxsw      float64
 	}
+
+	// Detect whether cpu.steal evidence is active — if so, the hypervisor is
+	// the real culprit and per-process blame should be dampened.
+	stealActive := hasActiveEvidence(result, BottleneckCPU, "cpu.steal")
 
 	// Use per-process data (top by CPU)
 	procs := make([]agg, 0, len(rates.ProcessRates))
@@ -72,11 +92,22 @@ func blameCPU(rates *model.RateSnapshot) []model.BlameEntry {
 		n = len(procs)
 	}
 
-	entries := make([]model.BlameEntry, 0, n)
+	entries := make([]model.BlameEntry, 0, n+1)
 	for i := 0; i < n; i++ {
 		p := procs[i]
+
+		// When steal is active, dampen per-process blame since the real
+		// cause is the hypervisor, not any local process.
+		impact := p.cpuPct
+		if stealActive {
+			impact *= 0.5
+		}
+
 		metrics := map[string]string{
 			"cpu": fmt.Sprintf("%.1f%%", p.cpuPct),
+		}
+		if stealActive {
+			metrics["note"] = "dampened (steal)"
 		}
 		if p.threads > 1 {
 			metrics["threads"] = fmt.Sprintf("%d", p.threads)
@@ -89,9 +120,21 @@ func blameCPU(rates *model.RateSnapshot) []model.BlameEntry {
 			PID:        p.pid,
 			CgroupPath: p.cgroup,
 			Metrics:    metrics,
-			ImpactPct:  p.cpuPct,
+			ImpactPct:  impact,
 		})
 	}
+
+	// If steal is the dominant issue, blame hypervisor
+	if rates.CPUStealPct > rates.CPUBusyPct*0.3 && rates.CPUStealPct > 5 {
+		entries = append([]model.BlameEntry{{
+			Comm: "hypervisor-steal",
+			Metrics: map[string]string{
+				"steal": fmt.Sprintf("%.1f%%", rates.CPUStealPct),
+			},
+			ImpactPct: rates.CPUStealPct,
+		}}, entries...)
+	}
+
 	return entries
 }
 
@@ -150,12 +193,20 @@ func blameMemory(rates *model.RateSnapshot) []model.BlameEntry {
 	return entries
 }
 
-func blameIO(rates *model.RateSnapshot) []model.BlameEntry {
+func blameIO(result *model.AnalysisResult, rates *model.RateSnapshot) []model.BlameEntry {
+	// Detect writeback or disk latency evidence — when active, write-heavy
+	// processes deserve proportionally more blame than read-heavy ones.
+	writebackActive := hasActiveEvidence(result, BottleneckIO, "io.writeback")
+	diskLatActive := hasActiveEvidence(result, BottleneckIO, "io.disk.latency")
+	writeWeighted := writebackActive || diskLatActive
+
 	type agg struct {
 		comm   string
 		pid    int
 		cgroup string
 		ioMBs  float64
+		readMB float64
+		writMB float64
 		write  string
 	}
 
@@ -164,7 +215,15 @@ func blameIO(rates *model.RateSnapshot) []model.BlameEntry {
 		if isKernelThread(p.Comm) {
 			continue
 		}
-		totalIO := p.ReadMBs + p.WriteMBs
+
+		// Base weight: writes already get 2x. When writeback/disk-latency
+		// evidence fires, boost the write multiplier to 4x so write-heavy
+		// processes float to the top of the blame list.
+		writeMult := 2.0
+		if writeWeighted {
+			writeMult = 4.0
+		}
+		totalIO := p.ReadMBs + p.WriteMBs*writeMult
 		if totalIO < 0.1 {
 			continue
 		}
@@ -173,6 +232,8 @@ func blameIO(rates *model.RateSnapshot) []model.BlameEntry {
 			pid:    p.PID,
 			cgroup: p.CgroupPath,
 			ioMBs:  totalIO,
+			readMB: p.ReadMBs,
+			writMB: p.WriteMBs,
 			write:  p.WritePath,
 		})
 	}
@@ -187,7 +248,10 @@ func blameIO(rates *model.RateSnapshot) []model.BlameEntry {
 	for i := 0; i < n; i++ {
 		p := procs[i]
 		metrics := map[string]string{
-			"io": fmt.Sprintf("%.1f MB/s", p.ioMBs),
+			"io": fmt.Sprintf("R:%.1f W:%.1f MB/s", p.readMB, p.writMB),
+		}
+		if writeWeighted && p.writMB > p.readMB {
+			metrics["note"] = "write-heavy (writeback/latency)"
 		}
 		if p.write != "" {
 			metrics["path"] = p.write
@@ -203,10 +267,10 @@ func blameIO(rates *model.RateSnapshot) []model.BlameEntry {
 	return entries
 }
 
-func blameNetwork(rates *model.RateSnapshot, curr *model.Snapshot) []model.BlameEntry {
-	// For network, attribute by CLOSE_WAIT leakers + top processes
+func blameNetwork(result *model.AnalysisResult, rates *model.RateSnapshot, curr *model.Snapshot) []model.BlameEntry {
 	var entries []model.BlameEntry
 
+	// 1. CLOSE_WAIT leakers — processes holding stale connections
 	if curr != nil {
 		for _, cw := range curr.Global.CloseWaitLeakers {
 			if cw.Count < 1 {
@@ -219,6 +283,152 @@ func blameNetwork(rates *model.RateSnapshot, curr *model.Snapshot) []model.Blame
 					"CLOSE_WAIT": fmt.Sprintf("%d", cw.Count),
 				},
 				ImpactPct: float64(cw.Count),
+			})
+		}
+	}
+
+	// 2. Application-level connection hogs — processes holding many connections
+	//    contribute to conntrack pressure, ephemeral port exhaustion, and retransmits.
+	if curr != nil {
+		for _, app := range curr.Global.Apps.Instances {
+			if app.Connections < 20 {
+				continue
+			}
+			// Avoid duplicating a CLOSE_WAIT leaker already listed
+			dup := false
+			for _, e := range entries {
+				if e.PID == app.PID {
+					dup = true
+					break
+				}
+			}
+			if dup {
+				continue
+			}
+			metrics := map[string]string{
+				"conns": fmt.Sprintf("%d", app.Connections),
+			}
+			if app.CPUPct > 1 {
+				metrics["cpu"] = fmt.Sprintf("%.1f%%", app.CPUPct)
+			}
+			entries = append(entries, model.BlameEntry{
+				Comm:    app.DisplayName,
+				PID:     app.PID,
+				Metrics: metrics,
+				// Scale impact: each connection adds to network pressure.
+				ImpactPct: float64(app.Connections),
+			})
+		}
+	}
+
+	// 3. High-FD processes as connection proxy — when no application-level data,
+	//    processes with very high FD counts are likely holding many sockets.
+	if len(entries) == 0 && rates != nil {
+		type fdProc struct {
+			comm   string
+			pid    int
+			cgroup string
+			fds    int
+			fdPct  float64
+		}
+		var procs []fdProc
+		for _, p := range rates.ProcessRates {
+			if isKernelThread(p.Comm) {
+				continue
+			}
+			// Only consider processes with a meaningful number of FDs
+			if p.FDCount < 100 {
+				continue
+			}
+			procs = append(procs, fdProc{p.Comm, p.PID, p.CgroupPath, p.FDCount, p.FDPct})
+		}
+		sort.Slice(procs, func(i, j int) bool { return procs[i].fds > procs[j].fds })
+		n := 3
+		if len(procs) < n {
+			n = len(procs)
+		}
+		for i := 0; i < n; i++ {
+			p := procs[i]
+			metrics := map[string]string{
+				"fds": fmt.Sprintf("%d", p.fds),
+			}
+			if p.fdPct > 50 {
+				metrics["fd_pressure"] = fmt.Sprintf("%.0f%%", p.fdPct)
+			}
+			entries = append(entries, model.BlameEntry{
+				Comm:       p.comm,
+				PID:        p.pid,
+				CgroupPath: p.cgroup,
+				Metrics:    metrics,
+				ImpactPct:  float64(p.fds),
+			})
+		}
+	}
+
+	// 4. Fallback: top bandwidth consumers from process IO rates
+	if len(entries) == 0 && rates != nil {
+		type netProc struct {
+			comm   string
+			pid    int
+			cgroup string
+			bw     float64
+		}
+		var procs []netProc
+		for _, p := range rates.ProcessRates {
+			if isKernelThread(p.Comm) {
+				continue
+			}
+			total := p.ReadMBs + p.WriteMBs
+			if total < 0.1 {
+				continue
+			}
+			procs = append(procs, netProc{p.Comm, p.PID, p.CgroupPath, total})
+		}
+		sort.Slice(procs, func(i, j int) bool { return procs[i].bw > procs[j].bw })
+		n := 5
+		if len(procs) < n {
+			n = len(procs)
+		}
+		for i := 0; i < n; i++ {
+			entries = append(entries, model.BlameEntry{
+				Comm:       procs[i].comm,
+				PID:        procs[i].pid,
+				CgroupPath: procs[i].cgroup,
+				Metrics:    map[string]string{"io": fmt.Sprintf("%.1f MB/s", procs[i].bw)},
+				ImpactPct:  procs[i].bw,
+			})
+		}
+	}
+
+	// 5. When conntrack/retrans evidence fires at system level, add a synthetic
+	//    entry so the user knows it is a system-wide issue, not just one process.
+	if result != nil {
+		conntrackDrop := hasActiveEvidence(result, BottleneckNetwork, "net.conntrack.drops")
+		conntrackGrowth := hasActiveEvidence(result, BottleneckNetwork, "net.conntrack.growth")
+		retransHigh := hasActiveEvidence(result, BottleneckNetwork, "net.tcp.retrans")
+		if conntrackDrop || conntrackGrowth {
+			metrics := map[string]string{}
+			if rates != nil && rates.ConntrackDropRate > 0 {
+				metrics["ct_drops"] = fmt.Sprintf("%.0f/s", rates.ConntrackDropRate)
+			}
+			if rates != nil && rates.ConntrackGrowthRate > 0 {
+				metrics["ct_growth"] = fmt.Sprintf("%.0f/s", rates.ConntrackGrowthRate)
+			}
+			if len(metrics) > 0 {
+				entries = append(entries, model.BlameEntry{
+					Comm:      "conntrack-pressure",
+					Metrics:   metrics,
+					ImpactPct: rates.ConntrackDropRate + rates.ConntrackGrowthRate,
+				})
+			}
+		}
+		if retransHigh && rates != nil && rates.RetransRate > 0 {
+			entries = append(entries, model.BlameEntry{
+				Comm: "tcp-retransmits",
+				Metrics: map[string]string{
+					"retrans": fmt.Sprintf("%.0f/s", rates.RetransRate),
+				},
+				ImpactPct: rates.RetransRate,
 			})
 		}
 	}

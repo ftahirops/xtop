@@ -1073,8 +1073,9 @@ func renderExhaustionBlock(result *model.AnalysisResult, width int) string {
 		sb.WriteString(boxRow(dimStyle.Render("none"), innerW) + "\n")
 	} else {
 		for _, ex := range result.Exhaustions {
+			confPct := int(ex.Confidence * 100)
 			content := critStyle.Render(fmt.Sprintf("!! %s exhaustion in ~%.0fm", ex.Resource, ex.EstMinutes)) +
-				dimStyle.Render(fmt.Sprintf("  (%.0f%%, +%.2f%%/s)", ex.CurrentPct, ex.TrendPerS))
+				dimStyle.Render(fmt.Sprintf("  (%.0f%%, +%.2f%%/s, conf %d%%)", ex.CurrentPct, ex.TrendPerS, confPct))
 			sb.WriteString(boxRow(content, innerW) + "\n")
 		}
 	}

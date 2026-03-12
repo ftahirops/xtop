@@ -1444,8 +1444,8 @@ func exportIncidentMarkdown(snap *model.Snapshot, rates *model.RateSnapshot, res
 			if len(result.Exhaustions) > 0 {
 				sb.WriteString("## Exhaustion Predictions\n\n")
 				for _, ex := range result.Exhaustions {
-					sb.WriteString(fmt.Sprintf("- **%s**: %.0f%% used, exhaustion in ~%.0f min\n",
-						ex.Resource, ex.CurrentPct, ex.EstMinutes))
+					sb.WriteString(fmt.Sprintf("- **%s**: %.0f%% used, exhaustion in ~%.0f min (confidence %d%%)\n",
+						ex.Resource, ex.CurrentPct, ex.EstMinutes, int(ex.Confidence*100)))
 				}
 				sb.WriteString("\n")
 			}

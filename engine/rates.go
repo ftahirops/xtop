@@ -76,6 +76,9 @@ func computeMemRates(prev, curr *model.Snapshot, dt time.Duration, r *model.Rate
 	r.DirectReclaimRate = util.Rate(pv.PgScanDirect, cv.PgScanDirect, dt)
 	r.KswapdRate = util.Rate(pv.PgScanKswapd, cv.PgScanKswapd, dt)
 	r.OOMKillDelta = util.Delta(pv.OOMKill, cv.OOMKill)
+	r.AllocStallRate = util.Rate(pv.AllocStall, cv.AllocStall, dt)
+	// SUnreclaim change (bytes, can be negative — slab leak detection)
+	r.SUnreclaimDelta = int64(curr.Global.Memory.SUnreclaim) - int64(prev.Global.Memory.SUnreclaim)
 }
 
 func computeDiskRates(prev, curr *model.Snapshot, dt time.Duration, r *model.RateSnapshot) {
@@ -217,6 +220,8 @@ func computeNetRates(prev, curr *model.Snapshot, dt time.Duration, r *model.Rate
 	r.InSegRate = util.Rate(prev.Global.TCP.InSegs, curr.Global.TCP.InSegs, dt)
 	r.OutSegRate = util.Rate(prev.Global.TCP.OutSegs, curr.Global.TCP.OutSegs, dt)
 	r.TCPResetRate = util.Rate(prev.Global.TCP.EstabResets, curr.Global.TCP.EstabResets, dt)
+	r.TCPAttemptFailRate = util.Rate(prev.Global.TCP.AttemptFails, curr.Global.TCP.AttemptFails, dt)
+	r.TCPResetRateAgg = r.TCPResetRate // aggregate from /proc/net/snmp (same source, aliased for clarity)
 
 	r.UDPInRate = util.Rate(prev.Global.UDP.InDatagrams, curr.Global.UDP.InDatagrams, dt)
 	r.UDPOutRate = util.Rate(prev.Global.UDP.OutDatagrams, curr.Global.UDP.OutDatagrams, dt)

@@ -12,6 +12,66 @@ import (
 // Security Page — Collapsible Section Architecture
 // ──────────────────────────────────────────────────────────────────────────────
 
+// isProxyProcess returns true for load balancers / reverse proxies that naturally
+// connect to many backends and move large volumes of traffic.
+func isProxyProcess(comm string) bool {
+	switch strings.ToLower(comm) {
+	case "haproxy", "nginx", "envoy", "traefik", "caddy", "squid", "varnish",
+		"apache2", "httpd", "lighttpd", "pound", "relayd":
+		return true
+	}
+	return false
+}
+
+// knownMultiDestVerdict returns a plain-English verdict for processes that are known
+// to legitimately connect to many destinations. Returns "" if the process is unknown.
+func knownMultiDestVerdict(comm string) string {
+	switch strings.ToLower(comm) {
+	// Log shippers
+	case "rsyslogd", "syslog-ng", "syslogd":
+		return "Log forwarder — connects to many hosts to collect/relay logs"
+	case "filebeat", "fluentd", "fluent-bit", "logstash", "vector":
+		return "Log shipper — sends logs from multiple sources to central store"
+	// Monitoring agents
+	case "agent", "trace-agent", "process-agent", "datadog-agent":
+		return "Monitoring agent (Datadog) — polls metrics from all local services"
+	case "telegraf", "collectd", "node_exporter", "prometheus", "grafana-agent",
+		"alloy", "otel-collector", "newrelic-infra", "zabbix_agentd":
+		return "Monitoring agent — collects metrics from multiple endpoints"
+	// System services
+	case "unattended-upgr", "unattended-upgrade", "apt", "dpkg", "yum", "dnf", "packagekitd":
+		return "Package manager — connects to multiple mirrors for updates"
+	case "systemd-resolve", "systemd-resolved", "dnsmasq", "named", "unbound", "coredns":
+		return "DNS resolver — resolves queries to many upstream servers"
+	// Orchestration / config management
+	case "ansible", "puppet", "chef-client", "salt-minion", "consul", "consul-agent":
+		return "Config management / service discovery — connects to managed hosts"
+	case "kubelet", "kube-proxy", "containerd", "dockerd", "crio":
+		return "Container orchestrator — manages containers across the cluster"
+	// Backup / sync
+	case "rsync", "rclone", "borgbackup", "restic", "bacula-fd":
+		return "Backup tool — syncs data to/from multiple storage targets"
+	}
+	return ""
+}
+
+// isKnownOutboundProcess returns true for processes that legitimately send large
+// volumes of data to external IPs (SSH, logging, monitoring, backups).
+func isKnownOutboundProcess(comm string) bool {
+	switch strings.ToLower(comm) {
+	case "sshd", "ssh", "scp", "sftp", "rsync", "rclone",
+		"filebeat", "fluentd", "fluent-bit", "logstash", "vector",
+		"agent", "trace-agent", "process-agent", "datadog-agent",
+		"telegraf", "newrelic-infra", "zabbix_agentd", "grafana-agent",
+		"rsyslogd", "syslog-ng", "journald",
+		"apt", "yum", "dnf", "wget", "curl",
+		"borgbackup", "restic", "bacula-fd",
+		"containerd", "dockerd", "kubelet":
+		return true
+	}
+	return false
+}
+
 // isPrivateIP checks if a formatted "a.b.c.d" IP is RFC1918, link-local, or loopback.
 func isPrivateIP(ip string) bool {
 	if strings.HasPrefix(ip, "10.") || strings.HasPrefix(ip, "127.") ||
@@ -947,7 +1007,7 @@ func renderSecFlowsContent(sent model.SentinelData, iw int) string {
 			avgPktSize := max64f(float64(o.TotalBytes)/float64(max64u(o.PacketCount, 1)), 64)
 			pktsPerSec := o.BytesPerSec / avgPktSize
 			flag := ""
-			if !isPrivateIP(o.DstIP) {
+			if !isPrivateIP(o.DstIP) && !isProxyProcess(o.Comm) && knownMultiDestVerdict(o.Comm) == "" {
 				if mbHr > 5000 {
 					flag = critStyle.Render("EXFIL")
 				} else if mbHr > 500 {
@@ -963,19 +1023,36 @@ func renderSecFlowsContent(sent model.SentinelData, iw int) string {
 				styledPad(valueStyle.Render(fmt.Sprintf("%.0f", pktsPerSec)), 8),
 				flag))
 		}
-		hasExfil := false
+		// Build intelligent verdict for outbound traffic
+		var unknownHighComms []string
+		allRecognized := true
 		for _, o := range sent.OutboundTop {
 			mbHr2 := o.BytesPerSec * 3600.0 / 1024.0 / 1024.0
-			if mbHr2 > 500 && !isPrivateIP(o.DstIP) {
-				hasExfil = true
-				break
+			if mbHr2 < 100 || isPrivateIP(o.DstIP) {
+				continue
+			}
+			if !isProxyProcess(o.Comm) && knownMultiDestVerdict(o.Comm) == "" && !isKnownOutboundProcess(o.Comm) {
+				allRecognized = false
+				found := false
+				for _, c := range unknownHighComms {
+					if c == o.Comm {
+						found = true
+						break
+					}
+				}
+				if !found {
+					unknownHighComms = append(unknownHighComms, o.Comm)
+				}
 			}
 		}
-		if hasExfil {
+		sb.WriteString("\n")
+		if allRecognized {
+			sb.WriteString(okStyle.Render("  ✔ All outbound traffic from recognized services — no exfiltration risk") + "\n")
+		} else {
 			sb.WriteString(secContext(
-				"Large outbound data transfer to external IP — could be data exfiltration or legitimate backup/sync.",
-				"Identify: cat /proc/<PID>/cmdline — check if destination IP is expected.",
-				"Backups (rsync, rclone), CDN uploads, and log shipping produce high outbound legitimately."))
+				fmt.Sprintf("Unrecognized process(es) with high outbound: %s — verify these are expected.", strings.Join(unknownHighComms, ", ")),
+				"",
+				""))
 		}
 		sb.WriteString("\n")
 	}
@@ -984,7 +1061,7 @@ func renderSecFlowsContent(sent model.SentinelData, iw int) string {
 	seenPIDs := make(map[int]bool)
 	var lateralEntries []model.FlowRateEntry
 	for _, f := range sent.FlowRates {
-		if f.UniqueDestCount > 50 && !seenPIDs[f.PID] {
+		if f.UniqueDestCount > 50 && !seenPIDs[f.PID] && !isProxyProcess(f.Comm) {
 			seenPIDs[f.PID] = true
 			lateralEntries = append(lateralEntries, f)
 		}
@@ -992,24 +1069,43 @@ func renderSecFlowsContent(sent model.SentinelData, iw int) string {
 	if len(lateralEntries) > 0 {
 		hasData = true
 		sb.WriteString(headerStyle.Render("  LATERAL MOVEMENT") + "\n")
-		sb.WriteString(dimStyle.Render("  PID     Comm             Unique Dests   Rate/s    Flag") + "\n")
-		sb.WriteString(dimStyle.Render("  "+strings.Repeat("─", 60)) + "\n")
+		sb.WriteString(dimStyle.Render("  PID     Comm             Unique Dests   Rate/s    Verdict") + "\n")
+		sb.WriteString(dimStyle.Render("  "+strings.Repeat("─", 70)) + "\n")
+		unknownCount := 0
 		for _, f := range lateralEntries {
-			flag := warnStyle.Render("LATERAL")
-			if f.UniqueDestCount > 200 {
-				flag = critStyle.Render("LATERAL")
+			verdict := knownMultiDestVerdict(f.Comm)
+			if verdict != "" {
+				// Known safe process
+				sb.WriteString(fmt.Sprintf("  %s %s %s %s %s\n",
+					styledPad(valueStyle.Render(fmt.Sprintf("%d", f.PID)), 7),
+					styledPad(valueStyle.Render(padRight(f.Comm, 16)), 16),
+					styledPad(dimStyle.Render(fmt.Sprintf("%d", f.UniqueDestCount)), 14),
+					styledPad(dimStyle.Render(fmt.Sprintf("%.1f", f.Rate)), 9),
+					okStyle.Render("OK")))
+				sb.WriteString(dimStyle.Render(fmt.Sprintf("         └─ %s", verdict)) + "\n")
+			} else {
+				unknownCount++
+				flag := warnStyle.Render("INVESTIGATE")
+				if f.UniqueDestCount > 200 {
+					flag = critStyle.Render("INVESTIGATE")
+				}
+				sb.WriteString(fmt.Sprintf("  %s %s %s %s %s\n",
+					styledPad(warnStyle.Render(fmt.Sprintf("%d", f.PID)), 7),
+					styledPad(warnStyle.Render(padRight(f.Comm, 16)), 16),
+					styledPad(warnStyle.Render(fmt.Sprintf("%d", f.UniqueDestCount)), 14),
+					styledPad(valueStyle.Render(fmt.Sprintf("%.1f", f.Rate)), 9),
+					flag))
 			}
-			sb.WriteString(fmt.Sprintf("  %s %s %s %s %s\n",
-				styledPad(valueStyle.Render(fmt.Sprintf("%d", f.PID)), 7),
-				styledPad(valueStyle.Render(padRight(f.Comm, 16)), 16),
-				styledPad(warnStyle.Render(fmt.Sprintf("%d", f.UniqueDestCount)), 14),
-				styledPad(valueStyle.Render(fmt.Sprintf("%.1f", f.Rate)), 9),
-				flag))
 		}
-		sb.WriteString(secContext(
-			"A process is connecting to many different internal hosts — attackers use this to spread after initial compromise.",
-			"Investigate: ss -tnp | grep <PID> — check if destinations are expected for this service.",
-			"Service discovery, monitoring (Prometheus), and orchestrators (Ansible) connect to many hosts."))
+		if unknownCount == 0 {
+			sb.WriteString("\n")
+			sb.WriteString(okStyle.Render("  ✔ All processes recognized — no lateral movement threat") + "\n")
+		} else {
+			sb.WriteString(secContext(
+				fmt.Sprintf("%d unknown process(es) connecting to many hosts — could be lateral movement.", unknownCount),
+				"Check: cat /proc/<PID>/cmdline — is this a known service or unexpected?",
+				""))
+		}
 		sb.WriteString("\n")
 	}
 

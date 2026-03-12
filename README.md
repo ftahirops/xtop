@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/xtop-v0.29.2-00d4aa?style=for-the-badge&logo=linux&logoColor=white" alt="version"/>
+  <img src="https://img.shields.io/badge/xtop-v0.31.0-00d4aa?style=for-the-badge&logo=linux&logoColor=white" alt="version"/>
   <img src="https://img.shields.io/badge/Go-1.21+-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="go"/>
   <img src="https://img.shields.io/badge/eBPF-Powered-ff6600?style=for-the-badge&logo=linux&logoColor=white" alt="ebpf"/>
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="license"/>
@@ -44,8 +44,9 @@
 - [The Problem](#the-problem) — Why traditional tools fail
 - [How xtop Solves It](#how-xtop-solves-it) — What xtop answers in 5 seconds
 - [Features](#features)
-  - [Root-Cause Analysis Engine](#root-cause-analysis-engine) — 47+ evidence checks, 4 bottleneck detectors
-  - [RCA Decision Engine](#rca-decision-engine-v0265) — Narrative, pattern detection, temporal causality, blame
+  - [Root-Cause Analysis Engine](#root-cause-analysis-engine) — 68 evidence checks, 4 bottleneck detectors
+  - [RCA Decision Engine](#rca-decision-engine-v0310) — Narrative, pattern detection, temporal causality, blame
+  - [Statistical RCA Intelligence](#statistical-rca-intelligence-v0310) — EWMA baselines, z-score anomaly, Pearson correlation, Holt forecasting, seasonal awareness, process profiling, golden signals, causal learning
   - [Health Levels](#health-levels) — OK / Inconclusive / Degraded / Critical
   - [17 Interactive Pages](#17-interactive-pages) — Overview, CPU, Memory, IO, Network, Cgroups, Timeline, Events, Probe, Thresholds, DiskGuard, Security, Logs, Services, Diagnostics, Intel, Apps, Proxmox
   - [6 Overview Layouts](#6-overview-layouts) — Two-Column, Compact, Adaptive, Grid, htop, btop
@@ -113,7 +114,7 @@ Instead of 50+ fragmented tools, xtop gives you **one unified console** that:
 | Raw metrics across 12+ tools | **Unified dashboard** — all subsystems in one view |
 | You manually correlate signals | **Automatic RCA engine** — correlates CPU, memory, IO, network, cgroups |
 | "CPU is 80%" | **"CPU Contention: api-server throttled 34% in user.slice — Confidence: 72%"** |
-| Read man pages for thresholds | **Evidence-based scoring** — 47+ evidence checks, weighted formulas |
+| Read man pages for thresholds | **Evidence-based scoring** — 68 evidence checks, weighted formulas |
 | Guess who's causing it | **Culprit attribution** — pinpoints the cgroup and PID responsible |
 | Google for remediation | **Actionable suggestions** — tells you what commands to run |
 | Lose context between snapshots | **Anomaly tracking** — "Started 62s ago, triggered by IO PSI spike" |
@@ -138,7 +139,7 @@ Instead of 50+ fragmented tools, xtop gives you **one unified console** that:
 
 ### Root-Cause Analysis Engine
 
-The heart of xtop. Four parallel bottleneck detectors continuously score system health using **47+ evidence checks** across **4 independent signal groups**:
+The heart of xtop. Four parallel bottleneck detectors continuously score system health using **68 evidence checks** across **4 independent signal groups**:
 
 | Bottleneck | Evidence Groups | What It Detects |
 |---|---|---|
@@ -149,19 +150,42 @@ The heart of xtop. Four parallel bottleneck detectors continuously score system 
 
 **Trust Gating:** A bottleneck is only reported when **2+ independent evidence groups** confirm it. This eliminates false positives from single-metric spikes. Confidence scales from 30% (2 groups) to 98% (5+ groups).
 
-### RCA Decision Engine (v0.29.2)
+### RCA Decision Engine (v0.31.0)
 
 Beyond raw signals, xtop's **decision engine** tells you EXACTLY what's wrong, why, what caused it, and what to do:
 
 - **Narrative Engine** — Human-readable root cause explanations replace raw metric names. Instead of "CPU Contention" you see *"CPU throttle cascade — cgroup limits saturating run queue"* with top evidence lines and impact summary
-- **Pattern Detection** — 23 named failure patterns (OOM Crisis, Memory-Induced IO Storm, CPU Throttle Cascade, Disk IO Saturation, VM Noisy Neighbor, Network Congestion, Socket Leak, Conntrack Exhaustion, DDoS SYN Flood, Port Scan Attack, C2 Beacon Active, Data Exfiltration, and more) checked by priority
+- **Pattern Detection** — 32 named failure patterns (OOM Crisis, Memory-Induced IO Storm, CPU Throttle Cascade, Disk IO Saturation, VM Noisy Neighbor, Network Congestion, Socket Leak, Conntrack Exhaustion, DDoS SYN Flood, Port Scan Attack, C2 Beacon Active, Data Exfiltration, Slab Leak, IRQ Imbalance, and more) checked by priority
 - **Temporal Causality** — Tracks signal onset times to identify which signal fired first and builds chains like `retransmits (T+0s) → drops (T+3s) → threads blocked (T+12s)`
 - **Blame Attribution** — Top offending processes per bottleneck domain with process-specific metrics (cpu%, threads, ctxsw, mem%, RSS, IO MB/s, CLOSE_WAIT count)
 - **Security Evidence** — BPF sentinel and watchdog probes feed security-specific evidence (SYN flood, port scan, lateral movement, data exfiltration, DNS tunneling, C2 beacon) into the RCA scoring with dedicated threat score bypass
+- **Statistical Intelligence** — EWMA baselines, z-score anomaly detection, Pearson cross-metric correlation, Holt double-exponential trend forecasting, seasonal hour-of-day awareness, per-process behavior profiling, and causal strength learning — all pure math, zero external dependencies
 - **Application-Level RCA** — 15 auto-detected application modules with deep health diagnostics. Each module scores health from 100 down, applying weighted penalties for degraded metrics (e.g., MySQL buffer pool hit ratio < 95% = -15, PostgreSQL deadlocks > 0 = -10, HAProxy servers DOWN = -15 each). Total of **120+ application health rules** across all modules correlating internal app state with system-level bottlenecks
 
 Press `e` (Explain) to see the full ROOT CAUSE → EVIDENCE → IMPACT → TEMPORAL CAUSALITY → TOP OFFENDERS breakdown.
 Press `Y` to see per-application health diagnostics with deep metrics.
+
+### Statistical RCA Intelligence (v0.31.0)
+
+xtop doesn't just check thresholds — it **learns your system's normal behavior** and detects anomalies that static rules would miss. Eight statistical modules run continuously with zero configuration:
+
+| Module | What It Does | How It Works |
+|---|---|---|
+| **EWMA Baselines** | Learns dynamic "normal" for every metric | Exponentially Weighted Moving Average with Welford's online variance — adapts to drift, flags deviations > 3σ |
+| **Z-Score Anomaly** | Detects relative anomalies in sliding windows | 60-sample sliding window z-score — catches sudden spikes even when absolute values are normal |
+| **Pearson Correlation** | Discovers cause-effect relationships between metrics | Streaming Pearson R across 20 pre-defined metric pairs — surfaces correlations |R| > 0.7 |
+| **Holt Forecasting** | Predicts where metrics are heading | Double exponential smoothing with trend — "Memory exhaustion in ~22 minutes" with ETA-to-threshold |
+| **Seasonal Awareness** | Learns recurring patterns by hour-of-day | Per-hour EWMA baselines suppress alerts for known patterns — "CPU always high at 2AM during backups" |
+| **Process Profiling** | Detects when a process deviates from its own baseline | Per-Comm EWMA for CPU, memory, IO — flags when `mysql` suddenly uses 3x its normal CPU |
+| **Golden Signals** | Google SRE signal approximation from /proc data | Latency (IO PSI + await), Traffic (net bytes + disk IOPS), Errors (retransmits + drops + OOM), Saturation (run queue + mem pressure + conntrack) |
+| **Causal Learning** | Blends observed causality with hardcoded rules | Tracks rule prediction accuracy, blends 70% hardcoded + 30% observed weight (after 20+ observations) |
+
+**Key design:**
+- Pure math — zero external dependencies, no ML frameworks, no Python, no GPUs
+- Online algorithms — constant memory, O(1) per update, no batch processing
+- 100-sample warmup — baselines are silent until statistically meaningful
+- Minimum stddev floor — prevents false anomalies on perfectly stable metrics
+- Thread-safe — all trackers use `sync.RWMutex` for concurrent access
 
 ### Health Levels
 
@@ -566,12 +590,12 @@ xtop -cron-install
 
 ```bash
 # Ubuntu/Debian (amd64)
-wget https://github.com/ftahirops/xtop/releases/download/v0.29.2/xtop_0.29.2-1_amd64.deb
-sudo dpkg -i xtop_0.29.2-1_amd64.deb
+wget https://github.com/ftahirops/xtop/releases/download/v0.31.0/xtop_0.31.0-1_amd64.deb
+sudo dpkg -i xtop_0.31.0-1_amd64.deb
 
 # RHEL/Rocky/Fedora (x86_64)
-wget https://github.com/ftahirops/xtop/releases/download/v0.29.2/xtop-0.29.2-1.x86_64.rpm
-sudo rpm -i xtop-0.29.2-1.x86_64.rpm
+wget https://github.com/ftahirops/xtop/releases/download/v0.31.0/xtop-0.31.0-1.x86_64.rpm
+sudo rpm -i xtop-0.31.0-1.x86_64.rpm
 ```
 
 ### Build from Source
@@ -579,14 +603,14 @@ sudo rpm -i xtop-0.29.2-1.x86_64.rpm
 ```bash
 git clone https://github.com/ftahirops/xtop.git
 cd xtop
-CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.29.2" -o xtop .
+CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.31.0" -o xtop .
 sudo install -m 755 xtop /usr/local/bin/xtop
 ```
 
 ### Run
 
 ```bash
-sudo xtop              # Full TUI, 1s refresh
+sudo xtop              # Full TUI, 3s refresh
 sudo xtop 5            # 5-second intervals
 sudo xtop -watch       # CLI mode, no TUI
 sudo xtop -doctor      # Health check report
@@ -611,15 +635,15 @@ sudo xtop -json | jq   # JSON for scripting
 ### From .deb Package (Ubuntu 22.04/24.04, Debian)
 
 ```bash
-wget https://github.com/ftahirops/xtop/releases/download/v0.29.2/xtop_0.29.2-1_amd64.deb
-sudo dpkg -i xtop_0.29.2-1_amd64.deb
+wget https://github.com/ftahirops/xtop/releases/download/v0.31.0/xtop_0.31.0-1_amd64.deb
+sudo dpkg -i xtop_0.31.0-1_amd64.deb
 ```
 
 ### From .rpm Package (Rocky Linux, RHEL, AlmaLinux, Fedora)
 
 ```bash
-wget https://github.com/ftahirops/xtop/releases/download/v0.29.2/xtop-0.29.2-1.x86_64.rpm
-sudo rpm -i xtop-0.29.2-1.x86_64.rpm
+wget https://github.com/ftahirops/xtop/releases/download/v0.31.0/xtop-0.31.0-1.x86_64.rpm
+sudo rpm -i xtop-0.31.0-1.x86_64.rpm
 ```
 
 ### From Source
@@ -627,7 +651,7 @@ sudo rpm -i xtop-0.29.2-1.x86_64.rpm
 ```bash
 git clone https://github.com/ftahirops/xtop.git
 cd xtop
-CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.29.2" -o xtop .
+CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.31.0" -o xtop .
 sudo install -m 755 xtop /usr/local/bin/xtop
 ```
 
@@ -657,6 +681,7 @@ Modes:
   -daemon           Background collector (writes events to datadir)
   -doctor           Comprehensive health check report
   -version          Print version and exit
+  -update           Check GitHub for latest release and install it
 
 Doctor Options:
   -doctor -watch    Auto-refreshing doctor (like top/watch)
@@ -710,6 +735,7 @@ Options:
 | `E` | Toggle Explain side panel — metric glossary for current page |
 | `a` | Toggle auto-refresh (pause/resume) |
 | `n` | Step one frame (replay mode while paused) |
+| `P` | Export page to Markdown file |
 | `S` | Save RCA snapshot to JSON file |
 | `s` | Cycle sort column (Cgroups page) |
 | `?` | Toggle help overlay |
@@ -746,11 +772,11 @@ xtop reads from **20+ Linux kernel interfaces** — no agents, no daemons, no ex
 
 ```bash
 # === Interactive TUI ===
-sudo xtop                              # Default 1s refresh
+sudo xtop                              # Default 3s refresh
 sudo xtop 5                            # 5-second refresh interval
 
 # === CLI Watch Mode (no TUI, SSH-friendly) ===
-sudo xtop -watch                       # Overview section, 1s refresh
+sudo xtop -watch                       # Overview section, 3s refresh
 sudo xtop -watch -section cpu          # CPU details only
 sudo xtop -watch -section io 3         # IO section, 3s interval
 sudo xtop -watch -section rca          # RCA analysis only
@@ -912,10 +938,15 @@ sudo xtop
 │                        xtop TUI / CLI                           │
 │  17 pages • 6 layouts • watch mode • doctor • shell widget      │
 ├─────────────────────────────────────────────────────────────────┤
+│                    Statistical Intelligence                      │
+│   EWMA Baselines • Z-Score Anomaly • Pearson Correlation         │
+│   Holt Forecasting • Seasonal Awareness • Process Profiling      │
+│   Golden Signals • Causal Strength Learning                      │
+├─────────────────────────────────────────────────────────────────┤
 │                       Analysis Engine                            │
 │   RCA Scoring • Evidence Gating • Anomaly Tracking               │
 │   Causal Chains • Capacity Prediction • Owner Attribution        │
-│   Security Evidence • Threat Scoring • Pattern Matching          │
+│   Security Evidence • Threat Scoring • 32 Pattern Library        │
 ├─────────────────────────────────────────────────────────────────┤
 │                       Doctor Engine                              │
 │   Health checks • Service detection • SSL • Alerts • Cron        │
@@ -945,7 +976,7 @@ sudo xtop
 ## Installed Files
 
 ```
-/usr/local/bin/xtop                  — Binary (~5.7 MB, statically linked)
+/usr/local/bin/xtop                  — Binary (~17 MB, statically linked)
 /usr/share/man/man1/xtop.1.gz        — Man page
 /usr/share/doc/xtop/copyright         — MIT license
 ~/.xtop/                              — Runtime data (config, event logs, daemon state)
@@ -964,6 +995,25 @@ go build ./...
 go vet ./...
 sudo ./xtop
 ```
+
+---
+
+## Roadmap
+
+What's coming next for xtop:
+
+| Feature | Status | Description |
+|---|---|---|
+| **Language Runtime Detection** | In Progress | Auto-discover JVM, .NET, Python, Node.js, Go runtimes — zero-config JVM hsperfdata parsing, GC/heap/thread metrics, GIL-bound detection |
+| **JVM Deep RCA** | In Progress | GC pause evidence, heap pressure alerts, hsperfdata binary parser — correlates JVM GC storms with CPU run queue spikes |
+| **Distributed Tracing Correlation** | Planned | Correlate xtop RCA findings with OpenTelemetry spans — "this IO spike caused 200ms P99 on /api/checkout" |
+| **Kubernetes Pod RCA** | Planned | Per-pod bottleneck detection with cgroup v2 mapping — "Pod X OOMKilled because Node Y memory pressure hit 85%" |
+| **GPU Monitoring** | Planned | NVIDIA GPU utilization, memory, temperature via nvml — detect GPU contention for ML workloads |
+| **Anomaly Clustering** | Planned | Group related anomalies into incident timelines — "these 5 metrics deviated together at T+0" |
+| **Remote Agent Mode** | Planned | Lightweight agent reports to central xtop instance — fleet-wide bottleneck detection |
+| **Custom Evidence Plugins** | Planned | User-defined evidence checks via YAML — "if redis.connected_clients > 10000, fire redis.client.flood" |
+
+Want to influence the roadmap? [Open an issue](https://github.com/ftahirops/xtop/issues).
 
 ---
 
