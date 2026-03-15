@@ -2402,6 +2402,93 @@ func renderHAProxyDeepMetrics(app model.AppInstance, iw int) string {
 		sb.WriteString(boxBot(iw) + "\n\n")
 	}
 
+	// ── BACKEND HEALTH CHECKS ──────────────────────────────────────────
+	{
+		type hcRow struct {
+			name, check, dur, servers, status string
+		}
+		var hcRows []hcRow
+		var hcDisabled int
+		for i := 0; i < beCount; i++ {
+			pre := fmt.Sprintf("be_detail_%d_", i)
+			cs := dm[pre+"check_status"]
+			if cs == "" { continue }
+			if cs == "disabled" {
+				hcDisabled++
+				continue
+			}
+			dur := dm[pre+"check_dur"]
+			durStr := ""
+			if dur != "" && dur != "0" { durStr = dur + "ms" }
+			srvLine := dm[pre+"servers_up"] + "/" + dm[pre+"servers_total"] + " up"
+			if d := dm[pre+"servers_down"]; d != "" && d != "0" {
+				srvLine += ", " + d + " down"
+			}
+			name := dm[pre+"name"]
+			if len(name) > 24 { name = name[:24] }
+			hcRows = append(hcRows, hcRow{name, cs, durStr, srvLine, dm[pre+"health"]})
+		}
+
+		if len(hcRows) > 0 || hcDisabled > 0 {
+			summParts := []string{}
+			checksOK := 0
+			checksFail := 0
+			for _, hc := range hcRows {
+				if strings.Contains(hc.check, "failing") {
+					checksFail++
+				} else {
+					checksOK++
+				}
+			}
+			if checksOK > 0 { summParts = append(summParts, fmt.Sprintf("%d passing", checksOK)) }
+			if checksFail > 0 { summParts = append(summParts, fmt.Sprintf("%d with failures", checksFail)) }
+			if hcDisabled > 0 { summParts = append(summParts, fmt.Sprintf("%d disabled", hcDisabled)) }
+
+			sb.WriteString("  " + titleStyle.Render("BACKEND HEALTH CHECKS") + "  " + dimStyle.Render(strings.Join(summParts, ", ")) + "\n")
+			sb.WriteString(boxTop(iw) + "\n")
+
+			cN, cC, cD, cS := 26, 32, 10, 20
+			sb.WriteString(boxRow(fmt.Sprintf("  %s%s%s%s%s",
+				styledPad(dimStyle.Render("Backend"), cN),
+				styledPad(dimStyle.Render("Health Check"), cC),
+				styledPad(dimStyle.Render("Duration"), cD),
+				styledPad(dimStyle.Render("Servers"), cS),
+				dimStyle.Render("Status")), iw) + "\n")
+			sb.WriteString(boxMid(iw) + "\n")
+
+			for _, hc := range hcRows {
+				checkStyled := okStyle.Render(hc.check)
+				if strings.Contains(hc.check, "failing") {
+					checkStyled = critStyle.Render(hc.check)
+				}
+
+				var statusBadge string
+				switch hc.status {
+				case "HEALTHY":  statusBadge = okStyle.Render("HEALTHY")
+				case "DEGRADED": statusBadge = warnStyle.Render("DEGRADED")
+				case "SLOW":     statusBadge = warnStyle.Render("SLOW")
+				case "CRITICAL": statusBadge = critStyle.Render("CRITICAL")
+				case "DOWN":     statusBadge = critStyle.Render("DOWN")
+				default:         statusBadge = dimStyle.Render(hc.status)
+				}
+
+				row := fmt.Sprintf("  %s%s%s%s%s",
+					styledPad(valueStyle.Render(hc.name), cN),
+					styledPad(checkStyled, cC),
+					styledPad(valueStyle.Render(hc.dur), cD),
+					styledPad(valueStyle.Render(hc.servers), cS),
+					statusBadge)
+				sb.WriteString(boxRow(row, iw) + "\n")
+			}
+
+			if hcDisabled > 0 {
+				sb.WriteString(boxRow("  "+warnStyle.Render(fmt.Sprintf("⚠ %d backends have no health checks configured — failures detected only when clients hit them", hcDisabled)), iw) + "\n")
+			}
+
+			sb.WriteString(boxBot(iw) + "\n\n")
+		}
+	}
+
 	// ── RETRY & REDISPATCH ANALYSIS ─────────────────────────────────────
 	{
 		type retryRow struct{ name, retries, wredis, retryPct, reqs string }

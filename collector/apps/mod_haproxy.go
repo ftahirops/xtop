@@ -487,7 +487,11 @@ type haproxyStatRow struct {
 	dresp   int64  // denied responses
 	qtime   int64  // avg queue time (ms) - backend only
 	ctime   int64  // avg connect time (ms) - backend only
-	lastchg int64  // seconds since last status change
+	lastchg     int64  // seconds since last status change
+	checkStatus string // health check status (L4OK, L7OK, L7STS, etc.)
+	checkCode   int64  // health check HTTP response code
+	checkDur    int64  // health check duration (ms)
+	lastChk     string // last health check description
 }
 
 // parseHAProxyStats parses "show stat" CSV output into rows.
@@ -570,7 +574,11 @@ func parseHAProxyStats(raw string) []haproxyStatRow {
 			dresp:   getInt("dresp"),
 			qtime:   getInt("qtime"),
 			ctime:   getInt("ctime"),
-			lastchg: getInt("lastchg"),
+			lastchg:     getInt("lastchg"),
+			checkStatus: getStr("check_status"),
+			checkCode:   getInt("check_code"),
+			checkDur:    getInt("check_duration"),
+			lastChk:     getStr("last_chk"),
 		}
 		rows = append(rows, row)
 	}
@@ -988,6 +996,10 @@ func applyHAProxyStatMetrics(inst *model.AppInstance, rows []haproxyStatRow, hea
 		stot         int64 // total sessions
 		qmax         int64 // max queue
 		lastchg      int64 // seconds since last status change
+		checkStatus  string // health check status per server
+		checkCode    int64
+		checkDur     int64
+		lastChk      string
 		serversUp    int
 		serversDown  int
 		serversTotal int
@@ -1074,7 +1086,12 @@ func applyHAProxyStatMetrics(inst *model.AppInstance, rows []haproxyStatRow, hea
 		if bd.reqTot > 0 {
 			bd.errPct = float64(bd.hrsp5xx+bd.econ) / float64(bd.reqTot) * 100
 		}
-		// Count servers and get first server address
+		// Count servers, get first server address, and aggregate health check info
+		checksEnabled := 0
+		checksOK := 0
+		checksFailed := 0
+		var worstCheck string
+		var worstCheckCode int64
 		for _, sr := range rows {
 			if sr.svname == "FRONTEND" || sr.svname == "BACKEND" {
 				continue
@@ -1090,8 +1107,38 @@ func applyHAProxyStatMetrics(inst *model.AppInstance, rows []haproxyStatRow, hea
 				if bd.serverAddr == "" && sr.addr != "" {
 					bd.serverAddr = sr.addr
 				}
+				// Health check aggregation
+				if sr.checkStatus != "" {
+					checksEnabled++
+					if strings.HasSuffix(sr.checkStatus, "OK") {
+						checksOK++
+					} else {
+						checksFailed++
+						if worstCheck == "" {
+							worstCheck = sr.checkStatus
+							worstCheckCode = sr.checkCode
+						}
+					}
+					if bd.checkDur < sr.checkDur {
+						bd.checkDur = sr.checkDur
+					}
+				}
 			}
 		}
+		if checksEnabled > 0 {
+			bd.checkStatus = fmt.Sprintf("%d/%d OK", checksOK, checksEnabled)
+			if checksFailed > 0 {
+				bd.checkStatus = fmt.Sprintf("%d/%d OK, %d failing (%s", checksOK, checksEnabled, checksFailed, worstCheck)
+				if worstCheckCode > 0 {
+					bd.checkStatus += fmt.Sprintf(" HTTP %d", worstCheckCode)
+				}
+				bd.checkStatus += ")"
+				bd.checkCode = worstCheckCode
+			}
+		} else {
+			bd.checkStatus = "disabled"
+		}
+		bd.lastChk = fmt.Sprintf("%d", checksEnabled)
 		allBackends = append(allBackends, bd)
 	}
 
@@ -1141,6 +1188,8 @@ func applyHAProxyStatMetrics(inst *model.AppInstance, rows []haproxyStatRow, hea
 		inst.DeepMetrics[pfx+"smax"] = fmt.Sprintf("%d", bd.smax)
 		inst.DeepMetrics[pfx+"scur"] = fmt.Sprintf("%d", bd.scur)
 		inst.DeepMetrics[pfx+"qmax"] = fmt.Sprintf("%d", bd.qmax)
+		inst.DeepMetrics[pfx+"check_status"] = bd.checkStatus
+		inst.DeepMetrics[pfx+"check_dur"] = fmt.Sprintf("%d", bd.checkDur)
 		if bd.stot > 0 {
 			inst.DeepMetrics[pfx+"retry_pct"] = fmt.Sprintf("%.2f", float64(bd.retries)/float64(bd.stot)*100)
 		}
