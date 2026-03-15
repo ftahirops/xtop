@@ -2257,18 +2257,18 @@ func renderHAProxyDeepMetrics(app model.AppInstance, iw int) string {
 		sb.WriteString("  " + titleStyle.Render("BACKENDS") + "  " + dimStyle.Render(beSumm) + "\n")
 		sb.WriteString(boxTop(iw) + "\n")
 
-		cName, cAddr, cRate, cReqs, cRt, cQt, cCt, cErr, c5, cAbrt, cHp := 20, 18, 7, 9, 8, 6, 6, 7, 7, 9, 9
+		cName, cAddr, cRate, cReqs, cRt, cQt, cCt, cErr, c5, cAbrt, cHp := 20, 18, 7, 9, 10, 8, 8, 7, 7, 9, 9
 		hdr := fmt.Sprintf("  %s%s%s%s%s%s%s%s%s%s%s%s",
 			styledPad(dimStyle.Render("Backend"), cName),
 			styledPad(dimStyle.Render("Endpoint"), cAddr),
 			styledPad(dimStyle.Render("Req/s"), cRate),
 			styledPad(dimStyle.Render("Reqs"), cReqs),
-			styledPad(dimStyle.Render("Resp ms"), cRt),
-			styledPad(dimStyle.Render("Qt ms"), cQt),
-			styledPad(dimStyle.Render("Ct ms"), cCt),
+			styledPad(dimStyle.Render("Response"), cRt),
+			styledPad(dimStyle.Render("Queue"), cQt),
+			styledPad(dimStyle.Render("Connect"), cCt),
 			styledPad(dimStyle.Render("Err%"), cErr),
 			styledPad(dimStyle.Render("5xx"), c5),
-			styledPad(dimStyle.Render("Abort c/s"), cAbrt),
+			styledPad(dimStyle.Render("Aborts"), cAbrt),
 			styledPad(dimStyle.Render("Srv"), cHp),
 			dimStyle.Render("Health"))
 		sb.WriteString(boxRow(hdr, iw) + "\n")
@@ -2364,28 +2364,28 @@ func renderHAProxyDeepMetrics(app model.AppInstance, iw int) string {
 	if slowBeCount > 0 {
 		sb.WriteString("  " + titleStyle.Render("SLOW BACKENDS") + "\n")
 		sb.WriteString(boxTop(iw) + "\n")
-		cSN, cSA, cSQ, cSC, cSR := 22, 20, 8, 8, 8
+		cSN, cSA, cSQ, cSC, cSR := 22, 20, 12, 12, 12
 		sb.WriteString(boxRow(fmt.Sprintf("  %s%s%s%s%s%s",
 			styledPad(dimStyle.Render("Backend"), cSN),
 			styledPad(dimStyle.Render("Endpoint"), cSA),
-			styledPad(dimStyle.Render("Q ms"), cSQ),
-			styledPad(dimStyle.Render("C ms"), cSC),
-			styledPad(dimStyle.Render("R ms"), cSR),
-			dimStyle.Render("T ms")), iw) + "\n")
+			styledPad(dimStyle.Render("Queue"), cSQ),
+			styledPad(dimStyle.Render("Connect"), cSC),
+			styledPad(dimStyle.Render("Response"), cSR),
+			dimStyle.Render("Total")), iw) + "\n")
 		sb.WriteString(boxMid(iw) + "\n")
 		for i := 0; i < slowBeCount; i++ {
 			pre := fmt.Sprintf("slow_be_%d_", i)
 			sName := dm[pre+"name"]
 			sAddr := dm[pre+"addr"]
-			sQ := dm[pre+"qtime"]
-			sC := dm[pre+"ctime"]
-			sR := dm[pre+"rtime"]
-			sT := dm[pre+"ttime"]
+			sQ := dm[pre+"qtime"] + "ms"
+			sC := dm[pre+"ctime"] + "ms"
+			sR := dm[pre+"rtime"] + "ms"
+			sT := dm[pre+"ttime"] + "ms"
 			if len(sName) > 20 { sName = sName[:20] }
 			if len(sAddr) > 18 { sAddr = sAddr[:18] }
 			// Color response time
 			rVal := valueStyle.Render(sR)
-			if rt, _ := strconv.Atoi(sR); rt > 5000 {
+			if rt, _ := strconv.Atoi(dm[pre+"rtime"]); rt > 5000 {
 				rVal = critStyle.Render(sR)
 			} else if rt > 2000 {
 				rVal = warnStyle.Render(sR)
