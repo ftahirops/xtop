@@ -591,7 +591,7 @@ func nginxCompactSections(app model.AppInstance, iw int) string {
 
 func haproxyCompactVerdict(app model.AppInstance) string {
 	dm := app.DeepMetrics
-	badge := okStyle.Render("●")
+	severity := 0 // 0=ok, 1=warn, 2=crit
 	parts := []string{}
 	if fe := dm["frontends"]; fe != "" {
 		parts = append(parts, fe+" frontends")
@@ -607,20 +607,24 @@ func haproxyCompactVerdict(app model.AppInstance) string {
 	}
 	if e5 := dm["http_5xx"]; e5 != "" && e5 != "0" {
 		parts = append(parts, e5+" 5xx")
-		badge = warnStyle.Render("⚠")
+		if severity < 1 { severity = 1 }
 	}
 	if down := dm["servers_down"]; down != "" && down != "0" {
 		parts = append(parts, down+" servers down")
-		badge = critStyle.Render("✗")
+		severity = 2
 	}
 	if re := dm["response_errors"]; re != "" && re != "0" {
 		rev, _ := strconv.Atoi(re)
 		if rev > 1000 {
 			parts = append(parts, haFmtNum(re)+" resp errors")
-			if badge == okStyle.Render("●") {
-				badge = warnStyle.Render("⚠")
-			}
+			if severity < 1 { severity = 1 }
 		}
+	}
+	badge := okStyle.Render("●")
+	if severity == 2 {
+		badge = critStyle.Render("✗")
+	} else if severity == 1 {
+		badge = warnStyle.Render("⚠")
 	}
 	return badge + "  " + valueStyle.Render(strings.Join(parts, "  "))
 }
@@ -879,7 +883,7 @@ func genericCompactSections(app model.AppInstance, iw int) string {
 
 func pleskCompactVerdict(app model.AppInstance) string {
 	dm := app.DeepMetrics
-	badge := okStyle.Render("●")
+	severity := 0 // 0=ok, 1=warn, 2=crit
 	parts := []string{}
 
 	if v := dm["plesk_version"]; v != "" {
@@ -898,15 +902,19 @@ func pleskCompactVerdict(app model.AppInstance) string {
 		} else {
 			parts = append(parts, f+" services DOWN")
 		}
-		badge = critStyle.Render("✗")
+		severity = 2
 	}
 	if inf, _ := strconv.Atoi(dm["imunify_infected"]); inf > 0 {
 		parts = append(parts, dm["imunify_infected"]+" infected")
-		if badge == okStyle.Render("●") {
-			badge = warnStyle.Render("⚠")
-		}
+		if severity < 1 { severity = 1 }
 	}
 
+	badge := okStyle.Render("●")
+	if severity == 2 {
+		badge = critStyle.Render("✗")
+	} else if severity == 1 {
+		badge = warnStyle.Render("⚠")
+	}
 	return badge + "  " + valueStyle.Render(strings.Join(parts, "  "))
 }
 

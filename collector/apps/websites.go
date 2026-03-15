@@ -65,10 +65,14 @@ func (wc *websiteCollector) collect() []model.WebsiteMetrics {
 		wc.lastDB = time.Now()
 	}
 
-	// Step 5: Disk usage (every 5 min — slow)
+	// Step 5: Disk usage (every 5 min — slow, runs in background)
 	if time.Since(wc.lastDisk) > 5*time.Minute {
-		wc.collectDiskUsage(pools)
 		wc.lastDisk = time.Now()
+		domains := make([]string, 0, len(pools))
+		for d := range pools {
+			domains = append(domains, d)
+		}
+		go wc.collectDiskUsageBg(domains)
 	}
 
 	// Build results
@@ -175,7 +179,7 @@ func (wc *websiteCollector) collectProcessMetrics(pools map[string]*poolInfo) {
 	pids, _ := procEntries()
 	for _, pid := range pids {
 		_, comm := readPPIDComm(pid)
-		if !strings.HasPrefix(comm, "php-fpm") && comm != "php-fpm8.3" && comm != "php-fpm8.4" {
+		if !strings.Contains(comm, "php-fpm") && !strings.Contains(comm, "php_fpm") {
 			continue
 		}
 		// Read cmdline to find pool name: "php-fpm: pool <domain>"
@@ -309,9 +313,9 @@ func (wc *websiteCollector) collectDBSizes() {
 	}
 }
 
-func (wc *websiteCollector) collectDiskUsage(pools map[string]*poolInfo) {
-	wc.diskCache = make(map[string]float64)
-	for domain := range pools {
+func (wc *websiteCollector) collectDiskUsageBg(domains []string) {
+	cache := make(map[string]float64)
+	for _, domain := range domains {
 		vhostDir := fmt.Sprintf("/var/www/vhosts/%s", domain)
 		if _, err := os.Stat(vhostDir); err != nil {
 			continue
@@ -323,7 +327,10 @@ func (wc *websiteCollector) collectDiskUsage(pools map[string]*poolInfo) {
 		fields := strings.Fields(string(out))
 		if len(fields) >= 1 {
 			mb, _ := strconv.ParseFloat(fields[0], 64)
-			wc.diskCache[domain] = mb
+			cache[domain] = mb
 		}
 	}
+	wc.mu.Lock()
+	wc.diskCache = cache
+	wc.mu.Unlock()
 }

@@ -2868,16 +2868,15 @@ func renderHAProxyHealthIssues(app model.AppInstance, iw int) string {
 
 	// Per-backend error breakdown — find backends with errors
 	type beErr struct {
-		name     string
-		addr     string
-		e5xx     int64
-		eresp    int64 // response errors = econ (connection errors on backend side)
-		econ     int64
-		retries  int64
-		cliAbrt  int64
-		rtime    int64
-		reqTot   int64
-		health   string
+		name    string
+		addr    string
+		e5xx    int64
+		econ    int64
+		retries int64
+		cliAbrt int64
+		rtime   int64
+		reqTot  int64
+		health  string
 	}
 	beCount, _ := strconv.Atoi(dm["be_detail_count"])
 	var problemBEs []beErr

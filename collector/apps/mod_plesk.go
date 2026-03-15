@@ -4,6 +4,8 @@ package apps
 
 import (
 	"bufio"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"os"
 	"os/exec"
@@ -250,14 +252,22 @@ func (m *pleskModule) collectDeep(inst *model.AppInstance) {
 	}
 	dm["cert_total"] = strconv.Itoa(len(certDirs))
 	for _, certPath := range certDirs {
-		info, err := os.Stat(certPath)
+		data, err := os.ReadFile(certPath)
 		if err != nil {
 			continue
 		}
-		age := time.Since(info.ModTime())
-		if age > 80*24*time.Hour {
+		block, _ := pem.Decode(data)
+		if block == nil {
+			continue
+		}
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			continue
+		}
+		remaining := time.Until(cert.NotAfter)
+		if remaining <= 0 {
 			certExpired++
-		} else if age > 60*24*time.Hour {
+		} else if remaining < 30*24*time.Hour {
 			certExpiring++
 		} else {
 			certOk++

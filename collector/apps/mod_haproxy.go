@@ -1108,9 +1108,9 @@ func applyHAProxyStatMetrics(inst *model.AppInstance, rows []haproxyStatRow, hea
 					bd.serverAddr = sr.addr
 				}
 				// Health check aggregation
-				if sr.checkStatus != "" {
+				if sr.checkStatus != "" && sr.checkStatus != "INI" && sr.checkStatus != "UNK" {
 					checksEnabled++
-					if strings.HasSuffix(sr.checkStatus, "OK") {
+					if sr.checkStatus == "L4OK" || sr.checkStatus == "L7OK" || sr.checkStatus == "L7OKC" || sr.checkStatus == "L6OK" {
 						checksOK++
 					} else {
 						checksFailed++
@@ -1205,10 +1205,14 @@ func applyHAProxyStatMetrics(inst *model.AppInstance, rows []haproxyStatRow, hea
 			beHealth = "DEGRADED"
 		}
 		if bd.cliAbrt > 1000 && bd.reqTot > 0 && float64(bd.cliAbrt)/float64(bd.reqTot)*100 > 1 {
-			beHealth = "SLOW"
+			if beHealth != "CRITICAL" {
+				beHealth = "SLOW"
+			}
 		}
 		if bd.rtime > 5000 {
-			beHealth = "SLOW"
+			if beHealth != "CRITICAL" {
+				beHealth = "SLOW"
+			}
 		} else if bd.rtime > 2000 && beHealth == "HEALTHY" {
 			beHealth = "DEGRADED"
 		}
