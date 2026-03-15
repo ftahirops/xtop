@@ -2535,13 +2535,21 @@ func renderHAProxyDeepMetrics(app model.AppInstance, iw int) string {
 	feCount, _ := strconv.Atoi(dm["fe_detail_count"])
 	if feCount > 0 {
 		// Frontend summary line
-		feSumm := fmt.Sprintf("%s frontends, %s req/s in, %s 2xx, %s 5xx, %s ereq",
-			dm["frontends"], dm["fe_req_rate"], haFmtNum(dm["fe_2xx"]), haFmtNum(dm["fe_5xx"]), haFmtNum(dm["fe_ereq"]))
+		feTotalReq := dm["total_sessions"]
+		fe2xxPctStr, fe5xxPctStr := "", ""
+		if tot, _ := strconv.ParseFloat(feTotalReq, 64); tot > 0 {
+			v2, _ := strconv.ParseFloat(dm["fe_2xx"], 64)
+			v5, _ := strconv.ParseFloat(dm["fe_5xx"], 64)
+			fe2xxPctStr = fmt.Sprintf(" (%.1f%%)", v2/tot*100)
+			fe5xxPctStr = fmt.Sprintf(" (%.1f%%)", v5/tot*100)
+		}
+		feSumm := fmt.Sprintf("%s frontends, %s req/s in, %s 2xx%s, %s 5xx%s, %s ereq",
+			dm["frontends"], dm["fe_req_rate"], haFmtNum(dm["fe_2xx"]), fe2xxPctStr, haFmtNum(dm["fe_5xx"]), fe5xxPctStr, haFmtNum(dm["fe_ereq"]))
 		sb.WriteString("  " + titleStyle.Render("FRONTENDS") + "  " + dimStyle.Render(feSumm) + "\n")
 		sb.WriteString(boxTop(iw) + "\n")
 
-		cFN, cFM, cFR, cFRr, cFBi, cFBo, cF2, cF5 := 20, 8, 8, 10, 12, 12, 10, 10
-		feHdr := fmt.Sprintf("  %s%s%s%s%s%s%s%s%s",
+		cFN, cFM, cFR, cFRr, cFBi, cFBo, cF2, cF2p, cF5, cF5p := 20, 8, 8, 10, 12, 12, 10, 7, 10, 7
+		feHdr := fmt.Sprintf("  %s%s%s%s%s%s%s%s%s%s%s",
 			styledPad(dimStyle.Render("Frontend"), cFN),
 			styledPad(dimStyle.Render("Mode"), cFM),
 			styledPad(dimStyle.Render("Cur"), cFR),
@@ -2549,7 +2557,9 @@ func renderHAProxyDeepMetrics(app model.AppInstance, iw int) string {
 			styledPad(dimStyle.Render("In"), cFBi),
 			styledPad(dimStyle.Render("Out"), cFBo),
 			styledPad(dimStyle.Render("2xx"), cF2),
+			styledPad(dimStyle.Render("2xx%"), cF2p),
 			styledPad(dimStyle.Render("5xx"), cF5),
+			styledPad(dimStyle.Render("5xx%"), cF5p),
 			dimStyle.Render("Health"))
 		sb.WriteString(boxRow(feHdr, iw) + "\n")
 		sb.WriteString(boxMid(iw) + "\n")
@@ -2564,9 +2574,19 @@ func renderHAProxyDeepMetrics(app model.AppInstance, iw int) string {
 			feBout := dm[pre+"bout"]
 			fe2 := dm[pre+"2xx"]
 			fe5 := dm[pre+"5xx"]
+			feStot := dm[pre+"stot"]
 			feH := dm[pre+"health"]
 
 			if len(feName) > 18 { feName = feName[:18] }
+
+			// Compute percentages
+			fe2pct, fe5pct := "—", "—"
+			if tot, _ := strconv.ParseFloat(feStot, 64); tot > 0 {
+				v2, _ := strconv.ParseFloat(fe2, 64)
+				v5, _ := strconv.ParseFloat(fe5, 64)
+				fe2pct = fmt.Sprintf("%.1f%%", v2/tot*100)
+				fe5pct = fmt.Sprintf("%.1f%%", v5/tot*100)
+			}
 
 			var hBadge string
 			switch feH {
@@ -2576,7 +2596,20 @@ func renderHAProxyDeepMetrics(app model.AppInstance, iw int) string {
 			default:         hBadge = dimStyle.Render(feH)
 			}
 
-			row := fmt.Sprintf("  %s%s%s%s%s%s%s%s%s",
+			// Color 5xx% — red if >1%, yellow if >0.1%
+			fe5pctStyled := valueStyle.Render(fe5pct)
+			if v5, _ := strconv.ParseFloat(fe5, 64); v5 > 0 {
+				if tot, _ := strconv.ParseFloat(feStot, 64); tot > 0 {
+					pct := v5 / tot * 100
+					if pct > 1 {
+						fe5pctStyled = critStyle.Render(fe5pct)
+					} else if pct > 0.1 {
+						fe5pctStyled = warnStyle.Render(fe5pct)
+					}
+				}
+			}
+
+			row := fmt.Sprintf("  %s%s%s%s%s%s%s%s%s%s%s",
 				styledPad(valueStyle.Render(feName), cFN),
 				styledPad(valueStyle.Render(feMode), cFM),
 				styledPad(valueStyle.Render(feCur), cFR),
@@ -2584,7 +2617,9 @@ func renderHAProxyDeepMetrics(app model.AppInstance, iw int) string {
 				styledPad(valueStyle.Render(haFmtBytes(feBin)), cFBi),
 				styledPad(valueStyle.Render(haFmtBytes(feBout)), cFBo),
 				styledPad(valueStyle.Render(haFmtNum(fe2)), cF2),
+				styledPad(okStyle.Render(fe2pct), cF2p),
 				styledPad(haColorVal(haFmtNum(fe5), "5xx"), cF5),
+				styledPad(fe5pctStyled, cF5p),
 				hBadge)
 			sb.WriteString(boxRow(row, iw) + "\n")
 		}
