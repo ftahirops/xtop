@@ -2257,19 +2257,17 @@ func renderHAProxyDeepMetrics(app model.AppInstance, iw int) string {
 		sb.WriteString("  " + titleStyle.Render("BACKENDS") + "  " + dimStyle.Render(beSumm) + "\n")
 		sb.WriteString(boxTop(iw) + "\n")
 
-		cName, cAddr, cRate, cReqs, cRt, cQt, cCt, cErr, c5, cAbrt, cHp := 20, 18, 7, 9, 10, 8, 8, 7, 7, 9, 9
-		hdr := fmt.Sprintf("  %s%s%s%s%s%s%s%s%s%s%s%s",
+		cName, cAddr, cRate, cRt, cErr, c5, cAbrt, cHp, cChk := 20, 18, 7, 10, 7, 7, 9, 9, 16
+		hdr := fmt.Sprintf("  %s%s%s%s%s%s%s%s%s%s",
 			styledPad(dimStyle.Render("Backend"), cName),
 			styledPad(dimStyle.Render("Endpoint"), cAddr),
 			styledPad(dimStyle.Render("Req/s"), cRate),
-			styledPad(dimStyle.Render("Reqs"), cReqs),
 			styledPad(dimStyle.Render("Response"), cRt),
-			styledPad(dimStyle.Render("Queue"), cQt),
-			styledPad(dimStyle.Render("Connect"), cCt),
 			styledPad(dimStyle.Render("Err%"), cErr),
 			styledPad(dimStyle.Render("5xx"), c5),
 			styledPad(dimStyle.Render("Aborts"), cAbrt),
 			styledPad(dimStyle.Render("Srv"), cHp),
+			styledPad(dimStyle.Render("Health Check"), cChk),
 			dimStyle.Render("Health"))
 		sb.WriteString(boxRow(hdr, iw) + "\n")
 		sb.WriteString(boxMid(iw) + "\n")
@@ -2279,7 +2277,6 @@ func renderHAProxyDeepMetrics(app model.AppInstance, iw int) string {
 			name := dm[pre+"name"]
 			addr := dm[pre+"addr"]
 			rate := dm[pre+"sess_rate"]
-			reqTot := dm[pre+"req_total"]
 			errPct := dm[pre+"err_pct"]
 			h5xx := dm[pre+"5xx"]
 			cliA := dm[pre+"cli_abrt"]
@@ -2288,9 +2285,8 @@ func renderHAProxyDeepMetrics(app model.AppInstance, iw int) string {
 			srvDown := dm[pre+"servers_down"]
 			srvTotal := dm[pre+"servers_total"]
 			rtime := dm[pre+"rtime"]
-			qtime := dm[pre+"qtime"]
-			ctime := dm[pre+"ctime"]
 			beHealth := dm[pre+"health"]
+			checkSt := dm[pre+"check_status"]
 
 			if len(name) > 18 { name = name[:18] }
 			if len(addr) > 16 { addr = addr[:16] }
@@ -2325,34 +2321,28 @@ func renderHAProxyDeepMetrics(app model.AppInstance, iw int) string {
 			default:         hBadge = dimStyle.Render("?")
 			}
 
-			// Queue time colored
-			qtStr := qtime
-			if qt, _ := strconv.Atoi(qtime); qt > 100 {
-				qtStr = critStyle.Render(qtime)
-			} else if qt > 50 {
-				qtStr = warnStyle.Render(qtime)
+			// Health check column
+			var chkStr string
+			if checkSt == "disabled" || checkSt == "" {
+				chkStr = dimStyle.Render("no check")
+			} else if strings.Contains(checkSt, "failing") {
+				chkStr = critStyle.Render(checkSt)
+				if len(checkSt) > 14 { chkStr = critStyle.Render(checkSt[:14]) }
+			} else {
+				chkStr = okStyle.Render(checkSt)
+				if len(checkSt) > 14 { chkStr = okStyle.Render(checkSt[:14]) }
 			}
 
-			// Connect time colored
-			ctStr := ctime
-			if ct, _ := strconv.Atoi(ctime); ct > 500 {
-				ctStr = critStyle.Render(ctime)
-			} else if ct > 100 {
-				ctStr = warnStyle.Render(ctime)
-			}
-
-			row := fmt.Sprintf("  %s%s%s%s%s%s%s%s%s%s%s%s",
+			row := fmt.Sprintf("  %s%s%s%s%s%s%s%s%s%s",
 				styledPad(valueStyle.Render(name), cName),
 				styledPad(dimStyle.Render(addr), cAddr),
 				styledPad(valueStyle.Render(rate+"/s"), cRate),
-				styledPad(valueStyle.Render(haFmtNum(reqTot)), cReqs),
 				styledPad(rtStr, cRt),
-				styledPad(qtStr, cQt),
-				styledPad(ctStr, cCt),
 				styledPad(errStr, cErr),
 				styledPad(haColorVal(haFmtNum(h5xx), "5xx"), c5),
 				styledPad(valueStyle.Render(abortLine), cAbrt),
 				styledPad(valueStyle.Render(srvLine), cHp),
+				styledPad(chkStr, cChk),
 				hBadge)
 			sb.WriteString(boxRow(row, iw) + "\n")
 		}
@@ -2400,93 +2390,6 @@ func renderHAProxyDeepMetrics(app model.AppInstance, iw int) string {
 			sb.WriteString(boxRow(row, iw) + "\n")
 		}
 		sb.WriteString(boxBot(iw) + "\n\n")
-	}
-
-	// ── BACKEND HEALTH CHECKS ──────────────────────────────────────────
-	{
-		type hcRow struct {
-			name, check, dur, servers, status string
-		}
-		var hcRows []hcRow
-		var hcDisabled int
-		for i := 0; i < beCount; i++ {
-			pre := fmt.Sprintf("be_detail_%d_", i)
-			cs := dm[pre+"check_status"]
-			if cs == "" { continue }
-			if cs == "disabled" {
-				hcDisabled++
-				continue
-			}
-			dur := dm[pre+"check_dur"]
-			durStr := ""
-			if dur != "" && dur != "0" { durStr = dur + "ms" }
-			srvLine := dm[pre+"servers_up"] + "/" + dm[pre+"servers_total"] + " up"
-			if d := dm[pre+"servers_down"]; d != "" && d != "0" {
-				srvLine += ", " + d + " down"
-			}
-			name := dm[pre+"name"]
-			if len(name) > 24 { name = name[:24] }
-			hcRows = append(hcRows, hcRow{name, cs, durStr, srvLine, dm[pre+"health"]})
-		}
-
-		if len(hcRows) > 0 || hcDisabled > 0 {
-			summParts := []string{}
-			checksOK := 0
-			checksFail := 0
-			for _, hc := range hcRows {
-				if strings.Contains(hc.check, "failing") {
-					checksFail++
-				} else {
-					checksOK++
-				}
-			}
-			if checksOK > 0 { summParts = append(summParts, fmt.Sprintf("%d passing", checksOK)) }
-			if checksFail > 0 { summParts = append(summParts, fmt.Sprintf("%d with failures", checksFail)) }
-			if hcDisabled > 0 { summParts = append(summParts, fmt.Sprintf("%d disabled", hcDisabled)) }
-
-			sb.WriteString("  " + titleStyle.Render("BACKEND HEALTH CHECKS") + "  " + dimStyle.Render(strings.Join(summParts, ", ")) + "\n")
-			sb.WriteString(boxTop(iw) + "\n")
-
-			cN, cC, cD, cS := 26, 32, 10, 20
-			sb.WriteString(boxRow(fmt.Sprintf("  %s%s%s%s%s",
-				styledPad(dimStyle.Render("Backend"), cN),
-				styledPad(dimStyle.Render("Health Check"), cC),
-				styledPad(dimStyle.Render("Duration"), cD),
-				styledPad(dimStyle.Render("Servers"), cS),
-				dimStyle.Render("Status")), iw) + "\n")
-			sb.WriteString(boxMid(iw) + "\n")
-
-			for _, hc := range hcRows {
-				checkStyled := okStyle.Render(hc.check)
-				if strings.Contains(hc.check, "failing") {
-					checkStyled = critStyle.Render(hc.check)
-				}
-
-				var statusBadge string
-				switch hc.status {
-				case "HEALTHY":  statusBadge = okStyle.Render("HEALTHY")
-				case "DEGRADED": statusBadge = warnStyle.Render("DEGRADED")
-				case "SLOW":     statusBadge = warnStyle.Render("SLOW")
-				case "CRITICAL": statusBadge = critStyle.Render("CRITICAL")
-				case "DOWN":     statusBadge = critStyle.Render("DOWN")
-				default:         statusBadge = dimStyle.Render(hc.status)
-				}
-
-				row := fmt.Sprintf("  %s%s%s%s%s",
-					styledPad(valueStyle.Render(hc.name), cN),
-					styledPad(checkStyled, cC),
-					styledPad(valueStyle.Render(hc.dur), cD),
-					styledPad(valueStyle.Render(hc.servers), cS),
-					statusBadge)
-				sb.WriteString(boxRow(row, iw) + "\n")
-			}
-
-			if hcDisabled > 0 {
-				sb.WriteString(boxRow("  "+warnStyle.Render(fmt.Sprintf("⚠ %d backends have no health checks configured — failures detected only when clients hit them", hcDisabled)), iw) + "\n")
-			}
-
-			sb.WriteString(boxBot(iw) + "\n\n")
-		}
 	}
 
 	// ── RETRY & REDISPATCH ANALYSIS ─────────────────────────────────────
