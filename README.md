@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/xtop-v0.31.4-00d4aa?style=for-the-badge&logo=linux&logoColor=white" alt="version"/>
+  <img src="https://img.shields.io/badge/xtop-v0.34.5-00d4aa?style=for-the-badge&logo=linux&logoColor=white" alt="version"/>
   <img src="https://img.shields.io/badge/Go-1.21+-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="go"/>
   <img src="https://img.shields.io/badge/eBPF-Powered-ff6600?style=for-the-badge&logo=linux&logoColor=white" alt="ebpf"/>
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="license"/>
@@ -150,7 +150,7 @@ The heart of xtop. Four parallel bottleneck detectors continuously score system 
 
 **Trust Gating:** A bottleneck is only reported when **2+ independent evidence groups** confirm it. This eliminates false positives from single-metric spikes. Confidence scales from 30% (2 groups) to 98% (5+ groups).
 
-### RCA Decision Engine (v0.31.4)
+### RCA Decision Engine (v0.34.5)
 
 Beyond raw signals, xtop's **decision engine** tells you EXACTLY what's wrong, why, what caused it, and what to do:
 
@@ -165,7 +165,7 @@ Beyond raw signals, xtop's **decision engine** tells you EXACTLY what's wrong, w
 Press `e` (Explain) to see the full ROOT CAUSE → EVIDENCE → IMPACT → TEMPORAL CAUSALITY → TOP OFFENDERS breakdown.
 Press `Y` to see per-application health diagnostics with deep metrics.
 
-### Statistical RCA Intelligence (v0.31.4)
+### Statistical RCA Intelligence (v0.34.5)
 
 xtop doesn't just check thresholds — it **learns your system's normal behavior** and detects anomalies that static rules would miss. Eight statistical modules run continuously with zero configuration:
 
@@ -416,7 +416,7 @@ The RCA engine uses a **two-tier collection strategy**:
 - **Tier 2 (deep metrics)** — Protocol-level collection via native APIs, CLI tools, or raw protocol:
   - **MySQL**: `SHOW GLOBAL STATUS` (27 key variables), `SHOW PROCESSLIST`, `SHOW ENGINE INNODB STATUS`, `SHOW REPLICA STATUS`
   - **PostgreSQL**: `pg_stat_activity`, `pg_stat_database`, `pg_stat_bgwriter`, dead tuples, lock contention, replication lag
-  - **Redis**: Raw RESP protocol `INFO` command — 60+ metrics including memory, replication, keyspace, persistence
+  - **Redis**: Raw RESP protocol `INFO ALL` + `SLOWLOG GET` — 80+ metrics including memory, latency percentiles (p50/p99/p99.9), replication lag, keyspace, persistence, command stats, fork timing, client capacity, plus workload-driven recommendations engine
   - **Elasticsearch**: REST API — cluster health, shard status, JVM heap, index counts, node stats
   - **MongoDB**: `mongosh` — serverStatus, WiredTiger cache, opCounters, lock queues, replication lag
   - **Nginx**: `stub_status` HTTP endpoint — active connections, accepts/handled/requests, reading/writing/waiting
@@ -436,7 +436,7 @@ The RCA engine uses a **two-tier collection strategy**:
 |---|---|---|---|---|
 | **MySQL / MariaDB** | `mysqld`, `mariadbd` | InnoDB buffer pool, slow queries, replication, deadlocks, lock waits, temp tables | 17 rules | Required |
 | **PostgreSQL** | `postgres` (postmaster) | Cache hit ratio, dead tuples, vacuum lag, blocked queries, bgwriter, replication | 12 rules | Required |
-| **Redis** | `redis-server` | Memory, hit ratio, evictions, fragmentation, persistence, replication, keyspace | 8 rules | If AUTH enabled |
+| **Redis** | `redis-server` | Memory, latency p50/p99/p99.9, hit ratio, evictions, fragmentation, RSS ratio, persistence, fork timing, replication lag, keyspace, command stats, slow log, client capacity, pub/sub, workload recommendations | 16 rules | If AUTH enabled |
 | **Elasticsearch** | Java + ES cmdline | Cluster health, shards, JVM heap, indices, node stats | 8 rules | If X-Pack enabled |
 | **MongoDB** | `mongod`, `mongos` | WiredTiger cache, opCounters, lock queues, replication lag, slow ops | 10 rules | If auth enabled |
 | **Nginx** | `nginx` (master) | Active connections, request rate, dropped connections, worker state, scoreboard | 7 rules | No |
@@ -590,12 +590,12 @@ xtop -cron-install
 
 ```bash
 # Ubuntu/Debian (amd64)
-wget https://github.com/ftahirops/xtop/releases/download/v0.31.4/xtop_0.31.4-1_amd64.deb
-sudo dpkg -i xtop_0.31.4-1_amd64.deb
+wget https://github.com/ftahirops/xtop/releases/download/v0.34.5/xtop_0.34.5-1_amd64.deb
+sudo dpkg -i xtop_0.34.5-1_amd64.deb
 
 # RHEL/Rocky/Fedora (x86_64)
-wget https://github.com/ftahirops/xtop/releases/download/v0.31.4/xtop-0.31.4-1.x86_64.rpm
-sudo rpm -i xtop-0.31.4-1.x86_64.rpm
+wget https://github.com/ftahirops/xtop/releases/download/v0.34.5/xtop-0.34.5-1.x86_64.rpm
+sudo rpm -i xtop-0.34.5-1.x86_64.rpm
 ```
 
 ### Build from Source
@@ -603,7 +603,7 @@ sudo rpm -i xtop-0.31.4-1.x86_64.rpm
 ```bash
 git clone https://github.com/ftahirops/xtop.git
 cd xtop
-CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.31.4" -o xtop .
+CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.34.5" -o xtop .
 sudo install -m 755 xtop /usr/local/bin/xtop
 ```
 
@@ -635,15 +635,15 @@ sudo xtop -json | jq   # JSON for scripting
 ### From .deb Package (Ubuntu 22.04/24.04, Debian)
 
 ```bash
-wget https://github.com/ftahirops/xtop/releases/download/v0.31.4/xtop_0.31.4-1_amd64.deb
-sudo dpkg -i xtop_0.31.4-1_amd64.deb
+wget https://github.com/ftahirops/xtop/releases/download/v0.34.5/xtop_0.34.5-1_amd64.deb
+sudo dpkg -i xtop_0.34.5-1_amd64.deb
 ```
 
 ### From .rpm Package (Rocky Linux, RHEL, AlmaLinux, Fedora)
 
 ```bash
-wget https://github.com/ftahirops/xtop/releases/download/v0.31.4/xtop-0.31.4-1.x86_64.rpm
-sudo rpm -i xtop-0.31.4-1.x86_64.rpm
+wget https://github.com/ftahirops/xtop/releases/download/v0.34.5/xtop-0.34.5-1.x86_64.rpm
+sudo rpm -i xtop-0.34.5-1.x86_64.rpm
 ```
 
 ### From Source
@@ -651,7 +651,7 @@ sudo rpm -i xtop-0.31.4-1.x86_64.rpm
 ```bash
 git clone https://github.com/ftahirops/xtop.git
 cd xtop
-CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.31.4" -o xtop .
+CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.34.5" -o xtop .
 sudo install -m 755 xtop /usr/local/bin/xtop
 ```
 

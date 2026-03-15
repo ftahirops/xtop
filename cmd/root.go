@@ -23,7 +23,7 @@ import (
 )
 
 // Version is set at build time via ldflags.
-var Version = "0.31.4"
+var Version = "0.34.5"
 
 // Config holds CLI configuration.
 type Config struct {
@@ -44,6 +44,7 @@ type Config struct {
 	AlertCommand string
 	// Doctor mode
 	DoctorMode    bool
+	AppDoctorMode bool
 	DiscoverMode  bool
 	CronMode     bool
 	AlertMode    bool
@@ -89,6 +90,7 @@ Modes:
   -md               Single Markdown incident report to stdout, then exit
   -daemon           Background collector (no TUI, writes events to datadir)
   -doctor           Run comprehensive health check
+  -app-doctor       Deep application health analysis with full report
   -discover         Interactive server discovery and tuning
   -forensics        Retroactive incident analysis from system logs
   -diagnose [SVC]   Per-service deep diagnostics (nginx, mysql, redis, etc.)
@@ -142,6 +144,7 @@ Examples:
   sudo xtop -doctor -md                Health check as Markdown
   sudo xtop -doctor -cron              Cron-friendly (silent if OK, exit codes)
   sudo xtop -doctor -alert             Alert on state changes
+  sudo xtop -app-doctor                  Deep app analysis with saved report
   sudo xtop -diagnose                   Per-service deep diagnostics
   sudo xtop -diagnose mysql             MySQL-only deep analysis
   sudo xtop -diagnose -json             Diagnostics as JSON
@@ -235,6 +238,7 @@ func Run() error {
 	flag.StringVar(&cfg.AlertCommand, "alert-command", userCfg.Alerts.Command, "Command to execute on alert notifications")
 	// Doctor flags
 	flag.BoolVar(&cfg.DoctorMode, "doctor", false, "Run comprehensive health check")
+	flag.BoolVar(&cfg.AppDoctorMode, "app-doctor", false, "Deep application health analysis with saved report")
 	flag.BoolVar(&cfg.DiscoverMode, "discover", false, "Interactive server discovery and tuning")
 	flag.BoolVar(&cfg.ForensicsMode, "forensics", false, "Retroactive incident analysis from system logs")
 	flag.BoolVar(&cfg.DiagnoseMode, "diagnose", false, "Per-service deep diagnostics (nginx, mysql, redis, etc.)")
@@ -379,6 +383,11 @@ func Run() error {
 	// --discover mode
 	if cfg.DiscoverMode {
 		return runDiscover()
+	}
+
+	// --app-doctor mode
+	if cfg.AppDoctorMode {
+		return runAppDoctor(cfg)
 	}
 
 	// --doctor mode

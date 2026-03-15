@@ -51,6 +51,25 @@ func knownMultiDestVerdict(comm string) string {
 	// Backup / sync
 	case "rsync", "rclone", "borgbackup", "restic", "bacula-fd":
 		return "Backup tool — syncs data to/from multiple storage targets"
+	// Databases (replication, cluster gossip)
+	case "mysqld", "mariadbd", "postgres", "mongod", "mongos", "redis-server", "redis-sentinel",
+		"cassandra", "cqlsh", "cockroach", "etcd", "galera":
+		return "Database — cluster replication/gossip connects to multiple peers"
+	// Service mesh sidecars
+	case "istio-proxy", "linkerd-proxy", "linkerd2-proxy", "consul-connect":
+		return "Service mesh sidecar — proxies traffic to multiple service backends"
+	// Mail servers
+	case "postfix", "sendmail", "exim", "dovecot", "master":
+		return "Mail server — delivers mail to many remote MX hosts"
+	// CI/CD runners
+	case "gitlab-runner", "actions-runner", "jenkins-agent", "buildkitd", "drone-runner":
+		return "CI/CD runner — connects to artifact stores, registries, and deploy targets"
+	// Media / streaming
+	case "ffmpeg", "vlc", "gstreamer", "nginx-rtmp":
+		return "Media server — streams to multiple clients/CDN endpoints"
+	// MCP / Claude Code (developer tools)
+	case "claude", "node", "npx", "claude-code":
+		return "Developer tool / MCP server — connects to multiple API endpoints"
 	}
 	return ""
 }
@@ -63,10 +82,24 @@ func isKnownOutboundProcess(comm string) bool {
 		"filebeat", "fluentd", "fluent-bit", "logstash", "vector",
 		"agent", "trace-agent", "process-agent", "datadog-agent",
 		"telegraf", "newrelic-infra", "zabbix_agentd", "grafana-agent",
+		"alloy", "otel-collector", "collectd", "prometheus",
 		"rsyslogd", "syslog-ng", "journald",
 		"apt", "yum", "dnf", "wget", "curl",
 		"borgbackup", "restic", "bacula-fd",
-		"containerd", "dockerd", "kubelet":
+		"containerd", "dockerd", "kubelet", "crio",
+		// Databases (replication traffic)
+		"mysqld", "mariadbd", "postgres", "mongod", "mongos",
+		"redis-server", "redis-sentinel", "cassandra", "cockroach", "etcd",
+		// Service mesh
+		"istio-proxy", "linkerd-proxy", "envoy",
+		// Mail servers
+		"postfix", "sendmail", "exim", "dovecot",
+		// CI/CD
+		"gitlab-runner", "actions-runner", "jenkins-agent", "buildkitd",
+		// Media
+		"ffmpeg",
+		// Developer tools / MCP
+		"claude", "node", "npx", "claude-code":
 		return true
 	}
 	return false

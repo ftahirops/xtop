@@ -229,6 +229,9 @@ func (m *phpfpmModule) Collect(app *DetectedApp, secrets *AppSecrets) model.AppI
 		inst.HealthScore = 100
 	}
 
+	// Per-website metrics (shared with Plesk/Nginx/Apache)
+	inst.Websites = CollectWebsites()
+
 	return inst
 }
 

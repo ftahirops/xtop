@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -35,7 +36,7 @@ func (l LayoutMode) String() string {
 // renderOverview dispatches to the selected layout.
 func renderOverview(snap *model.Snapshot, rates *model.RateSnapshot, result *model.AnalysisResult,
 	history *engine.History, smartDisks []model.SMARTDisk, pm probeQuerier,
-	layout LayoutMode, width, height int) string {
+	layout LayoutMode, compact bool, width, height int) string {
 
 	if snap == nil {
 		return "Collecting first sample..."
@@ -46,7 +47,7 @@ func renderOverview(snap *model.Snapshot, rates *model.RateSnapshot, result *mod
 	var content string
 	switch layout {
 	case LayoutTwoCol:
-		content = renderLayoutA(snap, rates, result, history, pm, ss, width, height)
+		content = renderLayoutA(snap, rates, result, history, pm, ss, compact, width, height)
 	case LayoutCompact:
 		content = renderLayoutB(snap, rates, result, history, pm, ss, width, height)
 	case LayoutAdaptive:
@@ -58,13 +59,17 @@ func renderOverview(snap *model.Snapshot, rates *model.RateSnapshot, result *mod
 	case LayoutBtop:
 		content = renderLayoutF(snap, rates, result, history, pm, ss, width, height)
 	default:
-		content = renderLayoutA(snap, rates, result, history, pm, ss, width, height)
+		content = renderLayoutA(snap, rates, result, history, pm, ss, compact, width, height)
 	}
 
 	// Inject layout indicator into the first line (top right)
 	lines := strings.Split(content, "\n")
 	if len(lines) > 0 {
-		label := dimStyle.Render(fmt.Sprintf("[%s]", layout))
+		viewLabel := "Summary"
+		if !compact {
+			viewLabel = "Detail"
+		}
+		label := dimStyle.Render(fmt.Sprintf("[%s | %s] d:toggle", layout, viewLabel))
 		labelW := lipgloss.Width(label)
 		lineW := lipgloss.Width(lines[0])
 		gap := width - lineW - labelW
@@ -157,7 +162,12 @@ func renderHeader(snap *model.Snapshot, rates *model.RateSnapshot, result *model
 	}
 	sb.WriteString(meterColor(ioPct).Render(fmt.Sprintf("IO %5.1f%%", ioPct)))
 	sb.WriteString(dimStyle.Render(" | "))
-	sb.WriteString(dimStyle.Render(fmt.Sprintf("Load %5.2f", snap.Global.CPU.LoadAvg.Load1)))
+	headerNCPU := snap.Global.CPU.NumCPUs
+	if headerNCPU == 0 {
+		headerNCPU = 1
+	}
+	headerLoadPct := snap.Global.CPU.LoadAvg.Load1 / float64(headerNCPU) * 100
+	sb.WriteString(meterColor(headerLoadPct).Render(fmt.Sprintf("Load %.1f/%d=%.0f%%", snap.Global.CPU.LoadAvg.Load1, headerNCPU, headerLoadPct)))
 
 	// Disk free % (worst mount)
 	if rates != nil && len(rates.MountRates) > 0 {
@@ -295,12 +305,62 @@ func extractSubsystems(snap *model.Snapshot, rates *model.RateSnapshot, result *
 		sysPct = rates.CPUSystemPct
 	}
 
+	// Load average with human-readable capacity interpretation
+	la := snap.Global.CPU.LoadAvg
+	nCPU := snap.Global.CPU.NumCPUs
+	if nCPU == 0 {
+		nCPU = 1
+	}
+	loadPct := la.Load1 / float64(nCPU) * 100
+	var loadInterp string
+	switch {
+	case loadPct < 25:
+		loadInterp = "idle"
+	case loadPct < 50:
+		loadInterp = "light"
+	case loadPct < 75:
+		loadInterp = "moderate"
+	case loadPct < 100:
+		loadInterp = "heavy"
+	case loadPct < 150:
+		loadInterp = "overloaded"
+	case loadPct < 200:
+		loadInterp = "severe"
+	default:
+		loadInterp = "critical"
+	}
+	loadStr := fmt.Sprintf("%.1f / %.1f / %.1f = %.0f%% of %d CPUs (%s)", la.Load1, la.Load5, la.Load15, loadPct, nCPU, loadInterp)
+
+	// Run queue with percentage and color hint
+	rqPct := float64(la.Running) / float64(nCPU) * 100
+	var rqLabel string
+	switch {
+	case rqPct <= 100:
+		rqLabel = "OK"
+	case rqPct <= 200:
+		rqLabel = "BUSY"
+	case rqPct <= 400:
+		rqLabel = "SATURATED"
+	default:
+		rqLabel = "CRITICAL"
+	}
+	rqStr := fmt.Sprintf("%d / %d CPUs (%.0f%%) %s", la.Running, nCPU, rqPct, rqLabel)
+
+	// Steal explanation
+	stealStr := fmt.Sprintf("%.1f%%", stealPct)
+	if stealPct > 10 {
+		stealStr += " — VM starved by hypervisor"
+	} else if stealPct > 3 {
+		stealStr += " — noisy neighbor"
+	}
+
 	cpu.Details = []kv{
 		{"Usage", fmt.Sprintf("%.1f%% busy", busyPct)},
-		{"Run queue", fmt.Sprintf("%d", snap.Global.CPU.LoadAvg.Running)},
+		{"Load avg", loadStr},
+		{"Run queue", rqStr},
 		{"Ctx switch", fmt.Sprintf("%.0f/s", ctxRate)},
 		{"System CPU", fmt.Sprintf("%.1f%%", sysPct)},
-		{"Steal", fmt.Sprintf("%.1f%%", stealPct)},
+		{"Steal", stealStr},
 	}
 	// Throttling from cgroups
 	throttled := "none"
@@ -818,12 +878,21 @@ func renderOwnersBlock(result *model.AnalysisResult, width int) string {
 			lines = append(lines, label+dimStyle.Render("\u2014"))
 			return
 		}
+		// Calculate max name width based on available space
+		// Each owner takes ~"name:value | " — fit as many as possible
+		maxName := (innerW - 8) / 3 // divide among up to 3 owners
+		if maxName < 16 {
+			maxName = 16
+		}
+		if maxName > 40 {
+			maxName = 40
+		}
 		parts := make([]string, 0, 3)
 		for i, o := range owners {
 			if i >= 3 {
 				break
 			}
-			name := truncate(o.Name, 24)
+			name := truncate(o.Name, maxName)
 			parts = append(parts, valueStyle.Render(name)+dimStyle.Render(":"+o.Value))
 		}
 		lines = append(lines, label+strings.Join(parts, dimStyle.Render(" | ")))
@@ -899,7 +968,11 @@ func renderRCABox(result *model.AnalysisResult, width int) string {
 			if result.Narrative != nil && result.Narrative.RootCause != "" {
 				rootCause = result.Narrative.RootCause
 			}
-			lines = append(lines, style.Render("ROOT CAUSE: ")+valueStyle.Render(truncate(rootCause, innerW-16)))
+			maxRC := innerW - 16
+			if maxRC < 40 {
+				maxRC = 40
+			}
+			lines = append(lines, style.Render("ROOT CAUSE: ")+valueStyle.Render(truncate(rootCause, maxRC)))
 
 			// Lines 2-3: Top 2 evidence lines from narrative
 			if result.Narrative != nil {
@@ -907,7 +980,7 @@ func renderRCABox(result *model.AnalysisResult, width int) string {
 					if i >= 2 {
 						break
 					}
-					lines = append(lines, dimStyle.Render(ev))
+					lines = append(lines, dimStyle.Render(truncate(ev, innerW-4)))
 				}
 			}
 			// Pad to at least 3 lines
@@ -915,7 +988,7 @@ func renderRCABox(result *model.AnalysisResult, width int) string {
 				lines = append(lines, " ")
 			}
 
-			// Line 4: Impact + Culprit + Confidence + Active
+			// Line 4: Culprit (full, on its own line for readability)
 			culprit := "\u2014"
 			if result.PrimaryAppName != "" {
 				culprit = result.PrimaryAppName
@@ -925,26 +998,53 @@ func renderRCABox(result *model.AnalysisResult, width int) string {
 			} else if result.PrimaryProcess != "" {
 				culprit = result.PrimaryProcess
 				if result.PrimaryPID > 0 {
-					culprit = fmt.Sprintf("%s(%d)", result.PrimaryProcess, result.PrimaryPID)
+					culprit = fmt.Sprintf("%s (PID %d)", result.PrimaryProcess, result.PrimaryPID)
 				}
 			} else if result.PrimaryCulprit != "" && result.PrimaryCulprit != "/" {
 				culprit = result.PrimaryCulprit
 			}
-			culprit = truncate(culprit, 24)
 
-			var parts []string
+			// Impact lines (word-wrap long impact narratives)
 			if result.Narrative != nil && result.Narrative.Impact != "" {
-				parts = append(parts, fmt.Sprintf("Impact: %s", warnStyle.Render(truncate(result.Narrative.Impact, 30))))
+				impact := result.Narrative.Impact
+				maxImpactW := innerW - 12
+				if maxImpactW < 40 {
+					maxImpactW = 40
+				}
+				// Split on ". " to get impact sentences
+				sentences := strings.Split(impact, ". ")
+				first := true
+				for _, sent := range sentences {
+					if sent == "" {
+						continue
+					}
+					prefix := dimStyle.Render("         ")
+					if first {
+						prefix = dimStyle.Render("Impact: ")
+						first = false
+					}
+					if len(sent) > maxImpactW {
+						sent = sent[:maxImpactW]
+					}
+					lines = append(lines, prefix+warnStyle.Render(sent))
+				}
 			}
-			parts = append(parts, fmt.Sprintf("Culprit: %s", valueStyle.Render(culprit)))
-			parts = append(parts, fmt.Sprintf("Confidence: %s", style.Render(fmt.Sprintf("%d%%", result.Confidence))))
-			if result.AnomalyStartedAgo > 0 {
-				parts = append(parts,
-					fmt.Sprintf("Active: %s", critStyle.Render(fmtDuration(result.AnomalyStartedAgo))))
-			}
-			lines = append(lines, strings.Join(parts, dimStyle.Render(" | ")))
 
-			// Line 5: Pattern name if matched
+			// Culprit line (full, not truncated to 24 chars)
+			maxCulprit := innerW - 12
+			if maxCulprit < 30 {
+				maxCulprit = 30
+			}
+			lines = append(lines, dimStyle.Render("Culprit: ")+valueStyle.Render(truncate(culprit, maxCulprit)))
+
+			// Confidence + Active on same line
+			confLine := fmt.Sprintf("Confidence: %s", style.Render(fmt.Sprintf("%d%%", result.Confidence)))
+			if result.AnomalyStartedAgo > 0 {
+				confLine += dimStyle.Render(" | ") + fmt.Sprintf("Active: %s", critStyle.Render(fmtDuration(result.AnomalyStartedAgo)))
+			}
+			lines = append(lines, confLine)
+
+			// Pattern name if matched
 			if result.Narrative != nil && result.Narrative.Pattern != "" {
 				lines = append(lines, dimStyle.Render("Pattern: ")+valueStyle.Render(result.Narrative.Pattern))
 			}
@@ -1187,17 +1287,39 @@ func renderActionsBlock(result *model.AnalysisResult, width int) string {
 		if len(shown) > 5 {
 			shown = shown[:5]
 		}
+		maxSummary := innerW - 8 // "│ N. <summary> │"
+		if maxSummary < 40 {
+			maxSummary = 40
+		}
+		maxCmd := innerW - 10 // "│    $ <cmd> │"
+		if maxCmd < 40 {
+			maxCmd = 40
+		}
 		for i, a := range shown {
+			// Word-wrap long summaries across multiple lines
 			summary := a.Summary
-			if len(summary) > 55 {
-				summary = summary[:52] + "..."
+			if len(summary) <= maxSummary {
+				content := fmt.Sprintf(" %s %s", orangeStyle.Render(fmt.Sprintf("%d.", i+1)), summary)
+				sb.WriteString(boxRow(content, innerW) + "\n")
+			} else {
+				// First line with number prefix
+				content := fmt.Sprintf(" %s %s", orangeStyle.Render(fmt.Sprintf("%d.", i+1)), summary[:maxSummary])
+				sb.WriteString(boxRow(content, innerW) + "\n")
+				// Continuation lines indented
+				rest := summary[maxSummary:]
+				for len(rest) > 0 {
+					chunk := rest
+					if len(chunk) > maxSummary {
+						chunk = rest[:maxSummary]
+					}
+					sb.WriteString(boxRow("    "+chunk, innerW) + "\n")
+					rest = rest[len(chunk):]
+				}
 			}
-			content := fmt.Sprintf(" %s %s", orangeStyle.Render(fmt.Sprintf("%d.", i+1)), valueStyle.Render(summary))
-			sb.WriteString(boxRow(content, innerW) + "\n")
 			if a.Command != "" {
 				cmd := a.Command
-				if len(cmd) > 60 {
-					cmd = cmd[:57] + "..."
+				if len(cmd) > maxCmd {
+					cmd = cmd[:maxCmd-3] + "..."
 				}
 				sb.WriteString(boxRow(dimStyle.Render("    $ "+cmd), innerW) + "\n")
 			}
@@ -1324,7 +1446,7 @@ func renderProbeStatusLine(pm probeQuerier, snap *model.Snapshot) string {
 			// Build drop string with top non-benign reason
 			dropStr := fmt.Sprintf("Drops:%.0f/s", sent.PktDropRate)
 			for _, d := range sent.PktDrops {
-				if d.Rate >= 1 && !isBenignSentinelDrop(d.ReasonStr) {
+				if d.Rate >= 1 && !d.Benign {
 					dropStr += fmt.Sprintf(" [%s:%.0f/s]", d.ReasonStr, d.Rate)
 					break
 				}
@@ -1809,4 +1931,251 @@ func perCoreBusy(prev, curr *model.Snapshot) []float64 {
 		}
 	}
 	return pcts
+}
+
+// ─── OVERVIEW: APPS SUMMARY BLOCK ───────────────────────────────────────────
+
+func renderOverviewAppsSummary(snap *model.Snapshot, width int) string {
+	var sb strings.Builder
+
+	innerW := width - 7
+	if innerW < 40 {
+		innerW = 40
+	}
+	if innerW > 100 {
+		innerW = 100
+	}
+
+	title := fmt.Sprintf(" %s ", titleStyle.Render("Apps"))
+	sb.WriteString(boxTopTitle(title, innerW) + "\n")
+
+	if snap == nil || len(snap.Global.Apps.Instances) == 0 {
+		sb.WriteString(boxRow(dimStyle.Render("  no applications detected"), innerW) + "\n")
+		sb.WriteString(boxBot(innerW) + "\n")
+		return sb.String()
+	}
+
+	// Sort: unhealthy first, then by health score ascending
+	apps := make([]model.AppInstance, len(snap.Global.Apps.Instances))
+	copy(apps, snap.Global.Apps.Instances)
+	sort.Slice(apps, func(i, j int) bool {
+		return apps[i].HealthScore < apps[j].HealthScore
+	})
+
+	maxShow := 8
+	if len(apps) < maxShow {
+		maxShow = len(apps)
+	}
+
+	nameW := 14
+	scoreW := 8
+	for _, app := range apps[:maxShow] {
+		name := app.DisplayName
+		if len(name) > nameW {
+			name = name[:nameW]
+		}
+
+		// Traffic light badge
+		var badge string
+		if app.HealthScore < 50 {
+			badge = critStyle.Render("✗")
+		} else if app.HealthScore < 80 {
+			badge = warnStyle.Render("⚠")
+		} else {
+			badge = okStyle.Render("●")
+		}
+
+		scoreStr := fmt.Sprintf("%d/100", app.HealthScore)
+		// Build compact one-line summary from deep metrics
+		summary := overviewAppOneLiner(app)
+
+		row := fmt.Sprintf("  %s %s %s  %s",
+			badge,
+			styledPad(valueStyle.Render(name), nameW),
+			styledPad(dimStyle.Render(scoreStr), scoreW),
+			dimStyle.Render(summary))
+		sb.WriteString(boxRow(row, innerW) + "\n")
+	}
+
+	if len(apps) > maxShow {
+		sb.WriteString(boxRow(dimStyle.Render(fmt.Sprintf("  ... +%d more", len(apps)-maxShow)), innerW) + "\n")
+	}
+
+	sb.WriteString(boxBot(innerW) + "\n")
+	return sb.String()
+}
+
+// overviewAppOneLiner returns a compact metric summary for an app.
+func overviewAppOneLiner(app model.AppInstance) string {
+	dm := app.DeepMetrics
+	if !app.HasDeepMetrics || len(dm) == 0 {
+		return fmt.Sprintf("%dMB RSS  %d conns", int(app.RSSMB), app.Connections)
+	}
+
+	switch app.AppType {
+	case "redis":
+		parts := []string{}
+		if ops := dm["instantaneous_ops_per_sec"]; ops != "" {
+			parts = append(parts, ops+" ops/s")
+		}
+		if hr := dm["hit_ratio"]; hr != "" {
+			parts = append(parts, hr+" hit")
+		}
+		if p99 := dm["latency_percentiles_usec_p99"]; p99 != "" {
+			p99v, _ := strconv.ParseFloat(p99, 64)
+			parts = append(parts, redisFmtUsec(p99v)+" p99")
+		}
+		return strings.Join(parts, "  ")
+	case "elasticsearch":
+		parts := []string{}
+		if st := dm["status"]; st != "" {
+			parts = append(parts, st)
+		}
+		if n := dm["number_of_nodes"]; n != "" {
+			parts = append(parts, n+" nodes")
+		}
+		if h := dm["jvm_heap_used_pct"]; h != "" {
+			parts = append(parts, h+" heap")
+		}
+		return strings.Join(parts, "  ")
+	case "mysql":
+		parts := []string{}
+		if qps := dm["queries_per_sec"]; qps != "" {
+			parts = append(parts, qps+" qps")
+		}
+		if conn := dm["threads_connected"]; conn != "" {
+			parts = append(parts, conn+" conns")
+		}
+		return strings.Join(parts, "  ")
+	case "postgresql":
+		parts := []string{}
+		if ac := dm["active_connections"]; ac != "" {
+			parts = append(parts, ac+" active")
+		}
+		if hr := dm["cache_hit_ratio"]; hr != "" {
+			parts = append(parts, hr+" cache")
+		}
+		return strings.Join(parts, "  ")
+	case "nginx":
+		parts := []string{}
+		if rps := dm["requests_per_sec"]; rps != "" {
+			parts = append(parts, rps+" rps")
+		}
+		if ac := dm["active_connections"]; ac != "" {
+			parts = append(parts, ac+" active")
+		}
+		return strings.Join(parts, "  ")
+	case "haproxy":
+		parts := []string{}
+		if rps := dm["req_rate"]; rps != "" {
+			parts = append(parts, rps+" rps")
+		}
+		if e5 := dm["hrsp_5xx"]; e5 != "" && e5 != "0" {
+			parts = append(parts, e5+" 5xx")
+		}
+		return strings.Join(parts, "  ")
+	case "mongodb":
+		parts := []string{}
+		if conn := dm["current_connections"]; conn != "" {
+			parts = append(parts, conn+" conns")
+		}
+		return strings.Join(parts, "  ")
+	case "rabbitmq":
+		parts := []string{}
+		if q := dm["queue_totals_messages"]; q != "" {
+			parts = append(parts, q+" msgs")
+		}
+		if conn := dm["connections"]; conn != "" {
+			parts = append(parts, conn+" conns")
+		}
+		return strings.Join(parts, "  ")
+	case "memcached":
+		parts := []string{}
+		if hr := dm["hit_ratio"]; hr != "" {
+			parts = append(parts, hr+" hit")
+		}
+		if mem := dm["bytes_human"]; mem != "" {
+			parts = append(parts, mem)
+		}
+		return strings.Join(parts, "  ")
+	default:
+		return fmt.Sprintf("%dMB RSS  %d conns", int(app.RSSMB), app.Connections)
+	}
+}
+
+// ─── OVERVIEW: SECURITY SUMMARY BLOCK ───────────────────────────────────────
+
+func renderOverviewSecuritySummary(snap *model.Snapshot, width int) string {
+	var sb strings.Builder
+
+	innerW := width - 7
+	if innerW < 40 {
+		innerW = 40
+	}
+	if innerW > 100 {
+		innerW = 100
+	}
+
+	title := fmt.Sprintf(" %s ", titleStyle.Render("Security"))
+	sb.WriteString(boxTopTitle(title, innerW) + "\n")
+
+	if snap == nil {
+		sb.WriteString(boxRow(dimStyle.Render("  collecting..."), innerW) + "\n")
+		sb.WriteString(boxBot(innerW) + "\n")
+		return sb.String()
+	}
+
+	sec := snap.Global.Security
+	var alerts []string
+
+	// Check each detection mechanism
+	if len(sec.ReverseShells) > 0 {
+		alerts = append(alerts, critStyle.Render(fmt.Sprintf("%d reverse shell(s)", len(sec.ReverseShells))))
+	}
+	if sec.BruteForce {
+		alerts = append(alerts, critStyle.Render(fmt.Sprintf("brute force (%.0f/s)", sec.FailedAuthRate)))
+	}
+	if len(sec.BeaconIndicators) > 0 {
+		alerts = append(alerts, warnStyle.Render(fmt.Sprintf("%d beacon(s)", len(sec.BeaconIndicators))))
+	}
+	if len(sec.DNSTunnelIndicators) > 0 {
+		alerts = append(alerts, warnStyle.Render(fmt.Sprintf("%d DNS tunnel(s)", len(sec.DNSTunnelIndicators))))
+	}
+	if len(snap.Global.FilelessProcs) > 0 {
+		alerts = append(alerts, warnStyle.Render(fmt.Sprintf("%d fileless proc(s)", len(snap.Global.FilelessProcs))))
+	}
+	if len(sec.SUIDAnomalies) > 0 {
+		alerts = append(alerts, warnStyle.Render(fmt.Sprintf("%d SUID anomaly", len(sec.SUIDAnomalies))))
+	}
+
+	// SYN flood from sentinel
+	if len(snap.Global.Sentinel.SynFlood) > 0 {
+		alerts = append(alerts, warnStyle.Render(fmt.Sprintf("%d SYN flood src(s)", len(snap.Global.Sentinel.SynFlood))))
+	}
+
+	if len(alerts) == 0 {
+		row := fmt.Sprintf("  %s  %s", okStyle.Render("●"), dimStyle.Render("Clean — no threats detected"))
+		sb.WriteString(boxRow(row, innerW) + "\n")
+	} else {
+		badge := warnStyle.Render("⚠")
+		for _, r := range sec.ReverseShells {
+			_ = r
+			badge = critStyle.Render("✗")
+			break
+		}
+		row := fmt.Sprintf("  %s  %s", badge, strings.Join(alerts, dimStyle.Render("  ")))
+		sb.WriteString(boxRow(row, innerW) + "\n")
+	}
+
+	// Failed auth summary (always show if non-zero)
+	if sec.FailedAuthTotal > 0 && !sec.BruteForce {
+		authRow := fmt.Sprintf("  %s  %s",
+			dimStyle.Render("·"),
+			dimStyle.Render(fmt.Sprintf("Failed auth: %d total, %.1f/s from %d IPs",
+				sec.FailedAuthTotal, sec.FailedAuthRate, len(sec.FailedAuthIPs))))
+		sb.WriteString(boxRow(authRow, innerW) + "\n")
+	}
+
+	sb.WriteString(boxBot(innerW) + "\n")
+	return sb.String()
 }

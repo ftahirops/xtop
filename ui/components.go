@@ -230,6 +230,24 @@ func truncate(s string, maxLen int) string {
 	return string(runes[:maxLen-3]) + "..."
 }
 
+// truncateToWidth trims a (possibly ANSI-styled) string to fit within maxW
+// visible columns. It iterates runes and stops once lipgloss.Width would exceed
+// the limit. This is a best-effort trim — mid-escape truncation is possible but
+// the terminal will recover on the next line.
+func truncateToWidth(s string, maxW int) string {
+	if lipgloss.Width(s) <= maxW {
+		return s
+	}
+	runes := []rune(s)
+	for i := len(runes); i > 0; i-- {
+		candidate := string(runes[:i])
+		if lipgloss.Width(candidate) <= maxW {
+			return candidate
+		}
+	}
+	return ""
+}
+
 func padLeft(s string, width int) string {
 	runes := []rune(s)
 	if len(runes) >= width {

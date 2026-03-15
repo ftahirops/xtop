@@ -236,22 +236,29 @@ func (sw *SecWatchdog) Close() {
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
 
+	var wg sync.WaitGroup
+	closeProbe := func(fn func()) {
+		wg.Add(1)
+		go func() { defer wg.Done(); fn() }()
+	}
+
 	if sw.tcpflags != nil {
-		sw.tcpflags.close()
+		closeProbe(sw.tcpflags.close)
 		sw.tcpflags = nil
 	}
 	if sw.dnsdeep != nil {
-		sw.dnsdeep.close()
+		closeProbe(sw.dnsdeep.close)
 		sw.dnsdeep = nil
 	}
 	if sw.tlsfinger != nil {
-		sw.tlsfinger.close()
+		closeProbe(sw.tlsfinger.close)
 		sw.tlsfinger = nil
 	}
 	if sw.beacondetect != nil {
-		sw.beacondetect.close()
+		closeProbe(sw.beacondetect.close)
 		sw.beacondetect = nil
 	}
+	wg.Wait()
 }
 
 // DetectPrimaryIface returns the name of the primary network interface

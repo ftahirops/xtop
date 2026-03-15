@@ -38,6 +38,23 @@ type AppInstance struct {
 
 	// Docker orchestration type: "standalone", "compose", "swarm", "k8s", "mixed"
 	OrchestrationType string `json:"orchestration_type,omitempty"`
+
+	// Websites (for hosting panels, nginx, apache, php-fpm)
+	Websites []WebsiteMetrics `json:"websites,omitempty"`
+}
+
+// WebsiteMetrics holds per-website resource usage.
+type WebsiteMetrics struct {
+	Domain     string  `json:"domain"`
+	Active     bool    `json:"active"`
+	CPUPct     float64 `json:"cpu_pct"`
+	RSSMB      float64 `json:"rss_mb"`
+	Workers    int     `json:"workers"`
+	MaxWorkers int     `json:"max_workers"`
+	HitsPerMin int     `json:"hits_per_min"`
+	DBSizeMB   float64 `json:"db_size_mb"`
+	DiskMB     float64 `json:"disk_mb"`
+	PHPVersion string  `json:"php_version,omitempty"`
 }
 
 // DockerStack represents a group of containers from the same compose project or standalone.

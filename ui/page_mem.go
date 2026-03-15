@@ -183,6 +183,98 @@ func renderMemPage(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 		procLines = append(procLines, dimStyle.Render("(collecting...)"))
 	}
 	sb.WriteString(boxSection("TOP PROCESSES BY MEMORY", procLines, iw))
+
+	// === Process Tree for top memory consumers ===
+	if len(snap.Processes) > 0 && rates != nil && len(rates.ProcessRates) > 0 {
+		var treeLines []string
+		treeLines = append(treeLines, dimStyle.Render(fmt.Sprintf("%7s %-16s %10s %7s  %s", "PID", "COMMAND", "RSS", "MEM%", "TREE")))
+
+		pidProc := make(map[int]*model.ProcessMetrics, len(snap.Processes))
+		children := make(map[int][]int)
+		for i := range snap.Processes {
+			p := &snap.Processes[i]
+			pidProc[p.PID] = p
+			if p.PPID > 1 {
+				children[p.PPID] = append(children[p.PPID], p.PID)
+			}
+		}
+
+		memByPID := make(map[int]float64)
+		rssByPID := make(map[int]uint64)
+		for _, pr := range rates.ProcessRates {
+			memByPID[pr.PID] = pr.MemPct
+			rssByPID[pr.PID] = pr.RSS
+		}
+
+		procs := make([]model.ProcessRate, len(rates.ProcessRates))
+		copy(procs, rates.ProcessRates)
+		sort.Slice(procs, func(i, j int) bool { return procs[i].RSS > procs[j].RSS })
+
+		shown := make(map[int]bool)
+		for i, p := range procs {
+			if i >= 6 || p.RSS == 0 {
+				break
+			}
+			if shown[p.PID] {
+				continue
+			}
+
+			var chain []int
+			pid := p.PID
+			for pid > 1 && len(chain) < 4 {
+				chain = append(chain, pid)
+				if proc, ok := pidProc[pid]; ok {
+					pid = proc.PPID
+				} else {
+					break
+				}
+			}
+
+			for j := len(chain) - 1; j >= 0; j-- {
+				cpid := chain[j]
+				if shown[cpid] {
+					continue
+				}
+				shown[cpid] = true
+				proc := pidProc[cpid]
+				if proc == nil {
+					continue
+				}
+				indent := len(chain) - 1 - j
+				prefix := ""
+				if indent > 0 {
+					prefix = strings.Repeat("  ", indent-1) + "└─"
+				}
+				comm := proc.Comm
+				if len(comm) > 14 {
+					comm = comm[:11] + "..."
+				}
+				childCount := len(children[cpid])
+				tree := ""
+				if childCount > 0 {
+					// Sum RSS of all direct children
+					var childRSS uint64
+					for _, cid := range children[cpid] {
+						childRSS += rssByPID[cid]
+					}
+					if childRSS > 0 {
+						tree = fmt.Sprintf("(%d children, %s total)", childCount, fmtBytes(childRSS))
+					} else {
+						tree = fmt.Sprintf("(%d children)", childCount)
+					}
+				}
+
+				row := fmt.Sprintf("%7d %s%-*s %10s %6.1f%%  %s",
+					cpid, prefix, 16-len(prefix), comm,
+					fmtBytes(rssByPID[cpid]), memByPID[cpid], tree)
+				treeLines = append(treeLines, row)
+			}
+		}
+		if len(treeLines) > 1 {
+			sb.WriteString(boxSection("PROCESS TREE (top memory)", treeLines, iw))
+		}
+	}
+
 	sb.WriteString(pageFooter(""))
 
 	return sb.String()

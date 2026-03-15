@@ -66,9 +66,14 @@ func (p *dnsdeepProbe) read() ([]model.DNSTunnelIndicator, error) {
 			avgQueryLen = int(val.TotalQueryBytes / val.TotalQueries)
 		}
 		// Only report entries that actually look suspicious:
-		// TXT ratio > 0.3 (30%) or avg query length > 80 chars
-		if txtRatio < 0.3 && avgQueryLen < 80 {
+		// TXT ratio > 0.3 (30%) AND avg query length > 50 chars (together = tunnel signal)
+		// OR avg query length > 120 chars alone (extremely long = data encoding in DNS)
+		// Raised from 80 to 120 to avoid CDN/cloud domain false positives
+		if txtRatio < 0.3 && avgQueryLen < 120 {
 			continue
+		}
+		if txtRatio >= 0.3 && avgQueryLen < 50 {
+			continue // High TXT ratio alone not enough (DKIM/SPF/DMARC lookups)
 		}
 		results = append(results, model.DNSTunnelIndicator{
 			SrcIP:       formatIPv4(saddr),

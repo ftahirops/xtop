@@ -265,6 +265,9 @@ func (m *nginxModule) Collect(app *DetectedApp, secrets *AppSecrets) model.AppIn
 		inst.HealthScore = 100
 	}
 
+	// Per-website metrics (shared with Plesk/Apache/PHP-FPM)
+	inst.Websites = CollectWebsites()
+
 	return inst
 }
 

@@ -31,8 +31,6 @@ const (
 	PageThresholds
 	PageDiskGuard
 	PageSecurity
-	PageLogs
-	PageServices
 	PageDiag
 	PageIntel
 	PageProxmox
@@ -40,7 +38,26 @@ const (
 	pageCount
 )
 
-var pageNames = []string{"Overview", "CPU", "Memory", "IO", "Network", "CGroups", "Timeline", "Events", "Probe", "Thresholds", "DiskGuard", "Security", "Logs", "Services", "Diagnostics", "Intel", "Proxmox", "Apps"}
+var pageNames = []string{"Overview", "CPU", "Memory", "IO", "Network", "CGroups", "Timeline", "Events", "Probe", "Thresholds", "DiskGuard", "Security", "Diagnostics", "Intel", "Proxmox", "Apps"}
+
+// signalEntry describes a signal option in the signal menu.
+type signalEntry struct {
+	Sig  syscall.Signal
+	Name string
+	Desc string
+}
+
+// signalList is the list of signals available in the F9 menu.
+var signalList = []signalEntry{
+	{syscall.SIGTERM, "SIGTERM", "Graceful shutdown (default)"},
+	{syscall.SIGKILL, "SIGKILL", "Force kill (cannot be caught)"},
+	{syscall.SIGSTOP, "SIGSTOP", "Freeze process (SIGCONT to resume)"},
+	{syscall.SIGCONT, "SIGCONT", "Resume frozen process"},
+	{syscall.SIGHUP, "SIGHUP", "Reload configuration"},
+	{syscall.SIGUSR1, "SIGUSR1", "User-defined signal 1"},
+	{syscall.SIGUSR2, "SIGUSR2", "User-defined signal 2"},
+	{syscall.SIGINT, "SIGINT", "Interrupt (Ctrl+C equivalent)"},
+}
 
 type tickMsg time.Time
 
@@ -132,7 +149,8 @@ type Model struct {
 	evtSelected   int
 
 	// Overview layout mode
-	layoutMode LayoutMode
+	layoutMode      LayoutMode
+	overviewCompact bool // true = clean summary (default), false = full detail with sparklines
 
 	// Probe state
 	probeManager *engine.ProbeManager
@@ -182,6 +200,7 @@ type Model struct {
 	// Apps page
 	appsSelectedIdx      int    // cursor in app list
 	appsDetailMode       bool   // true = drill-down detail view
+	appsViewCompact      bool   // true = summary view (default), false = full detail
 	dockerStackCursor    int    // cursor in stack list (detail mode)
 	dockerStackExpanded  []bool // which stacks are expanded
 	dockerContainerIdx   int    // selected container within expanded stack
@@ -200,6 +219,17 @@ type Model struct {
 	secSectionCursor   int              // 0-13: highlighted section
 	secSectionExpanded [secSecCount]bool // which sections are expanded
 	secManualOverride  bool             // user toggled section; disable auto-expand
+
+	// Process signal (kill) overlay — works on CPU, Memory, IO pages
+	signalMode       bool   // true = signal overlay is open
+	signalProcIdx    int    // selected process index in sorted list
+	signalMenuIdx    int    // selected signal in signal menu
+	signalConfirm    bool   // true = showing confirmation prompt
+	signalFocusProc  bool   // true = j/k moves process cursor; false = signal cursor
+	signalTargetPID  int    // PID to signal (set on confirm)
+	signalTargetComm string // comm of target (for display)
+	signalMsg        string // feedback message after signal
+	signalMsgTime    time.Time
 }
 
 // NewModel creates a new TUI model.
@@ -237,8 +267,10 @@ func NewModel(ticker engine.Ticker, interval time.Duration, dataDir string) Mode
 		probeManager:   engine.NewProbeManager(),
 		diskGuardMode:  "Monitor",
 		frozenPIDs:     make(map[int]frozenProc),
-		showOnboarding: showOnboarding,
-		beginnerMode:   beginnerMode,
+		showOnboarding:  showOnboarding,
+		beginnerMode:    beginnerMode,
+		appsViewCompact: true,
+		overviewCompact: true,
 	}
 }
 
@@ -307,6 +339,116 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.showHelp {
 			m.showHelp = false
+			return m, nil
+		}
+		// Signal mode: intercept all keys
+		if m.signalMode {
+			switch msg.String() {
+			case "q", "ctrl+c", "esc":
+				m.signalMode = false
+				m.signalConfirm = false
+				return m, nil
+			case "j", "down":
+				if m.signalConfirm {
+					return m, nil
+				}
+				if m.signalFocusProc {
+					procs := m.sortedProcesses()
+					maxP := 10
+					if maxP > len(procs) {
+						maxP = len(procs)
+					}
+					if m.signalProcIdx < maxP-1 {
+						m.signalProcIdx++
+					}
+				} else {
+					if m.signalMenuIdx < len(signalList)-1 {
+						m.signalMenuIdx++
+					}
+				}
+				return m, nil
+			case "k", "up":
+				if m.signalConfirm {
+					return m, nil
+				}
+				if m.signalFocusProc {
+					if m.signalProcIdx > 0 {
+						m.signalProcIdx--
+					}
+				} else {
+					if m.signalMenuIdx > 0 {
+						m.signalMenuIdx--
+					}
+				}
+				return m, nil
+			case "tab":
+				if !m.signalConfirm {
+					m.signalFocusProc = !m.signalFocusProc
+				}
+				return m, nil
+			case "enter":
+				if m.signalConfirm {
+					// Execute the signal
+					sig := signalList[m.signalMenuIdx]
+					pid := m.signalTargetPID
+					comm := m.signalTargetComm
+					// Verify PID identity
+					st := readProcStartTime(pid)
+					if st == "" {
+						m.signalMsg = fmt.Sprintf("PID %d no longer exists", pid)
+					} else if freezeDenylist[comm] && sig.Sig == syscall.SIGKILL {
+						m.signalMsg = fmt.Sprintf("Blocked: %s (PID %d) is in denylist", comm, pid)
+					} else {
+						err := syscall.Kill(pid, sig.Sig)
+						if err != nil {
+							m.signalMsg = fmt.Sprintf("Failed: kill -%s %d (%s): %v", sig.Name, pid, comm, err)
+						} else {
+							m.signalMsg = fmt.Sprintf("Sent %s to PID %d (%s)", sig.Name, pid, comm)
+						}
+					}
+					m.signalMsgTime = time.Now()
+					m.signalMode = false
+					m.signalConfirm = false
+					return m, nil
+				}
+				// Show confirmation
+				procs := m.sortedProcesses()
+				if m.signalProcIdx < len(procs) {
+					m.signalTargetPID = procs[m.signalProcIdx].PID
+					m.signalTargetComm = procs[m.signalProcIdx].Comm
+					m.signalConfirm = true
+				}
+				return m, nil
+			case "y", "Y":
+				if m.signalConfirm {
+					// Same as enter on confirm
+					sig := signalList[m.signalMenuIdx]
+					pid := m.signalTargetPID
+					comm := m.signalTargetComm
+					st := readProcStartTime(pid)
+					if st == "" {
+						m.signalMsg = fmt.Sprintf("PID %d no longer exists", pid)
+					} else if freezeDenylist[comm] && sig.Sig == syscall.SIGKILL {
+						m.signalMsg = fmt.Sprintf("Blocked: %s (PID %d) is in denylist", comm, pid)
+					} else {
+						err := syscall.Kill(pid, sig.Sig)
+						if err != nil {
+							m.signalMsg = fmt.Sprintf("Failed: kill -%s %d (%s): %v", sig.Name, pid, comm, err)
+						} else {
+							m.signalMsg = fmt.Sprintf("Sent %s to PID %d (%s)", sig.Name, pid, comm)
+						}
+					}
+					m.signalMsgTime = time.Now()
+					m.signalMode = false
+					m.signalConfirm = false
+					return m, nil
+				}
+			case "n", "N":
+				if m.signalConfirm {
+					m.signalConfirm = false
+					return m, nil
+				}
+			}
 			return m, nil
 		}
 		// Explain panel focused: capture scroll keys
@@ -720,14 +862,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.page = PageSecurity
 			m.scroll = 0
 			m.explainScroll = 0
-		case "O":
-			m.page = PageLogs
-			m.scroll = 0
-			m.explainScroll = 0
-		case "H":
-			m.page = PageServices
-			m.scroll = 0
-			m.explainScroll = 0
 		case "W":
 			m.page = PageDiag
 			m.scroll = 0
@@ -806,6 +940,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.secSectionExpanded[i] = false
 				}
 				m.secManualOverride = false
+			}
+		case "d":
+			// Toggle compact/detail view
+			if m.page == PageOverview {
+				m.overviewCompact = !m.overviewCompact
+				m.scroll = 0
+			} else if m.page == PageApps && m.appsDetailMode {
+				m.appsViewCompact = !m.appsViewCompact
+				m.scroll = 0
 			}
 		case "m", "M":
 			// Cycle DiskGuard mode (only on DiskGuard page)
@@ -917,6 +1060,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 					}
 					m.diskGuardMsgT = time.Now()
+				}
+			}
+		case "f9":
+			// Open signal menu (like htop F9) — works on pages with process lists
+			if m.page == PageCPU || m.page == PageMemory || m.page == PageIO || m.page == PageOverview {
+				procs := m.sortedProcesses()
+				if len(procs) > 0 {
+					m.signalMode = true
+					m.signalProcIdx = 0
+					m.signalMenuIdx = 0
+					m.signalConfirm = false
+					m.signalFocusProc = true // start with process selection
 				}
 			}
 		case "r", "R":
@@ -1046,7 +1201,7 @@ func (m Model) View() string {
 	} else {
 		switch m.page {
 		case PageOverview:
-			content = renderOverview(m.snap, m.rates, rcaResult, m.engine.History, smartDisks, m.probeManager, m.layoutMode, renderW, m.height)
+			content = renderOverview(m.snap, m.rates, rcaResult, m.engine.History, smartDisks, m.probeManager, m.layoutMode, m.overviewCompact, renderW, m.height)
 		case PageCPU:
 			content = renderCPUPage(m.snap, m.rates, m.result, m.probeManager, renderW, m.height)
 		case PageMemory:
@@ -1080,10 +1235,6 @@ func (m Model) View() string {
 			content = renderSecurityPage(m.snap, m.rates, m.result, m.probeManager,
 				m.secSectionCursor, m.secSectionExpanded,
 				renderW, m.height)
-		case PageLogs:
-			content = renderLogsPage(m.snap, m.rates, m.result, m.probeManager, renderW, m.height)
-		case PageServices:
-			content = renderServicesPage(m.snap, m.rates, m.result, m.probeManager, renderW, m.height)
 		case PageDiag:
 			content = renderDiagPage(m.snap, m.rates, m.result, m.probeManager, renderW, m.height)
 		case PageIntel:
@@ -1094,6 +1245,7 @@ func (m Model) View() string {
 			content = renderProxmoxPage(m.snap, m.rates, m.result, smartDisks, m.probeManager, renderW, m.height)
 		case PageApps:
 			content = renderAppsPage(m.snap, m.appsSelectedIdx, m.appsDetailMode,
+				m.appsViewCompact,
 				m.dockerStackCursor, m.dockerStackExpanded, m.dockerContainerIdx,
 				renderW, m.height)
 		}
@@ -1114,6 +1266,16 @@ func (m Model) View() string {
 	if resolvedAgo > 0 {
 		badge := dimStyle.Render(fmt.Sprintf("  Root cause from %ds ago — system recovered, holding for review", resolvedAgo))
 		content += "\n" + badge
+	}
+
+	// Signal overlay
+	if m.signalMode {
+		content = m.renderSignalOverlay(content, renderW)
+	}
+
+	// Signal feedback message (10s timeout)
+	if m.signalMsg != "" && time.Since(m.signalMsgTime) < 10*time.Second {
+		content += "\n " + lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#50fa7b")).Render(m.signalMsg)
 	}
 
 	// Inject clock + interval into the first line (top-right)
@@ -1157,10 +1319,6 @@ func (m Model) renderStatusBar(scrollInfo string) string {
 			return "D"
 		case PageSecurity:
 			return "L"
-		case PageLogs:
-			return "O"
-		case PageServices:
-			return "H"
 		case PageDiag:
 			return "W"
 		case PageIntel:
@@ -1394,10 +1552,6 @@ func shortPageName(name string) string {
 		return "Disk"
 	case "Security":
 		return "Sec"
-	case "Logs":
-		return "Log"
-	case "Services":
-		return "Svc"
 	case "Diagnostics":
 		return "Diag"
 	default:
@@ -1574,8 +1728,6 @@ func (m Model) renderHelp() string {
 	sb.WriteString("  9         Thresholds & limits reference\n")
 	sb.WriteString("  D         DiskGuard (filesystem space monitor)\n")
 	sb.WriteString("  L         Security (auth, SUID, fileless, ports)\n")
-	sb.WriteString("  O         Logs (per-service error rates)\n")
-	sb.WriteString("  H         Services (health probes, certs, DNS)\n")
 	sb.WriteString("  W         Diagnostics (per-service deep analysis)\n")
 	sb.WriteString("  b / Esc   Back to overview\n")
 	sb.WriteString("\n")
@@ -1588,6 +1740,7 @@ func (m Model) renderHelp() string {
 	sb.WriteString("  [ / ]     Replay seek -10 / +10 frames\n")
 	sb.WriteString("  { / }     Replay seek -60 / +60 frames\n")
 	sb.WriteString("  J / K     Replay jump to start / end\n")
+	sb.WriteString("  F9        Send signal to process (kill/stop/term/HUP)\n")
 	sb.WriteString("  I         Start eBPF probe investigation (auto-detect)\n")
 	sb.WriteString("  S         Save RCA snapshot to JSON file\n")
 	sb.WriteString("  E         Toggle explain side panel (metric glossary)\n")
@@ -1634,8 +1787,6 @@ func (m Model) renderHelp() string {
 	sb.WriteString("  Thresholds  All metrics with thresholds, limits, and scoring rules\n")
 	sb.WriteString("  DiskGuard   Filesystem monitor: growth, ETA, big files, writers\n")
 	sb.WriteString("  Security    Failed auth, SUID changes, fileless, reverse shells\n")
-	sb.WriteString("  Logs        Per-service error/warn rates with sparklines\n")
-	sb.WriteString("  Services    HTTP/TCP probes, cert expiry, DNS resolution\n")
 	sb.WriteString("  Diagnostics Per-service deep analysis (nginx, mysql, redis, etc.)\n")
 	sb.WriteString("\n")
 	sb.WriteString(helpStyle.Render("Press any key to close"))
@@ -1698,6 +1849,125 @@ func (m *Model) updatePinnedRCA() {
 // displayResult returns the best AnalysisResult to show RCA data from.
 // Returns the pinned result if available, otherwise the live result.
 // Also returns seconds since resolution (0 = still active, >0 = resolved N seconds ago).
+// renderSignalOverlay renders the F9 signal selection overlay on top of content.
+func (m *Model) renderSignalOverlay(content string, width int) string {
+	procs := m.sortedProcesses()
+	if len(procs) == 0 {
+		return content
+	}
+
+	var sb strings.Builder
+	overlayW := 60
+	if overlayW > width-4 {
+		overlayW = width - 4
+	}
+
+	borderStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#ff79c6"))
+	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#f8f8f2"))
+	selStyle := lipgloss.NewStyle().Bold(true).Background(lipgloss.Color("#44475a")).Foreground(lipgloss.Color("#50fa7b"))
+	dimSty := lipgloss.NewStyle().Foreground(lipgloss.Color("#6272a4"))
+
+	if m.signalConfirm {
+		// Confirmation dialog
+		sig := signalList[m.signalMenuIdx]
+		sb.WriteString(borderStyle.Render("╭─ CONFIRM SIGNAL ─" + strings.Repeat("─", overlayW-20) + "╮") + "\n")
+		sb.WriteString(borderStyle.Render("│") + headerStyle.Render(fmt.Sprintf(" Send %s to PID %d (%s)?",
+			sig.Name, m.signalTargetPID, m.signalTargetComm)) + "\n")
+		sb.WriteString(borderStyle.Render("│") + "\n")
+		if freezeDenylist[m.signalTargetComm] && sig.Sig == syscall.SIGKILL {
+			sb.WriteString(borderStyle.Render("│") + lipgloss.NewStyle().Foreground(lipgloss.Color("#ff5555")).Render(
+				fmt.Sprintf("  ⚠ %s is in denylist — SIGKILL blocked", m.signalTargetComm)) + "\n")
+		}
+		sb.WriteString(borderStyle.Render("│") + "  " + selStyle.Render(" y ") + " Yes  " + dimSty.Render(" n ") + " No  " + dimSty.Render(" Esc ") + " Cancel\n")
+		sb.WriteString(borderStyle.Render("╰" + strings.Repeat("─", overlayW-1) + "╯") + "\n")
+	} else {
+		// Process list (left) + signal menu (right)
+		sb.WriteString(borderStyle.Render("╭─ SEND SIGNAL (F9) ─" + strings.Repeat("─", overlayW-21) + "╮") + "\n")
+		procLabel := "SELECT PROCESS:"
+		sigLabel := "SIGNAL:"
+		if m.signalFocusProc {
+			procLabel = headerStyle.Render("▶ PROCESS:")
+			sigLabel = dimSty.Render("  SIGNAL:")
+		} else {
+			procLabel = dimSty.Render("  PROCESS:")
+			sigLabel = headerStyle.Render("▶ SIGNAL:")
+		}
+		sb.WriteString(borderStyle.Render("│") + " " + procLabel + strings.Repeat(" ", 16) + sigLabel + "\n")
+
+		maxProcs := 10
+		if maxProcs > len(procs) {
+			maxProcs = len(procs)
+		}
+		maxSigs := len(signalList)
+		rows := maxProcs
+		if maxSigs > rows {
+			rows = maxSigs
+		}
+
+		for i := 0; i < rows; i++ {
+			sb.WriteString(borderStyle.Render("│") + " ")
+			// Process column
+			if i < maxProcs {
+				p := procs[i]
+				comm := p.Comm
+				if len(comm) > 14 {
+					comm = comm[:11] + "..."
+				}
+				procStr := fmt.Sprintf("%6d %-14s %5.1f%%", p.PID, comm, p.CPUPct)
+				if i == m.signalProcIdx {
+					if m.signalFocusProc {
+						sb.WriteString(selStyle.Render(procStr))
+					} else {
+						sb.WriteString(dimSty.Render("▸ " + procStr))
+					}
+				} else {
+					sb.WriteString("  " + procStr)
+				}
+			} else {
+				sb.WriteString(strings.Repeat(" ", 30))
+			}
+			sb.WriteString("  ")
+			// Signal column
+			if i < maxSigs {
+				sig := signalList[i]
+				sigStr := fmt.Sprintf("%-10s %s", sig.Name, sig.Desc)
+				if len(sigStr) > 28 {
+					sigStr = sigStr[:25] + "..."
+				}
+				if i == m.signalMenuIdx {
+					if !m.signalFocusProc {
+						sb.WriteString(selStyle.Render(sigStr))
+					} else {
+						sb.WriteString(dimSty.Render("▸ " + sigStr))
+					}
+				} else {
+					sb.WriteString("  " + sigStr)
+				}
+			}
+			sb.WriteString("\n")
+		}
+
+		sb.WriteString(borderStyle.Render("│") + " " + dimSty.Render("j/k=select process  Tab=select signal  Enter=confirm  Esc=cancel") + "\n")
+		sb.WriteString(borderStyle.Render("╰" + strings.Repeat("─", overlayW-1) + "╯") + "\n")
+	}
+
+	return content + "\n" + sb.String()
+}
+
+// sortedProcesses returns processes sorted by CPU% descending (same order as CPU page).
+func (m *Model) sortedProcesses() []model.ProcessRate {
+	if m.rates == nil || len(m.rates.ProcessRates) == 0 {
+		return nil
+	}
+	procs := make([]model.ProcessRate, len(m.rates.ProcessRates))
+	copy(procs, m.rates.ProcessRates)
+	sort.Slice(procs, func(i, j int) bool { return procs[i].CPUPct > procs[j].CPUPct })
+	if len(procs) > 15 {
+		procs = procs[:15]
+	}
+	return procs
+}
+
 func (m *Model) displayResult() (result *model.AnalysisResult, resolvedAgo int) {
 	if m.pinnedResult != nil {
 		ago := 0
@@ -1944,8 +2214,20 @@ func (m Model) injectClock(content string) string {
 	lineW := lipgloss.Width(firstLine)
 	gap := m.width - lineW - clockW
 	if gap < 2 {
-		// Not enough room — place on its own line
-		return strings.Repeat(" ", m.width-clockW) + clock + "\n" + content
+		// Not enough room — truncate first line to make space for clock
+		maxLineW := m.width - clockW - 2
+		if maxLineW < 0 {
+			maxLineW = 0
+		}
+		// Trim visible width of first line
+		trimmed := truncateToWidth(firstLine, maxLineW)
+		trimW := lipgloss.Width(trimmed)
+		pad := m.width - trimW - clockW
+		if pad < 0 {
+			pad = 0
+		}
+		lines[0] = trimmed + strings.Repeat(" ", pad) + clock
+		return strings.Join(lines, "\n")
 	}
 	lines[0] = firstLine + strings.Repeat(" ", gap) + clock
 	return strings.Join(lines, "\n")

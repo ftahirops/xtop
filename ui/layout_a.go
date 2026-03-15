@@ -13,14 +13,12 @@ import (
 // Left: Subsystem health with details
 // Right: Owners + Chain + Capacity + Trend
 func renderLayoutA(snap *model.Snapshot, rates *model.RateSnapshot, result *model.AnalysisResult,
-	history *engine.History, pm probeQuerier, ss []subsysInfo, width, height int) string {
+	history *engine.History, pm probeQuerier, ss []subsysInfo, compact bool, width, height int) string {
 
 	var sb strings.Builder
 
 	// Header
 	sb.WriteString(renderHeader(snap, rates, result))
-	sb.WriteString("\n")
-	sb.WriteString(separator(width))
 	sb.WriteString("\n")
 
 	leftW := width/2 - 2
@@ -34,8 +32,6 @@ func renderLayoutA(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 
 	// Build left column: Subsystem Health
 	var left strings.Builder
-	left.WriteString(titleStyle.Render(" Subsystem Health"))
-	left.WriteString("\n")
 
 	boxInnerW := leftW - 5
 	if boxInnerW < 30 {
@@ -65,17 +61,35 @@ func renderLayoutA(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 		left.WriteString(boxBot(boxInnerW) + "\n")
 	}
 
-	// Build right column: RCA + Changes + Actions + Owners + Capacity + Probe + Exhaustion + Degradation + Trend
+	// Build right column
 	var right strings.Builder
-	right.WriteString(renderRCABox(result, rightW))
-	right.WriteString(renderChangesBlock(result, rightW))
-	right.WriteString(renderActionsBlock(result, rightW))
-	right.WriteString(renderOwnersBlock(result, rightW))
-	right.WriteString(renderCapacityBlock(result, true, 16, rightW))
-	right.WriteString(renderProbeStatusLine(pm, snap))
-	right.WriteString(renderExhaustionBlock(result, rightW))
-	right.WriteString(renderDegradationBlock(result, rightW))
-	right.WriteString(renderTrendBlock(result, history, rightW, true))
+	if compact {
+		// Clean summary: RCA + Owners + Capacity + Apps + Security + Probe
+		right.WriteString(renderRCABox(result, rightW))
+		right.WriteString(renderOwnersBlock(result, rightW))
+		right.WriteString(renderCapacityBlock(result, true, 16, rightW))
+		right.WriteString(renderOverviewAppsSummary(snap, rightW))
+		right.WriteString(renderOverviewSecuritySummary(snap, rightW))
+		right.WriteString(renderProbeStatusLine(pm, snap))
+		// Show exhaustion/degradation only if active (not empty blocks)
+		if result != nil && len(result.Exhaustions) > 0 {
+			right.WriteString(renderExhaustionBlock(result, rightW))
+		}
+		if result != nil && len(result.Degradations) > 0 {
+			right.WriteString(renderDegradationBlock(result, rightW))
+		}
+	} else {
+		// Full detail: everything + sparklines
+		right.WriteString(renderRCABox(result, rightW))
+		right.WriteString(renderChangesBlock(result, rightW))
+		right.WriteString(renderActionsBlock(result, rightW))
+		right.WriteString(renderOwnersBlock(result, rightW))
+		right.WriteString(renderCapacityBlock(result, true, 16, rightW))
+		right.WriteString(renderProbeStatusLine(pm, snap))
+		right.WriteString(renderExhaustionBlock(result, rightW))
+		right.WriteString(renderDegradationBlock(result, rightW))
+		right.WriteString(renderTrendBlock(result, history, rightW, true))
+	}
 
 	// Join columns with vertical separator
 	leftLines := strings.Split(left.String(), "\n")

@@ -46,6 +46,11 @@ func (p *synfloodProbe) read() ([]model.SynFloodEntry, error) {
 		if val.SynCount == 0 && val.SynackRetrans == 0 {
 			continue
 		}
+		// Skip low-count entries — legitimate clients behind NAT/CDN
+		// SYN flood requires volume; fewer than 50 SYNs is normal traffic
+		if val.SynCount < 50 && val.SynackRetrans == 0 {
+			continue
+		}
 		// Skip loopback (127.0.0.0/8) — not a real SYN flood source
 		if isLoopback(srcIP) {
 			continue

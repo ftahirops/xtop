@@ -197,43 +197,170 @@ func selectTopEvidence(result *model.AnalysisResult, n int) []string {
 	return lines
 }
 
-// estimateImpact builds a one-line impact string from PSI stalls, latency, and exhaustion ETAs.
+// estimateImpact builds a human-readable impact narrative from system state.
+// Translates raw metrics into production-level impact descriptions.
 func estimateImpact(result *model.AnalysisResult, curr *model.Snapshot, rates *model.RateSnapshot) string {
-	var parts []string
+	if curr == nil {
+		return ""
+	}
 
-	// PSI stall percentages
-	if curr != nil {
-		if v := curr.Global.PSI.CPU.Some.Avg10; v > 1 {
-			parts = append(parts, fmt.Sprintf("CPU stall %.0f%%", v))
+	var parts []string
+	ncpu := curr.Global.CPU.NumCPUs
+	if ncpu == 0 {
+		ncpu = 1
+	}
+
+	// ── CPU impact ──
+	cpuPSI := curr.Global.PSI.CPU.Some.Avg10
+	if cpuPSI > 1 {
+		effectiveCores := float64(ncpu) * (1 - cpuPSI/100)
+		if effectiveCores < 0 {
+			effectiveCores = 0
 		}
-		if v := curr.Global.PSI.Memory.Some.Avg10; v > 1 {
-			parts = append(parts, fmt.Sprintf("Mem stall %.0f%%", v))
+		capacityLoss := fmt.Sprintf("%.0f%% CPU capacity lost (%d→%.1f effective cores)", cpuPSI, ncpu, effectiveCores)
+
+		// Estimate latency impact from run queue
+		rq := curr.Global.CPU.LoadAvg.Running
+		if rq > uint64(ncpu) {
+			queueRatio := float64(rq) / float64(ncpu)
+			if queueRatio > 2 {
+				capacityLoss += fmt.Sprintf(". Requests queueing %.0fx — response times ~%.0fx normal", queueRatio, queueRatio)
+			} else {
+				capacityLoss += fmt.Sprintf(". Run queue %d/%d — mild queueing, latency +%.0f%%", rq, ncpu, (queueRatio-1)*100)
+			}
 		}
-		if v := curr.Global.PSI.IO.Full.Avg10; v > 1 {
-			parts = append(parts, fmt.Sprintf("IO stall %.0f%%", v))
+
+		// Check for cgroup throttling detail
+		for _, rca := range result.RCA {
+			for _, ev := range rca.EvidenceV2 {
+				if ev.ID == "cpu.cgroup.throttle" && ev.Strength > 0 {
+					capacityLoss += ". Container CPU-throttled — request processing stalled during throttle windows"
+					break
+				}
+			}
+		}
+
+		// Sustained vs spike
+		load1 := curr.Global.CPU.LoadAvg.Load1
+		load5 := curr.Global.CPU.LoadAvg.Load5
+		if load5 > 0 && load1 > load5*1.5 {
+			capacityLoss += ". Spike (1m load >> 5m) — may self-resolve"
+		} else if load5 > 0 && load1 <= load5*1.1 && result.AnomalyStartedAgo > 30 {
+			capacityLoss += fmt.Sprintf(". Sustained %ds — not a spike, intervention likely needed", result.AnomalyStartedAgo)
+		}
+
+		parts = append(parts, capacityLoss)
+	}
+
+	// ── Memory impact ──
+	memPSI := curr.Global.PSI.Memory.Some.Avg10
+	if memPSI > 1 {
+		memImpact := fmt.Sprintf("%.0f%% memory pressure", memPSI)
+		if rates != nil && rates.DirectReclaimRate > 100 {
+			memImpact += fmt.Sprintf(" — kernel reclaiming %.0f pages/s, all allocations slowed", rates.DirectReclaimRate)
+		}
+		if rates != nil && (rates.SwapInRate+rates.SwapOutRate) > 10 {
+			memImpact += fmt.Sprintf(". Swapping %.0f pages/s — severe latency for swapped processes", rates.SwapInRate+rates.SwapOutRate)
+		}
+
+		// OOM risk
+		for _, ex := range result.Exhaustions {
+			if ex.Resource == "Memory" || ex.Resource == "memory" {
+				memImpact += fmt.Sprintf(". OOM kill risk in ~%.0fm if trend continues", ex.EstMinutes)
+				break
+			}
+		}
+		parts = append(parts, memImpact)
+	}
+
+	// ── IO impact ──
+	ioPSI := curr.Global.PSI.IO.Full.Avg10
+	if ioPSI > 1 {
+		ioImpact := fmt.Sprintf("%.0f%% IO stall", ioPSI)
+		// Find worst disk
+		if rates != nil {
+			var worstDisk string
+			var worstUtil, worstAwait float64
+			for _, d := range rates.DiskRates {
+				if d.UtilPct > worstUtil {
+					worstUtil = d.UtilPct
+					worstAwait = d.AvgAwaitMs
+					worstDisk = d.Name
+				}
+			}
+			if worstUtil > 80 {
+				ioImpact += fmt.Sprintf(" — %s at %.0f%% util, %.0fms await", worstDisk, worstUtil, worstAwait)
+				if worstAwait > 20 {
+					multiplier := worstAwait / 5.0 // assume 5ms is normal
+					ioImpact += fmt.Sprintf(". Disk latency %.0fx normal — DB queries, file ops, logging all delayed", multiplier)
+				}
+			}
+		}
+		parts = append(parts, ioImpact)
+	}
+
+	// ── Network impact (only if significant) ──
+	if rates != nil && rates.RetransRate > 50 {
+		netImpact := fmt.Sprintf("TCP retransmits %.0f/s — connection quality degraded", rates.RetransRate)
+		if rates.RetransRate > 500 {
+			netImpact += ". Severe — client timeouts likely"
+		}
+		parts = append(parts, netImpact)
+	}
+
+	// ── Cross-reference with apps for concrete production impact ──
+	if curr != nil && len(curr.Global.Apps.Instances) > 0 {
+		for _, app := range curr.Global.Apps.Instances {
+			if app.HealthScore >= 80 || !app.HasDeepMetrics {
+				continue
+			}
+			dm := app.DeepMetrics
+			switch app.AppType {
+			case "redis":
+				if p99 := dm["latency_percentiles_usec_p99"]; p99 != "" {
+					var p99v float64
+					fmt.Sscanf(p99, "%f", &p99v)
+					if p99v > 5000 { // >5ms is bad for redis
+						parts = append(parts, fmt.Sprintf("%s p99 latency %.1fms — client-facing reads/writes affected", app.DisplayName, p99v/1000))
+					}
+				}
+			case "mysql", "postgresql":
+				if sl := dm["slow_queries"]; sl != "" && sl != "0" {
+					parts = append(parts, fmt.Sprintf("%s has %s slow queries — database throughput reduced", app.DisplayName, sl))
+				}
+			case "elasticsearch":
+				if st := dm["status"]; st == "red" {
+					parts = append(parts, fmt.Sprintf("%s cluster RED — search/indexing unavailable", app.DisplayName))
+				}
+			case "nginx", "haproxy":
+				if e5 := dm["hrsp_5xx"]; e5 != "" && e5 != "0" {
+					parts = append(parts, fmt.Sprintf("%s returning %s 5xx errors — users seeing failures", app.DisplayName, e5))
+				}
+			case "rabbitmq":
+				if q := dm["queue_totals_messages"]; q != "" {
+					var qv int
+					fmt.Sscanf(q, "%d", &qv)
+					if qv > 10000 {
+						parts = append(parts, fmt.Sprintf("%s queue backlog %d msgs — async processing falling behind", app.DisplayName, qv))
+					}
+				}
+			}
 		}
 	}
 
-	// Exhaustion ETAs
+	// ── Exhaustion warnings ──
 	for _, ex := range result.Exhaustions {
 		if ex.EstMinutes > 0 && ex.EstMinutes < 120 {
-			parts = append(parts, fmt.Sprintf("%s exhaustion in %.0fm", ex.Resource, ex.EstMinutes))
-		}
-	}
-
-	// Degradation trends
-	for _, d := range result.Degradations {
-		if d.Duration > 60 {
-			parts = append(parts, fmt.Sprintf("%s %s", d.Metric, d.Direction))
+			parts = append(parts, fmt.Sprintf("%s exhaustion in ~%.0fm — action needed before outage", ex.Resource, ex.EstMinutes))
 		}
 	}
 
 	if len(parts) == 0 {
 		return ""
 	}
-	// Limit to 3 items
-	if len(parts) > 3 {
-		parts = parts[:3]
+	// Join all parts into a detailed narrative. Keep up to 4 items.
+	if len(parts) > 4 {
+		parts = parts[:4]
 	}
-	return strings.Join(parts, "; ")
+	return strings.Join(parts, ". ")
 }

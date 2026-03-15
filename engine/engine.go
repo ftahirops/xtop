@@ -64,6 +64,7 @@ func NewEngine(historySize, intervalSec int) *Engine {
 	appm.Register(apps.NewKafkaModule())
 	appm.Register(apps.NewDockerModule())
 	appm.Register(apps.NewPHPFPMModule())
+	appm.Register(apps.NewPleskModule())
 	reg.Add(appm)
 
 	return &Engine{
@@ -164,15 +165,30 @@ func (e *Engine) Tick() (*model.Snapshot, *model.RateSnapshot, *model.AnalysisRe
 }
 
 // Close shuts down all engine resources (sentinel probes, security watchdog, collector connections).
+// Cleanup runs in parallel with a 2-second hard timeout so quit is never slow.
 func (e *Engine) Close() {
-	if e.Sentinel != nil {
-		e.Sentinel.Close()
-	}
-	if e.SecWatchdog != nil {
-		e.SecWatchdog.Close()
-	}
-	if e.registry != nil {
-		e.registry.CloseAll()
+	done := make(chan struct{})
+	go func() {
+		var wg sync.WaitGroup
+		if e.Sentinel != nil {
+			wg.Add(1)
+			go func() { defer wg.Done(); e.Sentinel.Close() }()
+		}
+		if e.SecWatchdog != nil {
+			wg.Add(1)
+			go func() { defer wg.Done(); e.SecWatchdog.Close() }()
+		}
+		if e.registry != nil {
+			wg.Add(1)
+			go func() { defer wg.Done(); e.registry.CloseAll() }()
+		}
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		// Hard timeout — kernel will clean up BPF resources when process exits
 	}
 }
 

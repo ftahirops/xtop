@@ -276,10 +276,12 @@ func detectVirtAndCloud() (virt, cloud string) {
 		return
 
 	case strings.Contains(vl, "xen") || strings.HasPrefix(pl, "hvm"):
-		// AWS EC2 older instances use Xen with "HVM domU" product
-		if pl == "hvm domu" && vl == "xen" {
+		// Xen HVM — check for specific platforms
+		if strings.Contains(bl, "amazon") || strings.Contains(cal, "i-") {
 			cloud = "AWS"
 			virt = "VM (Xen/AWS)"
+		} else if isXCPng() {
+			virt = "VM (XCP-ng)"
 		} else {
 			virt = "VM (Xen)"
 		}
@@ -367,6 +369,34 @@ func isProxmox() bool {
 		if cmdline == "qemu-ga" || cmdline == "pvestatd" || cmdline == "pvedaemon" {
 			return true
 		}
+	}
+	return false
+}
+
+// isXCPng detects XCP-ng/XenServer by checking for xe-guest-utilities package.
+func isXCPng() bool {
+	// xe-guest-utilities is the guest tools package installed by XCP-ng/XenServer
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() || e.Name()[0] < '1' || e.Name()[0] > '9' {
+			continue
+		}
+		comm, _ := util.ReadFileString("/proc/" + e.Name() + "/comm")
+		comm = strings.TrimSpace(comm)
+		// xe-daemon is the XCP-ng/XenServer guest agent process
+		if comm == "xe-daemon" || comm == "xe-linux-dis" {
+			return true
+		}
+	}
+	// Also check dpkg/rpm for xe-guest-utilities
+	if data, _ := util.ReadFileString("/var/lib/dpkg/info/xe-guest-utilities.list"); data != "" {
+		return true
+	}
+	if _, err := os.Stat("/usr/sbin/xe-daemon"); err == nil {
+		return true
 	}
 	return false
 }

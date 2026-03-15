@@ -589,6 +589,7 @@ type PktDropEntry struct {
 	ReasonStr string
 	Count     uint64
 	Rate      float64
+	Benign    bool // true if this is a normal TCP lifecycle drop, not a real problem
 }
 
 // PktDropLocation holds where in the kernel packets are being dropped.

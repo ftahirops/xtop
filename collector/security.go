@@ -405,6 +405,10 @@ func (s *SecurityCollector) collectSUID(sec *model.SecurityMetrics) {
 func (s *SecurityCollector) collectReverseShells(snap *model.Snapshot, sec *model.SecurityMetrics) {
 	sec.ReverseShells = nil
 
+	// Build set of TCP socket inodes — only these indicate network reverse shells.
+	// Unix domain sockets (local IPC) are legitimate (MCP servers, LSP, Docker, etc.)
+	tcpInodes := loadTCPInodes()
+
 	procs := snap.Processes
 	if len(procs) > 50 {
 		procs = procs[:50]
@@ -414,7 +418,7 @@ func (s *SecurityCollector) collectReverseShells(snap *model.Snapshot, sec *mode
 		if p.PID < 100 {
 			continue
 		}
-		// #13: Skip whitelisted processes to reduce false positives
+		// Skip whitelisted processes
 		if reverseShellWhitelist[p.Comm] {
 			continue
 		}
@@ -422,6 +426,13 @@ func (s *SecurityCollector) collectReverseShells(snap *model.Snapshot, sec *mode
 		fd1 := readFDLink(p.PID, 1)
 
 		if strings.HasPrefix(fd0, "socket:[") && strings.HasPrefix(fd1, "socket:[") {
+			// Extract inode numbers and check if they're TCP (network) sockets.
+			// Unix domain sockets = local IPC (MCP, LSP, Docker) → not a reverse shell.
+			inode0 := fd0[8 : len(fd0)-1] // "socket:[12345]" → "12345"
+			inode1 := fd1[8 : len(fd1)-1]
+			if !tcpInodes[inode0] && !tcpInodes[inode1] {
+				continue // both are unix/local sockets — skip
+			}
 			sec.ReverseShells = append(sec.ReverseShells, model.ReverseShellProc{
 				PID:  p.PID,
 				Comm: p.Comm,
@@ -430,6 +441,27 @@ func (s *SecurityCollector) collectReverseShells(snap *model.Snapshot, sec *mode
 			})
 		}
 	}
+}
+
+// loadTCPInodes reads /proc/net/tcp and /proc/net/tcp6 to build a set of TCP socket inode numbers.
+func loadTCPInodes() map[string]bool {
+	inodes := make(map[string]bool)
+	for _, path := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		for i, line := range strings.Split(string(data), "\n") {
+			if i == 0 { // skip header
+				continue
+			}
+			fields := strings.Fields(line)
+			if len(fields) >= 10 {
+				inodes[fields[9]] = true // field 9 = inode
+			}
+		}
+	}
+	return inodes
 }
 
 func readFDLink(pid, fd int) string {

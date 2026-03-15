@@ -52,21 +52,32 @@ func (f *FilelessCollector) Collect(snap *model.Snapshot) error {
 
 // knownSafeComms are process names known to legitimately use memfd or deleted executables.
 var knownSafeComms = map[string]bool{
-	"chrome":          true,
-	"chromium":        true,
-	"electron":        true,
-	"runc":            true,
-	"containerd-shim": true,
-	"crun":            true,
+	// Browsers (use memfd for JIT)
+	"chrome": true, "chromium": true, "electron": true, "firefox": true, "firefox-esr": true,
+	// Container runtimes (deleted exe during overlay updates)
+	"runc": true, "containerd-shim": true, "crun": true,
+	// Language runtimes (JIT/memfd)
+	"dotnet": true, "java": true, "qemu-system-x86": true, "qemu-system-x8": true,
+	// Package managers (upgrade causes deleted exe)
+	"dpkg": true, "apt": true, "rpm": true, "yum": true, "dnf": true,
+	// Snap/Flatpak (non-standard paths + overlay)
+	"snap": true, "flatpak": true, "snapd": true,
 }
 
 // knownSafePrefixes are path prefixes for executables that are likely upgrade leftovers.
 var knownSafePrefixes = []string{
 	"/usr/",
 	"/lib/",
+	"/lib64/",
 	"/sbin/",
 	"/bin/",
 	"/opt/",
+	"/snap/",
+	"/var/lib/docker/",
+	"/var/lib/containerd/",
+	"/var/lib/snapd/",
+	"/run/containerd/",
+	"/srv/",
 }
 
 func (f *FilelessCollector) scan() []model.FilelessProcess {

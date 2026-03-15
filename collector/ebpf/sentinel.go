@@ -139,17 +139,17 @@ func (s *SentinelManager) Collect(snap *model.Snapshot) error {
 				}
 				rate := float64(delta) / elapsed
 				s.prevDrops[r.Reason] = r.Count
+				benign := isBenignDropReason(r.Reason)
 				if delta > 0 {
 					sent.PktDrops = append(sent.PktDrops, model.PktDropEntry{
 						Reason:    r.Reason,
 						ReasonStr: dropReasonString(r.Reason),
 						Count:     r.Count,
 						Rate:      rate,
+						Benign:    benign,
 					})
 					// Only count concerning drop reasons in the headline total.
-					// Benign reasons (normal TCP lifecycle, flow control, socket filters)
-					// are still tracked per-reason but excluded from the alarm rate.
-					if !isBenignDropReason(r.Reason) {
+					if !benign {
 						totalDropRate += rate
 					}
 				}
@@ -630,54 +630,62 @@ func (s *SentinelManager) Close() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Close all probes in parallel — each is a kernel detach syscall
+	var wg sync.WaitGroup
+	closeProbe := func(fn func()) {
+		wg.Add(1)
+		go func() { defer wg.Done(); fn() }()
+	}
+
 	if s.kfreeskb != nil {
-		s.kfreeskb.close()
+		closeProbe(s.kfreeskb.close)
 	}
 	if s.tcpreset != nil {
-		s.tcpreset.close()
+		closeProbe(s.tcpreset.close)
 	}
 	if s.sockstate != nil {
-		s.sockstate.close()
+		closeProbe(s.sockstate.close)
 	}
 	if s.modload != nil {
-		s.modload.close()
+		closeProbe(s.modload.close)
 	}
 	if s.oomkill != nil {
-		s.oomkill.close()
+		closeProbe(s.oomkill.close)
 	}
 	if s.directreclaim != nil {
-		s.directreclaim.close()
+		closeProbe(s.directreclaim.close)
 	}
 	if s.cgthrottle != nil {
-		s.cgthrottle.close()
+		closeProbe(s.cgthrottle.close)
 	}
 	if s.tcpretrans != nil {
-		s.tcpretrans.close()
+		closeProbe(s.tcpretrans.close)
 	}
 	if s.tcpconnlat != nil {
-		s.tcpconnlat.close()
+		closeProbe(s.tcpconnlat.close)
 	}
 	if s.execsnoop != nil {
-		s.execsnoop.close()
+		closeProbe(s.execsnoop.close)
 	}
 	if s.ptracedetect != nil {
-		s.ptracedetect.close()
+		closeProbe(s.ptracedetect.close)
 	}
 	if s.synflood != nil {
-		s.synflood.close()
+		closeProbe(s.synflood.close)
 	}
 	if s.portscan != nil {
-		s.portscan.close()
+		closeProbe(s.portscan.close)
 	}
 	if s.dnsmon != nil {
-		s.dnsmon.close()
+		closeProbe(s.dnsmon.close)
 	}
 	if s.connrate != nil {
-		s.connrate.close()
+		closeProbe(s.connrate.close)
 	}
 	if s.outbound != nil {
-		s.outbound.close()
+		closeProbe(s.outbound.close)
 	}
+	wg.Wait()
 }
 
 // AttachedCount returns how many sentinel probes attached successfully.

@@ -3,6 +3,7 @@
 package ui
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 )
 
 func renderAppsPage(snap *model.Snapshot, selectedIdx int, detailMode bool,
+	viewCompact bool,
 	stackCursor int, stackExpanded []bool, containerIdx int,
 	width, height int) string {
 	var sb strings.Builder
@@ -24,6 +26,9 @@ func renderAppsPage(snap *model.Snapshot, selectedIdx int, detailMode bool,
 		app := instances[selectedIdx]
 		if app.AppType == "docker" {
 			return renderDockerDetail(app, stackCursor, stackExpanded, containerIdx, iw)
+		}
+		if viewCompact {
+			return renderAppsDetailCompact(app, iw)
 		}
 		return renderAppsDetail(app, iw)
 	}
@@ -41,6 +46,7 @@ func renderAppsPage(snap *model.Snapshot, selectedIdx int, detailMode bool,
 		}
 		sb.WriteString(strings.Repeat(" ", pad) + dimStyle.Render("No applications detected."))
 		sb.WriteString("\n")
+		sb.WriteString(renderAppsServiceProbes(snap, iw))
 		sb.WriteString(pageFooter("Y:Apps"))
 		return sb.String()
 	}
@@ -119,6 +125,10 @@ func renderAppsPage(snap *model.Snapshot, selectedIdx int, detailMode bool,
 	}
 
 	sb.WriteString(boxBot(iw) + "\n")
+
+	// Service probes section (merged from Services page)
+	sb.WriteString(renderAppsServiceProbes(snap, iw))
+
 	sb.WriteString(pageFooter("j/k:Navigate  Enter:Details  Y:Apps"))
 	return sb.String()
 }
@@ -141,6 +151,11 @@ func renderAppsDetail(app model.AppInstance, iw int) string {
 		sb.WriteString(renderAppDeepMetrics(app, iw))
 	}
 
+	// Per-website table
+	if len(app.Websites) > 0 {
+		sb.WriteString(renderWebsitesTable(app.Websites, iw))
+	}
+
 	// MySQL handles its own diagnostics; other apps use generic health issues
 	if app.AppType != "mysql" && len(app.HealthIssues) > 0 {
 		sb.WriteString("  " + titleStyle.Render("HEALTH ISSUES") + "\n")
@@ -152,7 +167,90 @@ func renderAppsDetail(app model.AppInstance, iw int) string {
 		sb.WriteString(boxBot(iw) + "\n\n")
 	}
 
-	sb.WriteString(pageFooter("k:Back  Y:Apps"))
+	sb.WriteString(pageFooter("b:Back  d:Summary  Y:Apps"))
+	return sb.String()
+}
+
+// renderAppsServiceProbes renders the merged service health probes section on the Apps list view.
+func renderAppsServiceProbes(snap *model.Snapshot, iw int) string {
+	if snap == nil {
+		return ""
+	}
+	probes := snap.Global.HealthChecks.Probes
+	if len(probes) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("\n")
+
+	// Categorize
+	var httpProbes, tcpProbes []model.HealthProbeResult
+	healthy, degraded, down := 0, 0, 0
+	for _, p := range probes {
+		switch p.Status {
+		case "OK":
+			healthy++
+		case "WARN":
+			degraded++
+		case "CRIT":
+			down++
+		}
+		switch p.ProbeType {
+		case "http":
+			httpProbes = append(httpProbes, p)
+		case "tcp":
+			tcpProbes = append(tcpProbes, p)
+		}
+	}
+
+	// Summary line
+	summary := fmt.Sprintf("  %s healthy   %s degraded   %s down",
+		okStyle.Render(fmt.Sprintf("%d", healthy)),
+		warnStyle.Render(fmt.Sprintf("%d", degraded)),
+		critStyle.Render(fmt.Sprintf("%d", down)))
+
+	sb.WriteString(boxTopTitle(" "+titleStyle.Render("SERVICE PROBES")+" ", iw) + "\n")
+	sb.WriteString(boxRow(summary, iw) + "\n")
+
+	// HTTP probes
+	if len(httpProbes) > 0 {
+		sb.WriteString(boxRow("", iw) + "\n")
+		sb.WriteString(boxRow("  "+dimStyle.Render("HTTP/HTTPS"), iw) + "\n")
+		for _, p := range httpProbes {
+			badge := renderHealthBadge(p.Status)
+			latStr := valueStyle.Render(fmt.Sprintf("%.0fms", p.LatencyMs))
+			certStr := ""
+			if p.CertDaysLeft >= 0 {
+				certStr = "  cert " + certDaysStr(p.CertDaysLeft)
+			}
+			row := fmt.Sprintf("  %s  %s  %s  %s%s",
+				styledPad(badge, 6),
+				styledPad(valueStyle.Render(p.Name), 12),
+				styledPad(dimStyle.Render(truncate(p.Target, 35)), 37),
+				latStr,
+				certStr)
+			sb.WriteString(boxRow(row, iw) + "\n")
+		}
+	}
+
+	// TCP probes
+	if len(tcpProbes) > 0 {
+		sb.WriteString(boxRow("", iw) + "\n")
+		sb.WriteString(boxRow("  "+dimStyle.Render("TCP"), iw) + "\n")
+		for _, p := range tcpProbes {
+			badge := renderHealthBadge(p.Status)
+			latStr := valueStyle.Render(fmt.Sprintf("%.0fms", p.LatencyMs))
+			row := fmt.Sprintf("  %s  %s  %s  %s",
+				styledPad(badge, 6),
+				styledPad(valueStyle.Render(p.Name), 16),
+				styledPad(dimStyle.Render(p.Target), 24),
+				latStr)
+			sb.WriteString(boxRow(row, iw) + "\n")
+		}
+	}
+
+	sb.WriteString(boxBot(iw) + "\n")
 	return sb.String()
 }
 
@@ -276,6 +374,8 @@ func renderAppDeepMetrics(app model.AppInstance, iw int) string {
 		return renderCaddyDeepMetrics(app, iw)
 	case "traefik":
 		return renderTraefikDeepMetrics(app, iw)
+	case "plesk":
+		return renderPleskDeepMetrics(app, iw)
 	default:
 		return renderGenericDeepMetrics(app.DeepMetrics, iw)
 	}
@@ -398,216 +498,615 @@ func renderRedisDeepMetrics(app model.AppInstance, iw int) string {
 	var sb strings.Builder
 	dm := app.DeepMetrics
 
-	// Health Status Table
-	sb.WriteString("  " + titleStyle.Render("HEALTH STATUS") + "\n")
+	// Column widths: 33% health, 67% throughput
+	healthW := iw / 3
+	tpW := iw - healthW - 4 // gap between columns
+
+	// ── SECTION 1: HEALTH STATUS (33%) | THROUGHPUT & CLIENTS (67%) ──
+	sb.WriteString("  " + titleStyle.Render("HEALTH STATUS") + strings.Repeat(" ", healthW-15) + titleStyle.Render("THROUGHPUT & CLIENTS") + "\n")
 	sb.WriteString(boxTop(iw) + "\n")
 
 	type healthRow struct {
 		metric, value, status string
 	}
-	rows := []healthRow{}
+	var hRows []healthRow
 
-	// Memory usage
 	if dm["memory_usage_pct"] != "" {
 		var pct float64
 		fmt.Sscanf(dm["memory_usage_pct"], "%f", &pct)
-		status := "OK"
+		st := "OK"
 		if pct > 90 {
-			status = "CRIT"
+			st = "CRIT"
 		} else if pct > 75 {
-			status = "WARN"
+			st = "WARN"
 		}
-		rows = append(rows, healthRow{"Memory Usage", dm["used_memory_human"] + " / " + dm["maxmemory_human"] + " (" + dm["memory_usage_pct"] + ")", status})
+		hRows = append(hRows, healthRow{"Memory", dm["used_memory_human"] + "/" + dm["maxmemory_human"] + " (" + dm["memory_usage_pct"] + ")", st})
 	} else if dm["maxmemory"] == "0" || dm["maxmemory"] == "" {
-		rows = append(rows, healthRow{"Memory Usage", dm["used_memory_human"] + " (no limit)", "OK"})
+		hRows = append(hRows, healthRow{"Memory", dm["used_memory_human"] + " (no limit)", "OK"})
 	}
-
-	// Hit ratio
 	if dm["hit_ratio"] != "" {
 		var ratio float64
 		fmt.Sscanf(dm["hit_ratio"], "%f", &ratio)
-		status := "OK"
+		st := "OK"
 		if ratio < 80 {
-			status = "CRIT"
+			st = "CRIT"
 		} else if ratio < 90 {
-			status = "WARN"
+			st = "WARN"
 		}
-		rows = append(rows, healthRow{"Hit Ratio", dm["hit_ratio"], status})
+		hRows = append(hRows, healthRow{"Hit Ratio", dm["hit_ratio"], st})
 	}
-
-	// Evictions
-	evicted := dm["evicted_keys"]
-	if evicted != "" {
-		status := "OK"
-		if evicted != "0" {
-			status = "CRIT"
+	if ev := dm["evicted_keys"]; ev != "" {
+		st := "OK"
+		if ev != "0" {
+			st = "CRIT"
 		}
-		rows = append(rows, healthRow{"Evicted Keys", evicted, status})
+		hRows = append(hRows, healthRow{"Evictions", ev, st})
 	}
-
-	// Fragmentation
 	if dm["mem_fragmentation_ratio"] != "" {
 		frag, _ := strconv.ParseFloat(dm["mem_fragmentation_ratio"], 64)
-		status := "OK"
-		if frag > 1.5 {
-			status = "WARN"
-		} else if frag < 1.0 && frag > 0 {
-			status = "WARN"
+		st := "OK"
+		if frag > 1.5 || (frag < 1.0 && frag > 0) {
+			st = "WARN"
 		}
-		rows = append(rows, healthRow{"Fragmentation Ratio", dm["mem_fragmentation_ratio"], status})
+		hRows = append(hRows, healthRow{"Fragmentation", dm["mem_fragmentation_ratio"], st})
 	}
-
-	// Blocked clients
 	if dm["blocked_clients"] != "" {
-		status := "OK"
-		if dm["blocked_clients"] != "0" {
-			b, _ := strconv.Atoi(dm["blocked_clients"])
-			if b > 10 {
-				status = "CRIT"
-			} else if b > 0 {
-				status = "WARN"
-			}
+		st := "OK"
+		b, _ := strconv.Atoi(dm["blocked_clients"])
+		if b > 10 {
+			st = "CRIT"
+		} else if b > 0 {
+			st = "WARN"
 		}
-		rows = append(rows, healthRow{"Blocked Clients", dm["blocked_clients"], status})
+		hRows = append(hRows, healthRow{"Blocked", dm["blocked_clients"], st})
 	}
-
-	// Rejected connections
-	if dm["rejected_connections"] != "" && dm["rejected_connections"] != "0" {
-		rows = append(rows, healthRow{"Rejected Connections", dm["rejected_connections"], "CRIT"})
-	} else {
-		rows = append(rows, healthRow{"Rejected Connections", "0", "OK"})
+	{
+		st := "OK"
+		if dm["rejected_connections"] != "" && dm["rejected_connections"] != "0" {
+			st = "CRIT"
+		}
+		hRows = append(hRows, healthRow{"Rejected", dm["rejected_connections"], st})
 	}
-
-	// RDB save
 	if dm["rdb_last_bgsave_status"] != "" {
-		status := "OK"
+		st := "OK"
 		if dm["rdb_last_bgsave_status"] != "ok" {
-			status = "CRIT"
+			st = "CRIT"
 		}
-		rows = append(rows, healthRow{"Last RDB Save", dm["rdb_last_bgsave_status"], status})
+		hRows = append(hRows, healthRow{"RDB Save", dm["rdb_last_bgsave_status"], st})
 	}
-
-	// Replication
-	if dm["role"] == "slave" {
-		status := "OK"
+	if dm["role"] == "slave" && dm["master_link_status"] != "" {
+		st := "OK"
 		if dm["master_link_status"] == "down" {
-			status = "CRIT"
+			st = "CRIT"
 		}
-		rows = append(rows, healthRow{"Replication Link", dm["master_link_status"], status})
+		hRows = append(hRows, healthRow{"Repl Link", dm["master_link_status"], st})
+	}
+	// New health indicators
+	if p99 := dm["latency_percentiles_usec_p99"]; p99 != "" {
+		p99v, _ := strconv.ParseFloat(p99, 64)
+		st := "OK"
+		label := redisFmtUsec(p99v)
+		if p99v > 10000 {
+			st = "CRIT"
+		} else if p99v > 1000 {
+			st = "WARN"
+		}
+		hRows = append(hRows, healthRow{"P99 Latency", label, st})
+	}
+	if rssR := dm["rss_overhead_ratio"]; rssR != "" {
+		rssv, _ := strconv.ParseFloat(rssR, 64)
+		st := "OK"
+		if rssv > 2.0 {
+			st = "CRIT"
+		} else if rssv > 1.5 {
+			st = "WARN"
+		}
+		hRows = append(hRows, healthRow{"RSS Ratio", rssR + "x", st})
+	}
+	if capPct := dm["client_capacity_pct"]; capPct != "" {
+		var cv float64
+		fmt.Sscanf(capPct, "%f", &cv)
+		st := "OK"
+		if cv > 80 {
+			st = "CRIT"
+		} else if cv > 60 {
+			st = "WARN"
+		}
+		hRows = append(hRows, healthRow{"Client Cap", capPct, st})
+	}
+	if forkUs := dm["latest_fork_usec"]; forkUs != "" {
+		fv, _ := strconv.ParseInt(forkUs, 10, 64)
+		st := "OK"
+		label := redisFmtUsec(float64(fv))
+		if fv > 500000 {
+			st = "CRIT"
+		} else if fv > 100000 {
+			st = "WARN"
+		}
+		hRows = append(hRows, healthRow{"Fork Time", label, st})
+	}
+	if dm["slowlog_count"] != "" && dm["slowlog_count"] != "0" {
+		st := "WARN"
+		hRows = append(hRows, healthRow{"Slow Queries", dm["slowlog_count"] + " recent", st})
 	}
 
-	cMetric := 24
-	cValue := 40
-	hdr := fmt.Sprintf("  %s %s %s",
-		styledPad(dimStyle.Render("Metric"), cMetric),
-		styledPad(dimStyle.Render("Value"), cValue),
-		dimStyle.Render("Status"))
-	sb.WriteString(boxRow(hdr, iw) + "\n")
-	sb.WriteString(boxMid(iw) + "\n")
+	// Throughput items split into 2 sub-columns on right side
+	type tpItem struct{ key, val string }
+	tpCol1 := []tpItem{
+		{"Ops/sec", dm["instantaneous_ops_per_sec"]},
+		{"Input", redisFmtKbps(dm["instantaneous_input_kbps"])},
+		{"Output", redisFmtKbps(dm["instantaneous_output_kbps"])},
+		{"Total Cmds", redisFmtLargeNum(dm["total_commands_processed"])},
+		{"Total Conns", redisFmtLargeNum(dm["total_connections_received"])},
+		{"Net In", redisFmtNetBytes(dm["total_net_input_bytes"])},
+		{"Net Out", redisFmtNetBytes(dm["total_net_output_bytes"])},
+	}
+	// Add latency to TP col1
+	if p50 := dm["latency_percentiles_usec_p50"]; p50 != "" {
+		p50v, _ := strconv.ParseFloat(p50, 64)
+		tpCol1 = append(tpCol1, tpItem{"Latency p50", redisFmtUsec(p50v)})
+	}
+	if p99 := dm["latency_percentiles_usec_p99"]; p99 != "" {
+		p99v, _ := strconv.ParseFloat(p99, 64)
+		tpCol1 = append(tpCol1, tpItem{"Latency p99", redisFmtUsec(p99v)})
+	}
+	tpCol2 := []tpItem{
+		{"Connected", dm["connected_clients"]},
+		{"Blocked", dm["blocked_clients"]},
+		{"Max Clients", dm["maxclients"]},
+		{"Client Cap", dm["client_capacity_pct"]},
+		{"Rejected", dm["rejected_connections"]},
+		{"CPU Sys", redisFmtSec(dm["used_cpu_sys"])},
+		{"CPU User", redisFmtSec(dm["used_cpu_user"])},
+	}
+	if ps := dm["pubsub_channels"]; ps != "" && ps != "0" {
+		tpCol2 = append(tpCol2, tpItem{"PubSub Ch", ps})
+	}
+	if lf := dm["lazyfree_pending_objects"]; lf != "" && lf != "0" {
+		tpCol2 = append(tpCol2, tpItem{"Lazyfree", lf})
+	}
 
-	for _, r := range rows {
-		var badge string
-		switch r.status {
-		case "OK":
-			badge = okStyle.Render("OK")
-		case "WARN":
-			badge = warnStyle.Render("WARN")
-		case "CRIT":
-			badge = critStyle.Render("CRIT")
+	cLabel := 14
+	cVal := healthW - cLabel - 10
+	if cVal < 10 {
+		cVal = 10
+	}
+	tpHalf := (tpW - 2) / 2
+	tpLabel := 13
+	tpVal := tpHalf - tpLabel - 2
+	if tpVal < 8 {
+		tpVal = 8
+	}
+
+	maxRows := len(hRows)
+	if len(tpCol1) > maxRows {
+		maxRows = len(tpCol1)
+	}
+	if len(tpCol2) > maxRows {
+		maxRows = len(tpCol2)
+	}
+
+	for i := 0; i < maxRows; i++ {
+		// Health column (left 33%)
+		var left string
+		if i < len(hRows) {
+			r := hRows[i]
+			var badge string
+			switch r.status {
+			case "OK":
+				badge = okStyle.Render("OK")
+			case "WARN":
+				badge = warnStyle.Render("WARN")
+			case "CRIT":
+				badge = critStyle.Render("CRIT")
+			}
+			left = fmt.Sprintf("%s %s %s",
+				styledPad(dimStyle.Render(r.metric+":"), cLabel),
+				styledPad(valueStyle.Render(r.value), cVal),
+				badge)
 		}
-		row := fmt.Sprintf("  %s %s %s",
-			styledPad(valueStyle.Render(r.metric), cMetric),
-			styledPad(valueStyle.Render(r.value), cValue),
-			badge)
+
+		// TP column 1 (middle)
+		var mid string
+		if i < len(tpCol1) && tpCol1[i].val != "" {
+			mid = fmt.Sprintf("%s %s",
+				styledPad(dimStyle.Render(tpCol1[i].key+":"), tpLabel),
+				styledPad(valueStyle.Render(tpCol1[i].val), tpVal))
+		}
+
+		// TP column 2 (right)
+		var right string
+		if i < len(tpCol2) && tpCol2[i].val != "" {
+			right = fmt.Sprintf("%s %s",
+				styledPad(dimStyle.Render(tpCol2[i].key+":"), tpLabel),
+				valueStyle.Render(tpCol2[i].val))
+		}
+
+		row := fmt.Sprintf("  %s %s %s %s %s",
+			styledPad(left, healthW),
+			dimStyle.Render("│"),
+			styledPad(mid, tpHalf),
+			dimStyle.Render("│"),
+			right)
 		sb.WriteString(boxRow(row, iw) + "\n")
 	}
-	sb.WriteString(boxBot(iw) + "\n\n")
+	sb.WriteString(boxBot(iw) + "\n")
 
-	// Throughput
-	sb.WriteString(appSection("THROUGHPUT", iw, []kv{
-		{Key: "Ops/sec", Val: dm["instantaneous_ops_per_sec"]},
-		{Key: "Input", Val: redisFmtKbps(dm["instantaneous_input_kbps"])},
-		{Key: "Output", Val: redisFmtKbps(dm["instantaneous_output_kbps"])},
-		{Key: "Total Commands", Val: redisFmtLargeNum(dm["total_commands_processed"])},
-		{Key: "Total Connections", Val: redisFmtLargeNum(dm["total_connections_received"])},
-		{Key: "Total Net In", Val: redisFmtNetBytes(dm["total_net_input_bytes"])},
-		{Key: "Total Net Out", Val: redisFmtNetBytes(dm["total_net_output_bytes"])},
-	}))
+	// ── SECTION 2: KEYSPACE & COMMANDS (full width, single box) ──
+	sb.WriteString("  " + titleStyle.Render("KEYSPACE & COMMANDS") + "\n")
+	sb.WriteString(boxTop(iw) + "\n")
 
-	// Clients
-	sb.WriteString(appSection("CLIENTS", iw, []kv{
-		{Key: "Connected", Val: dm["connected_clients"]},
-		{Key: "Blocked", Val: dm["blocked_clients"]},
-		{Key: "Max Clients", Val: dm["maxclients"]},
-		{Key: "Rejected", Val: dm["rejected_connections"]},
-	}))
-
-	// Memory
-	sb.WriteString(appSection("MEMORY", iw, []kv{
-		{Key: "Used", Val: dm["used_memory_human"]},
-		{Key: "Used RSS", Val: dm["used_memory_rss_human"]},
-		{Key: "Peak", Val: dm["used_memory_peak_human"]},
-		{Key: "Lua", Val: dm["used_memory_lua_human"]},
-		{Key: "Dataset %", Val: dm["used_memory_dataset_perc"]},
-		{Key: "Max Memory", Val: dm["maxmemory_human"]},
-		{Key: "Policy", Val: dm["maxmemory_policy"]},
-		{Key: "Fragmentation", Val: dm["mem_fragmentation_ratio"]},
-	}))
-
-	// Persistence
-	sb.WriteString(appSection("PERSISTENCE", iw, []kv{
-		{Key: "RDB Last Save", Val: dm["rdb_last_bgsave_status"]},
-		{Key: "RDB Save Time", Val: redisFmtSec(dm["rdb_last_bgsave_time_sec"])},
-		{Key: "Changes Since Save", Val: dm["rdb_changes_since_last_save"]},
-		{Key: "AOF Enabled", Val: dm["aof_enabled"]},
-		{Key: "AOF Rewrite", Val: dm["aof_last_bgrewrite_status"]},
-	}))
-
-	// Replication
-	sb.WriteString(appSection("REPLICATION", iw, []kv{
-		{Key: "Role", Val: dm["role"]},
-		{Key: "Connected Slaves", Val: dm["connected_slaves"]},
-		{Key: "Master Host", Val: dm["master_host"]},
-		{Key: "Master Port", Val: dm["master_port"]},
-		{Key: "Master Link", Val: dm["master_link_status"]},
-		{Key: "Master Last IO", Val: redisFmtSec(dm["master_last_io_seconds_ago"])},
-	}))
-
-	// Keyspace (databases)
-	dbKVs := []kv{}
-	for i := 0; i <= 15; i++ {
-		dbKey := fmt.Sprintf("db%d", i)
-		if v, ok := dm[dbKey]; ok {
-			// Parse keys=N,expires=N,avg_ttl=N
-			parsed := redisParseDB(v)
-			dbKVs = append(dbKVs, kv{Key: dbKey, Val: parsed})
+	// Parse command stats
+	type cmdEntry struct {
+		name   string
+		calls  int64
+		usecPC float64
+	}
+	var cmds []cmdEntry
+	for k, v := range dm {
+		if !strings.HasPrefix(k, "cmdstat_") {
+			continue
+		}
+		cmdName := strings.ToUpper(k[8:])
+		var calls int64
+		var usecPC float64
+		for _, part := range strings.Split(v, ",") {
+			pair := strings.SplitN(part, "=", 2)
+			if len(pair) != 2 {
+				continue
+			}
+			switch pair[0] {
+			case "calls":
+				calls, _ = strconv.ParseInt(pair[1], 10, 64)
+			case "usec_per_call":
+				usecPC, _ = strconv.ParseFloat(pair[1], 64)
+			}
+		}
+		if calls > 0 {
+			cmds = append(cmds, cmdEntry{name: cmdName, calls: calls, usecPC: usecPC})
 		}
 	}
-	if dm["total_keys"] != "" {
-		dbKVs = append(dbKVs, kv{Key: "Total Keys", Val: dm["total_keys"]})
+	for i := 0; i < len(cmds); i++ {
+		for j := i + 1; j < len(cmds); j++ {
+			if cmds[j].calls > cmds[i].calls {
+				cmds[i], cmds[j] = cmds[j], cmds[i]
+			}
+		}
 	}
-	if dm["total_expires"] != "" {
-		dbKVs = append(dbKVs, kv{Key: "Expiring Keys", Val: dm["total_expires"]})
-	}
-	if len(dbKVs) > 0 {
-		sb.WriteString(appSection("KEYSPACE", iw, dbKVs))
+	var totalCmdCalls int64
+	for _, c := range cmds {
+		totalCmdCalls += c.calls
 	}
 
-	// Stats
-	sb.WriteString(appSection("KEYS", iw, []kv{
-		{Key: "Keyspace Hits", Val: redisFmtLargeNum(dm["keyspace_hits"])},
-		{Key: "Keyspace Misses", Val: redisFmtLargeNum(dm["keyspace_misses"])},
-		{Key: "Expired Keys", Val: redisFmtLargeNum(dm["expired_keys"])},
-		{Key: "Evicted Keys", Val: dm["evicted_keys"]},
-	}))
+	// DB table header
+	dbHdr := fmt.Sprintf("  %s %s %s %s",
+		styledPad(dimStyle.Render("DB"), 6),
+		styledPad(dimStyle.Render("Keys"), 12),
+		styledPad(dimStyle.Render("Expires"), 12),
+		dimStyle.Render("Avg TTL"))
+	sb.WriteString(boxRow(dbHdr, iw) + "\n")
+	sb.WriteString(boxMid(iw) + "\n")
 
-	// CPU
-	sb.WriteString(appSection("CPU", iw, []kv{
-		{Key: "System CPU", Val: redisFmtSec(dm["used_cpu_sys"])},
-		{Key: "User CPU", Val: redisFmtSec(dm["used_cpu_user"])},
-	}))
+	// DB rows
+	totalKeys := 0
+	totalExpires := 0
+	for i := 0; i <= 15; i++ {
+		dbKey := fmt.Sprintf("db%d", i)
+		v, ok := dm[dbKey]
+		if !ok {
+			continue
+		}
+		keys, expires, ttl := redisParseDBParts(v)
+		totalKeys += keys
+		totalExpires += expires
+		dbRow := fmt.Sprintf("  %s %s %s %s",
+			styledPad(valueStyle.Render(dbKey), 6),
+			styledPad(valueStyle.Render(redisFmtLargeNum(fmt.Sprintf("%d", keys))), 12),
+			styledPad(valueStyle.Render(redisFmtLargeNum(fmt.Sprintf("%d", expires))), 12),
+			valueStyle.Render(redisFmtDuration(ttl)))
+		sb.WriteString(boxRow(dbRow, iw) + "\n")
+	}
+	sb.WriteString(boxMid(iw) + "\n")
+	totRow := fmt.Sprintf("  %s %s %s",
+		styledPad(titleStyle.Render("Total"), 6),
+		styledPad(valueStyle.Render(redisFmtLargeNum(fmt.Sprintf("%d", totalKeys))), 12),
+		valueStyle.Render(redisFmtLargeNum(fmt.Sprintf("%d", totalExpires))))
+	sb.WriteString(boxRow(totRow, iw) + "\n")
+
+	// Key stats inline
+	ksItems := []kv{
+		{Key: "Hits", Val: redisFmtLargeNum(dm["keyspace_hits"])},
+		{Key: "Misses", Val: redisFmtLargeNum(dm["keyspace_misses"])},
+		{Key: "Hit Ratio", Val: dm["hit_ratio"]},
+		{Key: "Expired", Val: redisFmtLargeNum(dm["expired_keys"])},
+		{Key: "Evicted", Val: dm["evicted_keys"]},
+	}
+	var ksLine string
+	for _, item := range ksItems {
+		if item.Val == "" {
+			continue
+		}
+		ksLine += fmt.Sprintf("  %s %s", dimStyle.Render(item.Key+":"), valueStyle.Render(item.Val))
+	}
+	sb.WriteString(boxRow(ksLine, iw) + "\n")
+
+	// Command stats — wide table with each command as a column
+	if len(cmds) > 0 {
+		sb.WriteString(boxMid(iw) + "\n")
+
+		// Determine how many commands fit per row (2 rows of commands)
+		cmdColW := 18
+		cmdsPerRow := (iw - 4) / cmdColW
+		if cmdsPerRow < 4 {
+			cmdsPerRow = 4
+		}
+		maxShow := cmdsPerRow * 2 // 2 rows
+		if maxShow > len(cmds) {
+			maxShow = len(cmds)
+		}
+		if maxShow > 28 {
+			maxShow = 28
+		}
+		topCmds := cmds[:maxShow]
+
+		// Row 1: command names
+		for rowStart := 0; rowStart < len(topCmds); rowStart += cmdsPerRow {
+			rowEnd := rowStart + cmdsPerRow
+			if rowEnd > len(topCmds) {
+				rowEnd = len(topCmds)
+			}
+			chunk := topCmds[rowStart:rowEnd]
+
+			// Command name row
+			var nameRow string
+			for _, c := range chunk {
+				nameRow += styledPad(titleStyle.Render(c.name), cmdColW)
+			}
+			sb.WriteString(boxRow("  "+nameRow, iw) + "\n")
+
+			// Calls + % row
+			var callRow string
+			for _, c := range chunk {
+				pct := float64(0)
+				if totalCmdCalls > 0 {
+					pct = float64(c.calls) / float64(totalCmdCalls) * 100
+				}
+				label := fmt.Sprintf("%s %.0f%%", redisFmtLargeNum(fmt.Sprintf("%d", c.calls)), pct)
+				callRow += styledPad(valueStyle.Render(label), cmdColW)
+			}
+			sb.WriteString(boxRow("  "+callRow, iw) + "\n")
+
+			// Latency row
+			var latRow string
+			for _, c := range chunk {
+				latRow += styledPad(dimStyle.Render(redisFmtUsec(c.usecPC)+"/call"), cmdColW)
+			}
+			sb.WriteString(boxRow("  "+latRow, iw) + "\n")
+
+			// Spacer between rows (not after last)
+			if rowEnd < len(topCmds) {
+				sb.WriteString(boxRow("", iw) + "\n")
+			}
+		}
+
+		// Total commands summary
+		sb.WriteString(boxMid(iw) + "\n")
+		totalLine := fmt.Sprintf("  %s %s    %s %s    %s %d",
+			dimStyle.Render("Total Calls:"), valueStyle.Render(redisFmtLargeNum(fmt.Sprintf("%d", totalCmdCalls))),
+			dimStyle.Render("Unique Commands:"), valueStyle.Render(fmt.Sprintf("%d", len(cmds))),
+			dimStyle.Render("Showing top:"), maxShow)
+		sb.WriteString(boxRow(totalLine, iw) + "\n")
+	}
+	sb.WriteString(boxBot(iw) + "\n")
+
+	// ── SECTION 3: MEMORY | PERSISTENCE | REPLICATION (full width, 3 cols) ──
+	sb.WriteString("  " + titleStyle.Render("MEMORY") + strings.Repeat(" ", iw/3-8) +
+		titleStyle.Render("PERSISTENCE") + strings.Repeat(" ", iw/3-13) +
+		titleStyle.Render("REPLICATION") + "\n")
+	sb.WriteString(boxTop(iw) + "\n")
+
+	col3W := (iw - 8) / 3
+	memKVs := []kv{
+		{Key: "Used", Val: dm["used_memory_human"]},
+		{Key: "RSS", Val: dm["used_memory_rss_human"]},
+		{Key: "Peak", Val: dm["used_memory_peak_human"]},
+		{Key: "Max", Val: dm["maxmemory_human"]},
+		{Key: "Policy", Val: dm["maxmemory_policy"]},
+		{Key: "Dataset%", Val: dm["used_memory_dataset_perc"]},
+		{Key: "Fragment", Val: dm["mem_fragmentation_ratio"]},
+		{Key: "Lua", Val: dm["used_memory_lua_human"]},
+		{Key: "RSS Ratio", Val: dm["rss_overhead_ratio"]},
+		{Key: "Allocator", Val: dm["mem_allocator"]},
+	}
+	persKVs := []kv{
+		{Key: "RDB", Val: dm["rdb_last_bgsave_status"]},
+		{Key: "Save Time", Val: redisFmtSec(dm["rdb_last_bgsave_time_sec"])},
+		{Key: "Changes", Val: dm["rdb_changes_since_last_save"]},
+		{Key: "AOF", Val: redisYesNo(dm["aof_enabled"])},
+		{Key: "Rewrite", Val: dm["aof_last_bgrewrite_status"]},
+		{Key: "Fork", Val: redisFmtUsecStr(dm["latest_fork_usec"])},
+	}
+	if dm["aof_current_size"] != "" {
+		aofBytes, _ := strconv.ParseFloat(dm["aof_current_size"], 64)
+		if aofBytes > 0 {
+			persKVs = append(persKVs, kv{Key: "AOF Size", Val: redisFmtNetBytes(dm["aof_current_size"])})
+		}
+	}
+	replKVs := []kv{
+		{Key: "Role", Val: dm["role"]},
+		{Key: "Slaves", Val: dm["connected_slaves"]},
+	}
+	if dm["master_host"] != "" {
+		replKVs = append(replKVs,
+			kv{Key: "Master", Val: dm["master_host"] + ":" + dm["master_port"]},
+			kv{Key: "Link", Val: dm["master_link_status"]},
+			kv{Key: "Last IO", Val: redisFmtSec(dm["master_last_io_seconds_ago"])})
+	}
+	if lagBytes := dm["repl_lag_bytes"]; lagBytes != "" {
+		replKVs = append(replKVs, kv{Key: "Lag", Val: redisFmtNetBytes(lagBytes)})
+	}
+	if backlog := dm["repl_backlog_size"]; backlog != "" {
+		replKVs = append(replKVs, kv{Key: "Backlog", Val: redisFmtNetBytes(backlog)})
+	}
+
+	maxR3 := len(memKVs)
+	if len(persKVs) > maxR3 {
+		maxR3 = len(persKVs)
+	}
+	if len(replKVs) > maxR3 {
+		maxR3 = len(replKVs)
+	}
+	kvLabel := 10
+	for i := 0; i < maxR3; i++ {
+		var c1, c2, c3 string
+		if i < len(memKVs) && memKVs[i].Val != "" {
+			c1 = fmt.Sprintf("%s %s", styledPad(dimStyle.Render(memKVs[i].Key+":"), kvLabel), valueStyle.Render(memKVs[i].Val))
+		}
+		if i < len(persKVs) && persKVs[i].Val != "" {
+			c2 = fmt.Sprintf("%s %s", styledPad(dimStyle.Render(persKVs[i].Key+":"), kvLabel), valueStyle.Render(persKVs[i].Val))
+		}
+		if i < len(replKVs) && replKVs[i].Val != "" {
+			c3 = fmt.Sprintf("%s %s", styledPad(dimStyle.Render(replKVs[i].Key+":"), kvLabel), valueStyle.Render(replKVs[i].Val))
+		}
+		row := fmt.Sprintf("  %s %s %s %s %s",
+			styledPad(c1, col3W),
+			dimStyle.Render("│"),
+			styledPad(c2, col3W),
+			dimStyle.Render("│"),
+			c3)
+		sb.WriteString(boxRow(row, iw) + "\n")
+	}
+	sb.WriteString(boxBot(iw) + "\n")
+
+	// ── SECTION 4: LATENCY & SLOW LOG (full width) ──
+	hasLatency := dm["latency_percentiles_usec_p50"] != "" || dm["slowlog_entries"] != ""
+	if hasLatency {
+		sb.WriteString("  " + titleStyle.Render("LATENCY & SLOW LOG") + "\n")
+		sb.WriteString(boxTop(iw) + "\n")
+
+		// Latency summary row
+		var latParts []string
+		if p50 := dm["latency_percentiles_usec_p50"]; p50 != "" {
+			p50v, _ := strconv.ParseFloat(p50, 64)
+			latParts = append(latParts, fmt.Sprintf("%s %s", dimStyle.Render("p50:"), valueStyle.Render(redisFmtUsec(p50v))))
+		}
+		if p99 := dm["latency_percentiles_usec_p99"]; p99 != "" {
+			p99v, _ := strconv.ParseFloat(p99, 64)
+			latParts = append(latParts, fmt.Sprintf("%s %s", dimStyle.Render("p99:"), valueStyle.Render(redisFmtUsec(p99v))))
+		}
+		if p999 := dm["latency_percentiles_usec_p99.9"]; p999 != "" {
+			p999v, _ := strconv.ParseFloat(p999, 64)
+			latParts = append(latParts, fmt.Sprintf("%s %s", dimStyle.Render("p99.9:"), valueStyle.Render(redisFmtUsec(p999v))))
+		}
+		if forkUs := dm["latest_fork_usec"]; forkUs != "" {
+			fv, _ := strconv.ParseFloat(forkUs, 64)
+			latParts = append(latParts, fmt.Sprintf("%s %s", dimStyle.Render("Fork:"), valueStyle.Render(redisFmtUsec(fv))))
+		}
+		if len(latParts) > 0 {
+			sb.WriteString(boxRow("  "+strings.Join(latParts, "    "), iw) + "\n")
+		}
+
+		// Slow log entries
+		if entries := dm["slowlog_entries"]; entries != "" {
+			sb.WriteString(boxMid(iw) + "\n")
+			sb.WriteString(boxRow(fmt.Sprintf("  %s %s %s",
+				styledPad(dimStyle.Render("TIME"), 10),
+				styledPad(dimStyle.Render("DURATION"), 12),
+				dimStyle.Render("COMMAND")), iw) + "\n")
+			for _, entry := range strings.Split(entries, ";") {
+				parts := strings.SplitN(entry, "|", 3)
+				if len(parts) == 3 {
+					row := fmt.Sprintf("  %s %s %s",
+						styledPad(valueStyle.Render(parts[0]), 10),
+						styledPad(warnStyle.Render(parts[1]), 12),
+						valueStyle.Render(parts[2]))
+					sb.WriteString(boxRow(row, iw) + "\n")
+				}
+			}
+		}
+		sb.WriteString(boxBot(iw) + "\n")
+	}
+
+	// ── SECTION 5: RECOMMENDATIONS (full width) ──
+	recCount, _ := strconv.Atoi(dm["rec_count"])
+	if recCount > 0 {
+		sb.WriteString("  " + titleStyle.Render("RECOMMENDATIONS") + "\n")
+		sb.WriteString(boxTop(iw) + "\n")
+		for i := 0; i < recCount; i++ {
+			rec := dm[fmt.Sprintf("rec_%d", i)]
+			if rec == "" {
+				continue
+			}
+			// Split recommendation into action + explanation at first " — "
+			prefix := warnStyle.Render(fmt.Sprintf(" %d.", i+1))
+			// Wrap long recommendations
+			maxRecW := iw - 8
+			if len(rec) > maxRecW {
+				// First line
+				sb.WriteString(boxRow(fmt.Sprintf("  %s %s", prefix, valueStyle.Render(rec[:maxRecW])), iw) + "\n")
+				// Continuation lines
+				remaining := rec[maxRecW:]
+				for len(remaining) > 0 {
+					chunk := remaining
+					if len(chunk) > maxRecW {
+						chunk = remaining[:maxRecW]
+					}
+					remaining = remaining[len(chunk):]
+					sb.WriteString(boxRow(fmt.Sprintf("      %s", dimStyle.Render(chunk)), iw) + "\n")
+				}
+			} else {
+				sb.WriteString(boxRow(fmt.Sprintf("  %s %s", prefix, valueStyle.Render(rec)), iw) + "\n")
+			}
+		}
+		sb.WriteString(boxBot(iw) + "\n")
+	}
 
 	return sb.String()
+}
+
+// redisParseDBParts returns keys, expires, avg_ttl_ms from a Redis db info string.
+func redisParseDBParts(v string) (keys, expires int, ttlMs int64) {
+	for _, part := range strings.Split(v, ",") {
+		kv := strings.SplitN(part, "=", 2)
+		if len(kv) != 2 {
+			continue
+		}
+		switch kv[0] {
+		case "keys":
+			keys, _ = strconv.Atoi(kv[1])
+		case "expires":
+			expires, _ = strconv.Atoi(kv[1])
+		case "avg_ttl":
+			ttlMs, _ = strconv.ParseInt(kv[1], 10, 64)
+		}
+	}
+	return
+}
+
+// redisFmtDuration formats milliseconds into human-readable duration.
+func redisFmtDuration(ms int64) string {
+	if ms <= 0 {
+		return "-"
+	}
+	sec := ms / 1000
+	if sec >= 86400 {
+		return fmt.Sprintf("%.1fd", float64(sec)/86400)
+	}
+	if sec >= 3600 {
+		return fmt.Sprintf("%.1fh", float64(sec)/3600)
+	}
+	if sec >= 60 {
+		return fmt.Sprintf("%.0fm", float64(sec)/60)
+	}
+	return fmt.Sprintf("%ds", sec)
+}
+
+// redisFmtUsec formats microseconds per call into readable latency.
+func redisFmtUsec(usec float64) string {
+	if usec >= 1000 {
+		return fmt.Sprintf("%.2fms", usec/1000)
+	}
+	return fmt.Sprintf("%.1fus", usec)
 }
 
 func redisParseDB(v string) string {
@@ -666,6 +1165,24 @@ func redisFmtLargeNum(s string) string {
 	default:
 		return s
 	}
+}
+
+func redisYesNo(s string) string {
+	if s == "1" {
+		return "yes"
+	}
+	if s == "0" {
+		return "no"
+	}
+	return s
+}
+
+func redisFmtUsecStr(s string) string {
+	if s == "" {
+		return ""
+	}
+	v, _ := strconv.ParseFloat(s, 64)
+	return redisFmtUsec(v)
 }
 
 func redisFmtSec(s string) string {
@@ -2521,133 +3038,1238 @@ func renderApacheDeepMetrics(app model.AppInstance, iw int) string {
 
 // ── MongoDB Detail ─────────────────────────────────────────────────────
 
+// mongoRate returns "value (rate/s)" or just "value" if no rate.
+func mongoRate(dm map[string]string, key string) string {
+	v := dm[key]
+	if v == "" {
+		return ""
+	}
+	r := dm[key+"_rate"]
+	if r == "" || r == "0.0" {
+		return v
+	}
+	// Format rate nicely
+	rf, _ := strconv.ParseFloat(r, 64)
+	var rs string
+	switch {
+	case rf >= 1e9:
+		rs = fmt.Sprintf("%.1fB", rf/1e9)
+	case rf >= 1e6:
+		rs = fmt.Sprintf("%.1fM", rf/1e6)
+	case rf >= 1e3:
+		rs = fmt.Sprintf("%.1fK", rf/1e3)
+	case rf >= 1:
+		rs = fmt.Sprintf("%.0f", rf)
+	default:
+		rs = fmt.Sprintf("%.1f", rf)
+	}
+	return v + " (" + rs + "/s)"
+}
+
 func renderMongoDBDeepMetrics(app model.AppInstance, iw int) string {
 	var sb strings.Builder
 	dm := app.DeepMetrics
+	halfW := (iw - 4) / 2
+	lw := 18 // label width for compact columns
 
-	type healthRow struct{ metric, value, status string }
+	// ══════════════════════════════════════════════════════════════════
+	// 1. DATABASES & COLLECTIONS — most actionable, shown first
+	// ══════════════════════════════════════════════════════════════════
+	if dbList := dm["db_list"]; dbList != "" {
+		sb.WriteString(renderMongoDBCollections(dm, iw))
+	}
+
+	// ══════════════════════════════════════════════════════════════════
+	// 2. HEALTH RCA
+	// ══════════════════════════════════════════════════════════════════
+	type healthRow struct{ metric, value, status, tip string }
 	rows := []healthRow{}
 
+	// Cache usage
 	if v := dm["cache_usage_pct"]; v != "" {
-		var pct float64
-		fmt.Sscanf(v, "%f", &pct)
-		status := "OK"
+		pct, _ := strconv.ParseFloat(v, 64)
+		st, tip := "OK", ""
 		if pct > 95 {
-			status = "CRIT"
+			st, tip = "CRIT", "eviction pressure — increase cacheSizeGB or reduce working set"
 		} else if pct > 80 {
-			status = "WARN"
+			st, tip = "WARN", "cache filling up — monitor eviction rate"
 		}
-		rows = append(rows, healthRow{"Cache Usage", v + "%", status})
+		rows = append(rows, healthRow{"WT Cache", v + "%", st, tip})
 	}
-	if cur := dm["conn_current"]; cur != "" {
-		avail := dm["conn_available"]
-		val := cur + " / " + avail
-		status := "OK"
-		c, _ := strconv.Atoi(cur)
-		a, _ := strconv.Atoi(avail)
-		if a > 0 {
-			pct := float64(c) / float64(c+a) * 100
-			if pct > 90 {
-				status = "CRIT"
-			} else if pct > 80 {
-				status = "WARN"
-			}
+
+	// Cache dirty ratio
+	dirtyMB, _ := strconv.ParseFloat(dm["cache_dirty_mb"], 64)
+	cacheMB, _ := strconv.ParseFloat(dm["cache_max_mb"], 64)
+	if cacheMB > 0 && dirtyMB > 0 {
+		dirtyPct := dirtyMB / cacheMB * 100
+		st, tip := "OK", ""
+		if dirtyPct > 20 {
+			st, tip = "CRIT", "write stalls likely — check I/O throughput"
+		} else if dirtyPct > 5 {
+			st, tip = "WARN", "dirty pages accumulating"
 		}
-		rows = append(rows, healthRow{"Connections", val, status})
+		rows = append(rows, healthRow{"Cache Dirty", fmt.Sprintf("%.1f%%", dirtyPct), st, tip})
 	}
-	if v := dm["lock_queue_total"]; v != "" && v != "0" {
-		status := "WARN"
-		q, _ := strconv.Atoi(v)
-		if q > 10 {
-			status = "CRIT"
+
+	// Connection usage
+	connCur, _ := strconv.Atoi(dm["conn_current"])
+	connAvail, _ := strconv.Atoi(dm["conn_available"])
+	if connAvail > 0 {
+		pct := float64(connCur) / float64(connCur+connAvail) * 100
+		st, tip := "OK", ""
+		if pct > 90 {
+			st, tip = "CRIT", "near connection limit — increase maxIncomingConnections or use connection pooling"
+		} else if pct > 80 {
+			st, tip = "WARN", "connection pool filling"
 		}
-		rows = append(rows, healthRow{"Lock Queue", v, status})
-	} else {
-		rows = append(rows, healthRow{"Lock Queue", "0", "OK"})
+		rows = append(rows, healthRow{"Connections", fmt.Sprintf("%d/%d (%.0f%%)", connCur, connCur+connAvail, pct), st, tip})
 	}
-	if v := dm["slow_ops"]; v != "" && v != "0" {
-		rows = append(rows, healthRow{"Slow Operations", v, "WARN"})
+
+	// Lock queue
+	lockQ, _ := strconv.Atoi(dm["lock_queue_total"])
+	{
+		st, tip := "OK", ""
+		if lockQ > 10 {
+			st, tip = "CRIT", "severe contention — check slow queries and indexing"
+		} else if lockQ > 0 {
+			st, tip = "WARN", "lock contention detected"
+		}
+		rows = append(rows, healthRow{"Lock Queue", fmt.Sprintf("%d", lockQ), st, tip})
 	}
-	if v := dm["repl_lag_sec"]; v != "" && v != "0" {
-		status := "WARN"
-		lag, _ := strconv.Atoi(v)
+
+	// WT tickets
+	readAvail, _ := strconv.Atoi(dm["wt_read_avail"])
+	writeAvail, _ := strconv.Atoi(dm["wt_write_avail"])
+	readOut, _ := strconv.Atoi(dm["wt_read_out"])
+	writeOut, _ := strconv.Atoi(dm["wt_write_out"])
+	if readAvail+readOut > 0 {
+		st, tip := "OK", ""
+		if readAvail < 5 {
+			st, tip = "CRIT", "read tickets exhausted — queries queuing"
+		} else if readAvail < 20 {
+			st, tip = "WARN", "read tickets low"
+		}
+		rows = append(rows, healthRow{"Read Tickets", fmt.Sprintf("%d avail / %d used", readAvail, readOut), st, tip})
+	}
+	if writeAvail+writeOut > 0 {
+		st, tip := "OK", ""
+		if writeAvail < 5 {
+			st, tip = "CRIT", "write tickets exhausted — writes queuing"
+		} else if writeAvail < 20 {
+			st, tip = "WARN", "write tickets low"
+		}
+		rows = append(rows, healthRow{"Write Tickets", fmt.Sprintf("%d avail / %d used", writeAvail, writeOut), st, tip})
+	}
+
+	// Slow ops
+	slowOps, _ := strconv.Atoi(dm["slow_ops"])
+	if slowOps > 0 {
+		st := "WARN"
+		tip := "check db.currentOp() and add indexes"
+		if slowOps > 10 {
+			st, tip = "CRIT", "many slow queries — profile and optimize"
+		}
+		rows = append(rows, healthRow{"Slow Ops (>5s)", fmt.Sprintf("%d", slowOps), st, tip})
+	}
+
+	// Cursors timed out
+	curTimeout, _ := strconv.Atoi(dm["cursor_timed_out"])
+	if curTimeout > 100 {
+		rows = append(rows, healthRow{"Cursor Timeouts", dm["cursor_timed_out"], "WARN", "increase batch size or process faster"})
+	}
+
+	// Replication lag
+	if lagStr := dm["repl_lag_sec"]; lagStr != "" && lagStr != "0" {
+		lag, _ := strconv.Atoi(lagStr)
+		st, tip := "WARN", "secondary falling behind"
 		if lag > 60 {
-			status = "CRIT"
+			st, tip = "CRIT", "severely behind primary — check oplog size and network"
 		}
-		rows = append(rows, healthRow{"Replication Lag", v + "s", status})
+		rows = append(rows, healthRow{"Replication Lag", lagStr + "s", st, tip})
 	}
 
-	if len(rows) > 0 {
-		sb.WriteString("  " + titleStyle.Render("HEALTH STATUS") + "\n")
-		sb.WriteString(boxTop(iw) + "\n")
-		cM, cV := 24, 30
-		hdr := fmt.Sprintf("  %s %s %s", styledPad(dimStyle.Render("Metric"), cM), styledPad(dimStyle.Render("Value"), cV), dimStyle.Render("Status"))
-		sb.WriteString(boxRow(hdr, iw) + "\n")
-		sb.WriteString(boxMid(iw) + "\n")
-		for _, r := range rows {
-			badge := okStyle.Render("OK")
-			if r.status == "WARN" {
-				badge = warnStyle.Render("WARN")
-			} else if r.status == "CRIT" {
-				badge = critStyle.Render("CRIT")
+	// Asserts
+	assertReg, _ := strconv.Atoi(dm["assert_regular"])
+	assertMsg, _ := strconv.Atoi(dm["assert_msg"])
+	assertUser, _ := strconv.Atoi(dm["assert_user"])
+	if assertReg > 0 || assertMsg > 0 {
+		rows = append(rows, healthRow{"Asserts", fmt.Sprintf("reg:%d msg:%d user:%d", assertReg, assertMsg, assertUser), "WARN", "internal assertion failures detected"})
+	} else if assertUser > 10000 {
+		rows = append(rows, healthRow{"User Asserts", mongoFmtCount(int64(assertUser)), "WARN", "app-level errors (dupes, validation)"})
+	}
+
+	// Global avg latency
+	avgReadUs, _ := strconv.Atoi(dm["avg_read_latency_us"])
+	avgWriteUs, _ := strconv.Atoi(dm["avg_write_latency_us"])
+	if avgReadUs > 0 || avgWriteUs > 0 {
+		st, tip := "OK", ""
+		if avgReadUs > 10000 || avgWriteUs > 50000 {
+			st, tip = "CRIT", "high global latency — check indexes and working set"
+		} else if avgReadUs > 1000 || avgWriteUs > 10000 {
+			st, tip = "WARN", "latency elevated"
+		}
+		rows = append(rows, healthRow{"Avg Latency",
+			fmt.Sprintf("R:%s W:%s", mongoFmtLatency(int64(avgReadUs)), mongoFmtLatency(int64(avgWriteUs))), st, tip})
+	}
+
+	// Collection scans
+	collScans, _ := strconv.Atoi(dm["collection_scans"])
+	if collScans > 100 {
+		st := "WARN"
+		tip := "add indexes to avoid full scans"
+		if collScans > 10000 {
+			st, tip = "CRIT", "excessive collection scans — missing indexes"
+		}
+		rows = append(rows, healthRow{"Collection Scans", mongoFmtCount(int64(collScans)), st, tip})
+	}
+
+	// Scan efficiency (scanned vs returned)
+	scannedObj, _ := strconv.ParseFloat(dm["scanned_objects"], 64)
+	docReturned, _ := strconv.ParseFloat(dm["doc_returned"], 64)
+	if docReturned > 0 && scannedObj > 0 {
+		ratio := scannedObj / docReturned
+		if ratio > 10 {
+			rows = append(rows, healthRow{"Scan Efficiency",
+				fmt.Sprintf("%.0f:1 scan/return", ratio), "CRIT", "scanning far more docs than returning — missing indexes"})
+		} else if ratio > 2 {
+			rows = append(rows, healthRow{"Scan Efficiency",
+				fmt.Sprintf("%.1f:1 scan/return", ratio), "WARN", "consider more targeted indexes"})
+		}
+	}
+
+	// Rejected connections
+	rejConns, _ := strconv.Atoi(dm["conn_rejected"])
+	if rejConns > 0 {
+		rows = append(rows, healthRow{"Rejected Conns", fmt.Sprintf("%d", rejConns), "CRIT", "clients being turned away — increase maxIncomingConnections"})
+	}
+
+	// Killed by disconnect
+	killedDisc, _ := strconv.Atoi(dm["killed_disconnect"])
+	if killedDisc > 1000 {
+		rows = append(rows, healthRow{"Client Disconnects", mongoFmtCount(int64(killedDisc)), "WARN", "clients disconnecting mid-query — check timeouts"})
+	}
+
+	// Page faults
+	pgFaults, _ := strconv.Atoi(dm["page_faults"])
+	if pgFaults > 10000 {
+		rows = append(rows, healthRow{"Page Faults", dm["page_faults"], "WARN", "working set exceeds RAM — increase cacheSizeGB"})
+	}
+
+	// Render health table
+	sb.WriteString("  " + titleStyle.Render("HEALTH RCA") + "\n")
+	sb.WriteString(boxTop(iw) + "\n")
+	cM, cV, cS := 18, 28, 6
+	cTip := iw - cM - cV - cS - 10
+	if cTip < 10 {
+		cTip = 10
+	}
+	hdr := fmt.Sprintf("  %s %s %s %s",
+		styledPad(dimStyle.Render("Check"), cM),
+		styledPad(dimStyle.Render("Value"), cV),
+		styledPad(dimStyle.Render("Status"), cS),
+		dimStyle.Render("Recommendation"))
+	sb.WriteString(boxRow(hdr, iw) + "\n")
+	sb.WriteString(boxMid(iw) + "\n")
+	for _, r := range rows {
+		badge := okStyle.Render(" OK ")
+		if r.status == "WARN" {
+			badge = warnStyle.Render("WARN")
+		} else if r.status == "CRIT" {
+			badge = critStyle.Render("CRIT")
+		}
+		tipStr := ""
+		if r.tip != "" && r.status != "OK" {
+			t := r.tip
+			if len(t) > cTip {
+				t = t[:cTip-1] + "…"
 			}
-			row := fmt.Sprintf("  %s %s %s", styledPad(valueStyle.Render(r.metric), cM), styledPad(valueStyle.Render(r.value), cV), badge)
-			sb.WriteString(boxRow(row, iw) + "\n")
+			tipStr = dimStyle.Render(t)
 		}
-		sb.WriteString(boxBot(iw) + "\n\n")
+		row := fmt.Sprintf("  %s %s %s %s",
+			styledPad(valueStyle.Render(r.metric), cM),
+			styledPad(valueStyle.Render(r.value), cV),
+			styledPad(badge, cS),
+			tipStr)
+		sb.WriteString(boxRow(row, iw) + "\n")
 	}
+	if len(rows) == 0 {
+		sb.WriteString(boxRow("  "+dimStyle.Render("All checks passed"), iw) + "\n")
+	}
+	sb.WriteString(boxBot(iw) + "\n")
 
-	sb.WriteString(appSection("CONNECTIONS", iw, []kv{
+	// ── CONNECTIONS + OPERATIONS (side by side) ────────────────────────
+	sb.WriteString("  " + titleStyle.Render("CONNECTIONS") + strings.Repeat(" ", halfW-12) + titleStyle.Render("OPERATIONS (/s)") + "\n")
+	sb.WriteString(boxTop(iw) + "\n")
+	lCol := []kv{
 		{Key: "Current", Val: dm["conn_current"]},
 		{Key: "Available", Val: dm["conn_available"]},
-		{Key: "Total Created", Val: dm["conn_total_created"]},
-		{Key: "Active Clients", Val: dm["active_clients"]},
-		{Key: "Active Readers", Val: dm["active_readers"]},
-		{Key: "Active Writers", Val: dm["active_writers"]},
-	}))
+		{Key: "Total Created", Val: mongoRate(dm, "conn_total_created")},
+		{Key: "Active", Val: dm["conn_active"]},
+		{Key: "Rejected", Val: dm["conn_rejected"]},
+		{Key: "Active Read", Val: dm["active_readers"]},
+		{Key: "Active Write", Val: dm["active_writers"]},
+	}
+	rCol := []kv{
+		{Key: "Queries", Val: mongoRate(dm, "op_query")},
+		{Key: "Inserts", Val: mongoRate(dm, "op_insert")},
+		{Key: "Updates", Val: mongoRate(dm, "op_update")},
+		{Key: "Deletes", Val: mongoRate(dm, "op_delete")},
+		{Key: "GetMore", Val: mongoRate(dm, "op_getmore")},
+		{Key: "Commands", Val: mongoRate(dm, "op_command")},
+		{Key: "Slow (>5s)", Val: dm["slow_ops"]},
+	}
+	mongoRenderDualCol(&sb, lCol, rCol, iw, halfW, lw)
+	sb.WriteString(boxBot(iw) + "\n")
 
-	sb.WriteString(appSection("OPERATIONS", iw, []kv{
-		{Key: "Queries", Val: dm["op_query"]},
-		{Key: "Inserts", Val: dm["op_insert"]},
-		{Key: "Updates", Val: dm["op_update"]},
-		{Key: "Deletes", Val: dm["op_delete"]},
-		{Key: "Commands", Val: dm["op_command"]},
-		{Key: "Slow Ops (>5s)", Val: dm["slow_ops"]},
-	}))
+	// ── MEMORY/CACHE + WT ENGINE (side by side) ────────────────────────
+	sb.WriteString("  " + titleStyle.Render("MEMORY & CACHE") + strings.Repeat(" ", halfW-15) + titleStyle.Render("WIREDTIGER") + "\n")
+	sb.WriteString(boxTop(iw) + "\n")
+	lCol = []kv{
+		{Key: "Resident MB", Val: dm["mem_resident_mb"]},
+		{Key: "Virtual MB", Val: dm["mem_virtual_mb"]},
+		{Key: "Cache Used MB", Val: dm["cache_used_mb"]},
+		{Key: "Cache Max MB", Val: dm["cache_max_mb"]},
+		{Key: "Cache Usage%", Val: dm["cache_usage_pct"]},
+		{Key: "Cache Dirty MB", Val: dm["cache_dirty_mb"]},
+	}
+	rCol = []kv{
+		{Key: "Read Tickets", Val: mongoFmtTicket(dm["wt_read_avail"], dm["wt_read_out"])},
+		{Key: "Write Tickets", Val: mongoFmtTicket(dm["wt_write_avail"], dm["wt_write_out"])},
+		{Key: "Cache Reads", Val: mongoRate(dm, "cache_reads")},
+		{Key: "Cache Writes", Val: mongoRate(dm, "cache_writes")},
+		{Key: "Page Faults", Val: dm["page_faults"]},
+		{Key: "Engine", Val: dm["storage_engine"]},
+	}
+	mongoRenderDualCol(&sb, lCol, rCol, iw, halfW, lw)
+	sb.WriteString(boxBot(iw) + "\n")
 
-	sb.WriteString(appSection("MEMORY & CACHE", iw, []kv{
-		{Key: "Resident", Val: dm["mem_resident_mb"]},
-		{Key: "Virtual", Val: dm["mem_virtual_mb"]},
-		{Key: "Cache Used", Val: dm["cache_used_mb"]},
-		{Key: "Cache Max", Val: dm["cache_max_mb"]},
-		{Key: "Cache Usage", Val: dm["cache_usage_pct"]},
-		{Key: "Cache Dirty", Val: dm["cache_dirty_mb"]},
-		{Key: "Storage Engine", Val: dm["storage_engine"]},
-	}))
+	// ── DOCUMENTS + QUERY PERFORMANCE (side by side) ──────────────────
+	sb.WriteString("  " + titleStyle.Render("DOCUMENTS & NETWORK (/s)") + strings.Repeat(" ", halfW-24) + titleStyle.Render("QUERY PERFORMANCE") + "\n")
+	sb.WriteString(boxTop(iw) + "\n")
+	lCol = []kv{
+		{Key: "Inserted", Val: mongoRate(dm, "doc_inserted")},
+		{Key: "Returned", Val: mongoRate(dm, "doc_returned")},
+		{Key: "Updated", Val: mongoRate(dm, "doc_updated")},
+		{Key: "Deleted", Val: mongoRate(dm, "doc_deleted")},
+		{Key: "Net In", Val: mongoFmtBytes(dm["net_bytes_in"])},
+		{Key: "Net Out", Val: mongoFmtBytes(dm["net_bytes_out"])},
+		{Key: "Net Requests", Val: mongoRate(dm, "net_num_requests")},
+	}
+	// Compute avg latencies for display
+	avgRdLat := mongoFmtLatency(mongoParseI64(dm["avg_read_latency_us"]))
+	avgWrLat := mongoFmtLatency(mongoParseI64(dm["avg_write_latency_us"]))
+	rCol = []kv{
+		{Key: "Avg Read Lat", Val: avgRdLat},
+		{Key: "Avg Write Lat", Val: avgWrLat},
+		{Key: "Scanned Keys", Val: mongoRate(dm, "scanned_keys")},
+		{Key: "Scanned Objs", Val: mongoRate(dm, "scanned_objects")},
+		{Key: "Coll Scans", Val: mongoRate(dm, "collection_scans")},
+		{Key: "Open Cursors", Val: dm["cursor_open"]},
+		{Key: "Killed(disc)", Val: mongoRate(dm, "killed_disconnect")},
+	}
+	mongoRenderDualCol(&sb, lCol, rCol, iw, halfW, lw)
+	sb.WriteString(boxBot(iw) + "\n")
 
-	sb.WriteString(appSection("LOCKS", iw, []kv{
+	// ── LOCKS + REPLICATION (side by side) ─────────────────────────────
+	sb.WriteString("  " + titleStyle.Render("LOCKS") + strings.Repeat(" ", halfW-6) + titleStyle.Render("REPLICATION") + "\n")
+	sb.WriteString(boxTop(iw) + "\n")
+	lCol = []kv{
 		{Key: "Queue Total", Val: dm["lock_queue_total"]},
 		{Key: "Queue Readers", Val: dm["lock_queue_readers"]},
 		{Key: "Queue Writers", Val: dm["lock_queue_writers"]},
-	}))
+		{Key: "Active Ops", Val: dm["current_ops_active"]},
+		{Key: "Total Ops", Val: dm["current_ops_total"]},
+	}
+	rCol = []kv{
+		{Key: "Set Name", Val: dm["repl_set"]},
+		{Key: "State", Val: dm["repl_state"]},
+		{Key: "Members", Val: dm["repl_members"]},
+		{Key: "Lag (sec)", Val: dm["repl_lag_sec"]},
+	}
+	mongoRenderDualCol(&sb, lCol, rCol, iw, halfW, lw)
+	sb.WriteString(boxBot(iw) + "\n")
 
-	if dm["repl_set"] != "" {
-		sb.WriteString(appSection("REPLICATION", iw, []kv{
-			{Key: "Set Name", Val: dm["repl_set"]},
-			{Key: "State", Val: dm["repl_state"]},
-			{Key: "Members", Val: dm["repl_members"]},
-			{Key: "Lag", Val: dm["repl_lag_sec"]},
-		}))
+	// ── SLOW QUERIES ──────────────────────────────────────────────────
+	if sqJSON := dm["slow_queries"]; sqJSON != "" {
+		type slowQ struct {
+			Op     string `json:"op"`
+			NS     string `json:"ns"`
+			Secs   int    `json:"secs"`
+			Client string `json:"client"`
+			Plan   string `json:"plan"`
+			Cmd    string `json:"cmd"`
+		}
+		var queries []slowQ
+		if err := json.Unmarshal([]byte(sqJSON), &queries); err == nil && len(queries) > 0 {
+			sb.WriteString("  " + titleStyle.Render(fmt.Sprintf("SLOW QUERIES (%d active >5s)", len(queries))) + "\n")
+			sb.WriteString(boxTop(iw) + "\n")
+			for i, q := range queries {
+				// Header line: duration, operation, namespace, client
+				durStyle := warnStyle
+				if q.Secs > 30 {
+					durStyle = critStyle
+				}
+				header := fmt.Sprintf("  %s %s %s %s %s",
+					durStyle.Render(fmt.Sprintf("[%ds]", q.Secs)),
+					dimStyle.Render("op=")+valueStyle.Render(q.Op),
+					dimStyle.Render("ns=")+valueStyle.Render(q.NS),
+					dimStyle.Render("client=")+valueStyle.Render(q.Client),
+					"")
+				sb.WriteString(boxRow(header, iw) + "\n")
+
+				// Plan summary — this tells WHY it's slow
+				if q.Plan != "" {
+					planLine := fmt.Sprintf("    %s %s", dimStyle.Render("plan:"), "")
+					if q.Plan == "COLLSCAN" {
+						planLine = fmt.Sprintf("    %s %s",
+							dimStyle.Render("plan:"),
+							critStyle.Render("COLLSCAN")+" "+dimStyle.Render("← MISSING INDEX, full collection scan"))
+					} else if strings.HasPrefix(q.Plan, "IXSCAN") {
+						planLine = fmt.Sprintf("    %s %s",
+							dimStyle.Render("plan:"),
+							okStyle.Render(q.Plan))
+					} else {
+						planLine = fmt.Sprintf("    %s %s",
+							dimStyle.Render("plan:"),
+							valueStyle.Render(q.Plan))
+					}
+					sb.WriteString(boxRow(planLine, iw) + "\n")
+				}
+
+				// Command snippet
+				if q.Cmd != "" {
+					cmd := q.Cmd
+					maxCmdW := iw - 12
+					if len(cmd) > maxCmdW {
+						cmd = cmd[:maxCmdW-3] + "..."
+					}
+					cmdLine := fmt.Sprintf("    %s %s", dimStyle.Render("cmd:"), dimStyle.Render(cmd))
+					sb.WriteString(boxRow(cmdLine, iw) + "\n")
+				}
+
+				if i < len(queries)-1 {
+					sb.WriteString(boxMid(iw) + "\n")
+				}
+			}
+			sb.WriteString(boxBot(iw) + "\n")
+		}
 	}
 
-	sb.WriteString(appSection("STORAGE", iw, []kv{
-		{Key: "Databases", Val: dm["db_count"]},
-		{Key: "Total Size", Val: dm["total_size_mb"]},
-		{Key: "Config Cache", Val: dm["wt_cache_size_gb"]},
-		{Key: "Max Connections", Val: dm["max_connections"]},
-	}))
+	// ── SECURITY & CONFIG AUDIT ────────────────────────────────────────
+	sb.WriteString("  " + titleStyle.Render("SECURITY & CONFIGURATION AUDIT") + "\n")
+	sb.WriteString(boxTop(iw) + "\n")
+	auditLW := 28
+	type auditRow struct{ check, value, status, note string }
+	audits := []auditRow{}
+
+	// Auth
+	authVal := dm["auth_enabled"]
+	if authVal == "" {
+		authVal = "unknown"
+	}
+	{
+		st, note := "OK", "authentication enforced"
+		if authVal == "disabled" || authVal == "unknown" {
+			st, note = "CRIT", "ENABLE authorization in mongod.conf"
+		}
+		audits = append(audits, auditRow{"Authorization", authVal, st, note})
+	}
+
+	// Bind IP
+	bindIP := dm["bind_ip"]
+	if bindIP == "" {
+		bindIP = "default"
+	}
+	{
+		st, note := "OK", ""
+		if bindIP == "0.0.0.0" || bindIP == "default" {
+			st, note = "WARN", "restrict to specific IPs"
+		}
+		audits = append(audits, auditRow{"Bind IP", bindIP, st, note})
+	}
+
+	// TLS
+	tlsMode := dm["tls_mode"]
+	if tlsMode == "" {
+		tlsMode = "disabled"
+	}
+	{
+		st, note := "OK", "encrypted connections"
+		if tlsMode == "disabled" || tlsMode == "" {
+			st, note = "WARN", "enable TLS for production"
+		}
+		audits = append(audits, auditRow{"TLS/SSL", tlsMode, st, note})
+	}
+
+	// Max connections config
+	if maxC := dm["max_connections"]; maxC != "" {
+		mc, _ := strconv.Atoi(maxC)
+		st, note := "OK", ""
+		if mc > 50000 {
+			st, note = "WARN", "very high limit — may cause resource exhaustion"
+		} else if mc == 0 {
+			st, note = "WARN", "no limit set"
+		}
+		audits = append(audits, auditRow{"Max Connections", maxC, st, note})
+	}
+
+	// Cache size config
+	if cs := dm["wt_cache_size_gb"]; cs != "" {
+		audits = append(audits, auditRow{"Cache Size", cs + " GB", "OK", "explicitly configured"})
+	} else {
+		audits = append(audits, auditRow{"Cache Size", "auto", "OK", "default: 50% RAM - 1GB"})
+	}
+
+	// Journal
+	if j := dm["journal_enabled"]; j != "" {
+		st := "OK"
+		note := "crash recovery enabled"
+		if j != "true" && j != "enabled" {
+			st, note = "CRIT", "ENABLE journaling for durability"
+		}
+		audits = append(audits, auditRow{"Journaling", j, st, note})
+	}
+
+	for _, a := range audits {
+		badge := okStyle.Render(" OK ")
+		if a.status == "WARN" {
+			badge = warnStyle.Render("WARN")
+		} else if a.status == "CRIT" {
+			badge = critStyle.Render("CRIT")
+		}
+		noteStr := ""
+		if a.note != "" {
+			noteStr = dimStyle.Render(a.note)
+		}
+		row := fmt.Sprintf("  %s %s %s %s",
+			styledPad(dimStyle.Render(a.check+":"), auditLW),
+			styledPad(valueStyle.Render(a.value), 16),
+			styledPad(badge, 6),
+			noteStr)
+		sb.WriteString(boxRow(row, iw) + "\n")
+	}
+	sb.WriteString(boxBot(iw) + "\n")
+
+	// ── INDEX ANALYSIS (per-collection) ───────────────────────────────
+	indexRecs := mongoIndexAnalysis(dm)
+	if len(indexRecs) > 0 {
+		sb.WriteString("  " + titleStyle.Render(fmt.Sprintf("INDEX ANALYSIS (%d issues found)", len(indexRecs))) + "\n")
+		sb.WriteString(boxTop(iw) + "\n")
+		for i, rec := range indexRecs {
+			if i > 0 {
+				sb.WriteString(boxMid(iw) + "\n")
+			}
+			badge := warnStyle.Render("WARN")
+			if rec.severity == "CRIT" {
+				badge = critStyle.Render("CRIT")
+			}
+			// Collection name + badge
+			sb.WriteString(boxRow(fmt.Sprintf("  %s  %s", badge, critStyle.Render(rec.collection)), iw) + "\n")
+			// Problem — plain English
+			sb.WriteString(boxRow(fmt.Sprintf("  %s %s", dimStyle.Render("Problem:"), rec.problem), iw) + "\n")
+			// Impact — quantified
+			if rec.impact != "" {
+				sb.WriteString(boxRow(fmt.Sprintf("  %s  %s", dimStyle.Render("Impact:"), warnStyle.Render(rec.impact)), iw) + "\n")
+			}
+			// Sibling reference
+			if rec.sibling != "" {
+				sb.WriteString(boxRow(fmt.Sprintf("  %s     %s", dimStyle.Render("Note:"), dimStyle.Render(rec.sibling)), iw) + "\n")
+			}
+			// Fix command
+			if rec.fix != "" {
+				sb.WriteString(boxRow(fmt.Sprintf("  %s     %s", dimStyle.Render("Fix:"), valueStyle.Render(rec.fix)), iw) + "\n")
+			}
+			// Safety note
+			if rec.fixNote != "" {
+				sb.WriteString(boxRow(fmt.Sprintf("           %s", okStyle.Render(rec.fixNote)), iw) + "\n")
+			}
+		}
+		sb.WriteString(boxBot(iw) + "\n")
+	}
+
+	// ── CLIENT CONNECTIONS ────────────────────────────────────────────
+	if clientJSON := dm["client_connections"]; clientJSON != "" {
+		type clientEntry struct {
+			IP    string `json:"ip"`
+			Count int    `json:"count"`
+		}
+		var clients []clientEntry
+		if err := json.Unmarshal([]byte(clientJSON), &clients); err == nil && len(clients) > 0 {
+			totalConns := 0
+			for _, c := range clients {
+				totalConns += c.Count
+			}
+			sb.WriteString("  " + titleStyle.Render(fmt.Sprintf("CLIENT CONNECTIONS (%d total, %d sources)", totalConns, len(clients))) + "\n")
+			sb.WriteString(boxTop(iw) + "\n")
+			cIP, cCnt, cPct := 20, 8, 8
+			hdr := fmt.Sprintf("  %s%s%s%s",
+				styledPad(dimStyle.Render("Client IP"), cIP),
+				styledPad(dimStyle.Render("Conns"), cCnt),
+				styledPad(dimStyle.Render("Share"), cPct),
+				dimStyle.Render("Status"))
+			sb.WriteString(boxRow(hdr, iw) + "\n")
+			sb.WriteString(boxMid(iw) + "\n")
+			for _, c := range clients {
+				pct := float64(c.Count) / float64(totalConns) * 100
+				status := okStyle.Render(" OK ")
+				note := ""
+				if c.Count > 200 {
+					status = critStyle.Render("CRIT")
+					note = dimStyle.Render("excessive — reduce maxPoolSize")
+				} else if c.Count > 100 {
+					status = warnStyle.Render("WARN")
+					note = dimStyle.Render("high — review pool settings")
+				}
+				row := fmt.Sprintf("  %s%s%s%s %s",
+					styledPad(valueStyle.Render(c.IP), cIP),
+					styledPad(valueStyle.Render(fmt.Sprintf("%d", c.Count)), cCnt),
+					styledPad(valueStyle.Render(fmt.Sprintf("%.0f%%", pct)), cPct),
+					status, note)
+				sb.WriteString(boxRow(row, iw) + "\n")
+			}
+			sb.WriteString(boxBot(iw) + "\n")
+		}
+	}
+
+	// ── OPERATION TYPE BREAKDOWN ──────────────────────────────────────
+	if opJSON := dm["op_type_breakdown"]; opJSON != "" {
+		type opEntry struct {
+			Op    string `json:"op"`
+			Count int    `json:"count"`
+		}
+		var ops []opEntry
+		if err := json.Unmarshal([]byte(opJSON), &ops); err == nil && len(ops) > 0 {
+			// Sort by count desc
+			sort.Slice(ops, func(i, j int) bool { return ops[i].Count > ops[j].Count })
+			totalOps := 0
+			for _, o := range ops {
+				totalOps += o.Count
+			}
+			sb.WriteString("  " + titleStyle.Render("OPERATION BREAKDOWN (currentOp)") + "\n")
+			sb.WriteString(boxTop(iw) + "\n")
+			for _, o := range ops {
+				pct := float64(o.Count) / float64(totalOps) * 100
+				label := o.Op
+				note := ""
+				if o.Op == "hello" {
+					note = dimStyle.Render(" ← driver heartbeats (normal, but high count = too many connections)")
+				} else if o.Op == "none" {
+					note = dimStyle.Render(" ← idle connections waiting for work")
+				}
+				bar := strings.Repeat("█", int(pct/3))
+				row := fmt.Sprintf("  %s %s %s%s",
+					styledPad(valueStyle.Render(label), 12),
+					styledPad(valueStyle.Render(fmt.Sprintf("%d (%.0f%%)", o.Count, pct)), 16),
+					dimStyle.Render(bar), note)
+				sb.WriteString(boxRow(row, iw) + "\n")
+			}
+			sb.WriteString(boxBot(iw) + "\n")
+		}
+	}
+
+	// ── OPTIMIZATION RECOMMENDATIONS ───────────────────────────────────
+	recs := mongoOptimizationRecs(dm)
+	if len(recs) > 0 {
+		sb.WriteString("  " + titleStyle.Render("OPTIMIZATION RECOMMENDATIONS") + "\n")
+		sb.WriteString(boxTop(iw) + "\n")
+		for _, rec := range recs {
+			badge := warnStyle.Render("▸")
+			if rec.severity == "CRIT" {
+				badge = critStyle.Render("▸")
+			}
+			line := fmt.Sprintf("  %s %s", badge, valueStyle.Render(rec.text))
+			sb.WriteString(boxRow(line, iw) + "\n")
+		}
+		sb.WriteString(boxBot(iw) + "\n")
+	}
 
 	return sb.String()
+}
+
+// renderMongoDBCollections renders the DATABASES & COLLECTIONS section.
+func renderMongoDBCollections(dm map[string]string, iw int) string {
+	var sb strings.Builder
+	dbList := dm["db_list"]
+	if dbList == "" {
+		return ""
+	}
+	sb.WriteString("  " + titleStyle.Render("DATABASES & COLLECTIONS") + "\n")
+
+	type collInfo struct {
+		Name     string   `json:"name"`
+		SizeMB   float64  `json:"size_mb"`
+		Docs     int64    `json:"docs"`
+		Indexes  int      `json:"indexes"`
+		IdxNames []string `json:"idx_names"`
+		AvgObj   int      `json:"avg_obj"`
+		ROps     int64    `json:"r_ops"`
+		RAvgUs   int64    `json:"r_avg_us"`
+		WOps     int64    `json:"w_ops"`
+		WAvgUs   int64    `json:"w_avg_us"`
+		COps     int64    `json:"c_ops"`
+		CAvgUs   int64    `json:"c_avg_us"`
+		ROpsRate float64  `json:"r_ops_rate"`
+		WOpsRate float64  `json:"w_ops_rate"`
+	}
+	type dbInfo struct {
+		Name        string     `json:"name"`
+		SizeMB      float64    `json:"size_mb"`
+		Collections int        `json:"collections"`
+		Indexes     int        `json:"indexes"`
+		Colls       []collInfo `json:"colls"`
+	}
+	var dbs []dbInfo
+	if err := json.Unmarshal([]byte(dbList), &dbs); err == nil {
+		for _, d := range dbs {
+			if (d.Name == "admin" || d.Name == "config" || d.Name == "local") && d.SizeMB < 1 {
+				continue
+			}
+			dbSize := fmt.Sprintf("%.1fMB", d.SizeMB)
+			if d.SizeMB >= 1024 {
+				dbSize = fmt.Sprintf("%.1fGB", d.SizeMB/1024)
+			}
+			// Sum DB-level ops and rates
+			var dbReads, dbWrites int64
+			var dbReadRate, dbWriteRate float64
+			for _, c := range d.Colls {
+				dbReads += c.ROps
+				dbWrites += c.WOps
+				dbReadRate += c.ROpsRate
+				dbWriteRate += c.WOpsRate
+			}
+			sb.WriteString(boxTop(iw) + "\n")
+			readsVal := mongoFmtRateShort(dbReadRate)
+			writesVal := mongoFmtRateShort(dbWriteRate)
+			dbTitle := fmt.Sprintf("  %s  %s  %s  %s  %s  %s",
+				titleStyle.Render(d.Name),
+				dimStyle.Render("Size:")+valueStyle.Render(dbSize),
+				dimStyle.Render("Colls:")+valueStyle.Render(fmt.Sprintf("%d", d.Collections)),
+				dimStyle.Render("Idx:")+valueStyle.Render(fmt.Sprintf("%d", d.Indexes)),
+				dimStyle.Render("Rd/s:")+valueStyle.Render(readsVal),
+				dimStyle.Render("Wr/s:")+valueStyle.Render(writesVal))
+			sb.WriteString(boxRow(dbTitle, iw) + "\n")
+
+			if len(d.Colls) > 0 {
+				sb.WriteString(boxMid(iw) + "\n")
+				cN, cSz, cDoc, cRd, cWr, cRL, cWL, cSt := 34, 8, 10, 10, 10, 8, 8, 6
+				cReason := iw - cN - cSz - cDoc - cRd - cWr - cRL - cWL - cSt - 8
+				if cReason < 10 {
+					cReason = 10
+				}
+				collHdr := fmt.Sprintf("  %s%s%s%s%s%s%s%s%s",
+					styledPad(dimStyle.Render("Collection"), cN),
+					styledPad(dimStyle.Render("Size"), cSz),
+					styledPad(dimStyle.Render("Docs"), cDoc),
+					styledPad(dimStyle.Render("Rd/s"), cRd),
+					styledPad(dimStyle.Render("Wr/s"), cWr),
+					styledPad(dimStyle.Render("R.Avg"), cRL),
+					styledPad(dimStyle.Render("W.Avg"), cWL),
+					styledPad(dimStyle.Render("Status"), cSt),
+					dimStyle.Render("Reason"))
+				sb.WriteString(boxRow(collHdr, iw) + "\n")
+
+				for _, c := range d.Colls {
+					collSize := mongoFmtSizeMB(c.SizeMB)
+					docStr := mongoFmtCount(c.Docs)
+					rdStr := mongoFmtRateShort(c.ROpsRate)
+					wrStr := mongoFmtRateShort(c.WOpsRate)
+					rLatStr := mongoFmtLatency(c.RAvgUs)
+					wLatStr := mongoFmtLatency(c.WAvgUs)
+
+					// Determine health + reason + color problem values
+					status := "OK"
+					reason := ""
+					rLatStyled := valueStyle.Render(rLatStr)
+					wLatStyled := valueStyle.Render(wLatStr)
+					rdStyled := valueStyle.Render(rdStr)
+					wrStyled := valueStyle.Render(wrStr)
+
+					// Thresholds: R.Avg normal <1ms, warn >10ms, crit >50ms
+					//             W.Avg normal <5ms, warn >10ms, crit >50ms
+					if c.WAvgUs > 50000 {
+						status = "CRIT"
+						reason = fmt.Sprintf("W.Avg %s (>50ms)", wLatStr)
+						wLatStyled = critStyle.Render(wLatStr)
+					} else if c.RAvgUs > 50000 {
+						status = "CRIT"
+						reason = fmt.Sprintf("R.Avg %s (>50ms)", rLatStr)
+						rLatStyled = critStyle.Render(rLatStr)
+					} else if c.WAvgUs > 10000 {
+						status = "WARN"
+						reason = fmt.Sprintf("W.Avg %s (>10ms)", wLatStr)
+						wLatStyled = warnStyle.Render(wLatStr)
+					} else if c.RAvgUs > 10000 {
+						status = "WARN"
+						reason = fmt.Sprintf("R.Avg %s (>10ms)", rLatStr)
+						rLatStyled = warnStyle.Render(rLatStr)
+					}
+					if c.Indexes < 2 && c.Docs > 100000 && c.ROps > 1000 {
+						if status == "OK" {
+							status = "WARN"
+						}
+						reason = fmt.Sprintf("only _id index, %s docs", mongoFmtCount(c.Docs))
+					}
+					// High read rate on large collection
+					if c.ROpsRate > 10000 && c.Docs > 1000000 {
+						if status == "OK" {
+							status = "WARN"
+						}
+						if reason == "" {
+							reason = fmt.Sprintf("%s rd/s on %s docs", rdStr, mongoFmtCount(c.Docs))
+						}
+						rdStyled = warnStyle.Render(rdStr)
+					}
+
+					badge := okStyle.Render(" OK ")
+					reasonStyled := ""
+					if status == "WARN" {
+						badge = warnStyle.Render("WARN")
+						reasonStyled = warnStyle.Render(reason)
+					} else if status == "CRIT" {
+						badge = critStyle.Render("CRIT")
+						reasonStyled = critStyle.Render(reason)
+					}
+
+					name := c.Name
+					if len(name) > cN-2 {
+						name = name[:cN-5] + "..."
+					}
+					row := fmt.Sprintf("  %s%s%s%s%s%s%s%s%s",
+						styledPad(valueStyle.Render(name), cN),
+						styledPad(valueStyle.Render(collSize), cSz),
+						styledPad(valueStyle.Render(docStr), cDoc),
+						styledPad(rdStyled, cRd),
+						styledPad(wrStyled, cWr),
+						styledPad(rLatStyled, cRL),
+						styledPad(wLatStyled, cWL),
+						styledPad(badge, cSt),
+						reasonStyled)
+					sb.WriteString(boxRow(row, iw) + "\n")
+				}
+			}
+			sb.WriteString(boxBot(iw) + "\n")
+		}
+	}
+	if totalMB := dm["total_size_mb"]; totalMB != "" {
+		t, _ := strconv.ParseFloat(totalMB, 64)
+		totalStr := mongoFmtSizeMB(t)
+		sb.WriteString(fmt.Sprintf("  %s %s (%s databases)\n",
+			dimStyle.Render("Total Storage:"),
+			valueStyle.Render(totalStr),
+			dm["db_count"]))
+	}
+	return sb.String()
+}
+
+// mongoRenderDualCol renders two kv columns side by side in a box (no top/bot).
+func mongoRenderDualCol(sb *strings.Builder, lCol, rCol []kv, iw, halfW, lw int) {
+	maxR := len(lCol)
+	if len(rCol) > maxR {
+		maxR = len(rCol)
+	}
+	for i := 0; i < maxR; i++ {
+		var left, right string
+		if i < len(lCol) && lCol[i].Val != "" {
+			left = fmt.Sprintf("%s %s",
+				styledPad(dimStyle.Render(lCol[i].Key+":"), lw),
+				valueStyle.Render(lCol[i].Val))
+		}
+		if i < len(rCol) && rCol[i].Val != "" {
+			right = fmt.Sprintf("%s %s",
+				styledPad(dimStyle.Render(rCol[i].Key+":"), lw),
+				valueStyle.Render(rCol[i].Val))
+		}
+		row := fmt.Sprintf("  %s%s", styledPad(left, halfW), right)
+		sb.WriteString(boxRow(row, iw) + "\n")
+	}
+}
+
+// mongoFmtTicket formats available/used ticket pair.
+func mongoFmtTicket(avail, used string) string {
+	if avail == "" && used == "" {
+		return ""
+	}
+	if avail == "" {
+		avail = "—"
+	}
+	if used == "" {
+		used = "—"
+	}
+	return avail + " / " + used
+}
+
+// mongoFmtBytes formats byte count to human readable.
+func mongoFmtBytes(s string) string {
+	if s == "" {
+		return ""
+	}
+	b, _ := strconv.ParseFloat(s, 64)
+	switch {
+	case b >= 1e12:
+		return fmt.Sprintf("%.1fTB", b/1e12)
+	case b >= 1e9:
+		return fmt.Sprintf("%.1fGB", b/1e9)
+	case b >= 1e6:
+		return fmt.Sprintf("%.1fMB", b/1e6)
+	case b >= 1e3:
+		return fmt.Sprintf("%.1fKB", b/1e3)
+	default:
+		return fmt.Sprintf("%.0fB", b)
+	}
+}
+
+// mongoFmtSizeMB formats MB to human readable.
+func mongoFmtSizeMB(mb float64) string {
+	if mb >= 1024 {
+		return fmt.Sprintf("%.1fGB", mb/1024)
+	}
+	return fmt.Sprintf("%.1fMB", mb)
+}
+
+// mongoFmtCount formats large numbers with K/M suffix.
+func mongoFmtCount(n int64) string {
+	if n >= 1000000000 {
+		return fmt.Sprintf("%.1fB", float64(n)/1e9)
+	}
+	if n >= 1000000 {
+		return fmt.Sprintf("%.1fM", float64(n)/1e6)
+	}
+	if n >= 1000 {
+		return fmt.Sprintf("%.1fK", float64(n)/1e3)
+	}
+	return fmt.Sprintf("%d", n)
+}
+
+// mongoFmtOps formats operation count with K/M suffix.
+func mongoFmtOps(n int64) string {
+	if n == 0 {
+		return "0"
+	}
+	return mongoFmtCount(n)
+}
+
+// mongoFmtRateShort formats a rate value compactly for inline display.
+func mongoFmtRateShort(r float64) string {
+	switch {
+	case r >= 1e9:
+		return fmt.Sprintf("%.0fB/s", r/1e9)
+	case r >= 1e6:
+		return fmt.Sprintf("%.0fM/s", r/1e6)
+	case r >= 1e3:
+		return fmt.Sprintf("%.1fK/s", r/1e3)
+	case r >= 1:
+		return fmt.Sprintf("%.0f/s", r)
+	case r > 0:
+		return fmt.Sprintf("%.1f/s", r)
+	default:
+		return "0"
+	}
+}
+
+// mongoFmtLatency formats microseconds to human readable.
+func mongoFmtLatency(us int64) string {
+	if us == 0 {
+		return "—"
+	}
+	if us >= 1000000 {
+		return fmt.Sprintf("%.1fs", float64(us)/1e6)
+	}
+	if us >= 1000 {
+		return fmt.Sprintf("%.1fms", float64(us)/1e3)
+	}
+	return fmt.Sprintf("%dµs", us)
+}
+
+// mongoParseI64 parses a string to int64, returns 0 on error.
+func mongoParseI64(s string) int64 {
+	if s == "" {
+		return 0
+	}
+	v, _ := strconv.ParseInt(s, 10, 64)
+	return v
+}
+
+type mongoRec struct {
+	severity string
+	text     string
+}
+
+type mongoIndexRec struct {
+	severity   string
+	collection string // "DB.Collection"
+	problem    string // plain English explanation
+	impact     string // quantified impact
+	fix        string // createIndex() command
+	fixNote    string // safety note
+	sibling    string // sibling that has the index (if applicable)
+}
+
+// mongoIndexAnalysis examines per-collection index data and generates
+// specific recommendations with clear problem/impact/fix explanations.
+func mongoIndexAnalysis(dm map[string]string) []mongoIndexRec {
+	dbList := dm["db_list"]
+	if dbList == "" {
+		return nil
+	}
+
+	type collInfo struct {
+		Name     string   `json:"name"`
+		SizeMB   float64  `json:"size_mb"`
+		Docs     int64    `json:"docs"`
+		Indexes  int      `json:"indexes"`
+		IdxNames []string `json:"idx_names"`
+		ROps     int64    `json:"r_ops"`
+		RAvgUs   int64    `json:"r_avg_us"`
+		WOps     int64    `json:"w_ops"`
+		WAvgUs   int64    `json:"w_avg_us"`
+		ROpsRate float64  `json:"r_ops_rate"`
+	}
+	type dbInfo struct {
+		Name  string     `json:"name"`
+		Colls []collInfo `json:"colls"`
+	}
+
+	var dbs []dbInfo
+	if err := json.Unmarshal([]byte(dbList), &dbs); err != nil {
+		return nil
+	}
+
+	var recs []mongoIndexRec
+
+	for _, d := range dbs {
+		if d.Name == "admin" || d.Name == "config" || d.Name == "local" {
+			continue
+		}
+
+		// Build index map across sibling collections
+		siblingIndexes := make(map[string]map[string]bool)
+		for _, c := range d.Colls {
+			idxSet := make(map[string]bool)
+			for _, idx := range c.IdxNames {
+				if idx != "_id_" {
+					idxSet[idx] = true
+				}
+			}
+			siblingIndexes[c.Name] = idxSet
+		}
+
+		for _, c := range d.Colls {
+			ns := d.Name + "." + c.Name
+
+			// 1. Large collection with only _id index and significant reads
+			if c.Indexes < 2 && c.Docs > 50000 && c.ROps > 100 {
+				sev := "WARN"
+				if c.ROpsRate > 1000 || c.Docs > 1000000 {
+					sev = "CRIT"
+				}
+
+				// Find missing indexes from siblings
+				var missingIdxs []string
+				var siblingName string
+				for sibName, sibIdx := range siblingIndexes {
+					if sibName == c.Name || !mongoAreSiblings(c.Name, sibName) {
+						continue
+					}
+					for idx := range sibIdx {
+						if !siblingIndexes[c.Name][idx] {
+							missingIdxs = append(missingIdxs, strings.TrimSuffix(idx, "_1"))
+							siblingName = sibName
+						}
+					}
+				}
+
+				docStr := mongoFmtCount(c.Docs)
+				if len(missingIdxs) > 0 {
+					// Missing sibling index — most actionable finding
+					for _, idx := range missingIdxs {
+						recs = append(recs, mongoIndexRec{
+							severity:   sev,
+							collection: ns,
+							problem: fmt.Sprintf("No %s index — every query on %s scans all %s documents (full table scan)",
+								idx, idx, docStr),
+							impact: fmt.Sprintf("Each %s lookup takes ~%.0fms instead of <1ms, wasting CPU on %s reads",
+								idx, float64(c.Docs)/500000.0*100, mongoFmtCount(c.ROps)),
+							sibling: fmt.Sprintf("Sibling \"%s\" has this index — this collection was likely created without it",
+								siblingName),
+							fix: fmt.Sprintf("db.getSiblingDB(\"%s\").%s.createIndex({%s: 1})",
+								d.Name, c.Name, idx),
+							fixNote: "Safe to run in production — builds in background, no downtime",
+						})
+					}
+				} else {
+					// No sibling reference, generic "only _id" warning
+					recs = append(recs, mongoIndexRec{
+						severity:   sev,
+						collection: ns,
+						problem: fmt.Sprintf("Only _id index on %s docs — any query not using _id scans the entire collection",
+							docStr),
+						impact: fmt.Sprintf("Full collection scans cause high CPU and slow responses (%s total reads)",
+							mongoFmtCount(c.ROps)),
+						fix: "Enable profiling to find which fields need indexes: db.setProfilingLevel(1, {slowms: 50})",
+						fixNote: "Then check db.system.profile for COLLSCAN queries to identify needed indexes",
+					})
+				}
+			}
+
+			// 2. High read latency with few indexes
+			if c.RAvgUs > 5000 && c.Indexes < 3 && c.ROps > 1000 {
+				recs = append(recs, mongoIndexRec{
+					severity:   "WARN",
+					collection: ns,
+					problem: fmt.Sprintf("Average read takes %s with only %d index — queries may be scanning too many documents",
+						mongoFmtLatency(c.RAvgUs), c.Indexes),
+					impact: fmt.Sprintf("Slow reads affect application response time across %s operations",
+						mongoFmtCount(c.ROps)),
+					fix: fmt.Sprintf("db.getSiblingDB(\"%s\").setProfilingLevel(1, {slowms: 50})",
+						d.Name),
+					fixNote: "Check db.system.profile to find slow query patterns, then create targeted indexes",
+				})
+			}
+
+			// 3. Write latency high (only when writes are actually happening)
+			if c.WAvgUs > 50000 && c.WOps > 100 {
+				recs = append(recs, mongoIndexRec{
+					severity:   "CRIT",
+					collection: ns,
+					problem: fmt.Sprintf("Write operations averaging %s — significantly slower than normal (<10ms)",
+						mongoFmtLatency(c.WAvgUs)),
+					impact: fmt.Sprintf("Slow writes cause application timeouts and connection pile-ups (%d indexes to update per write)",
+						c.Indexes),
+					fix: "Check disk I/O with xtop IO page. If indexes > 5, review if all are needed",
+					fixNote: "Too many indexes slow every write — each insert/update must update all indexes",
+				})
+			}
+		}
+	}
+
+	return recs
+}
+
+// mongoAreSiblings checks if two collection names are variants of each other
+// (e.g., "Foo" and "Foo_New", "Foo_DAG2" and "Foo_DAG2_New").
+func mongoAreSiblings(a, b string) bool {
+	if strings.HasSuffix(a, "_New") && strings.TrimSuffix(a, "_New") == b {
+		return true
+	}
+	if strings.HasSuffix(b, "_New") && strings.TrimSuffix(b, "_New") == a {
+		return true
+	}
+	// Also check base name match (strip _New, _DAG2, etc.)
+	baseA := a
+	baseB := b
+	for _, suf := range []string{"_New", "_DAG2_New", "_DAG2"} {
+		baseA = strings.TrimSuffix(baseA, suf)
+		baseB = strings.TrimSuffix(baseB, suf)
+	}
+	return baseA == baseB && a != b
+}
+
+// mongoOptimizationRecs generates optimization recommendations from metrics.
+func mongoOptimizationRecs(dm map[string]string) []mongoRec {
+	var recs []mongoRec
+
+	// Cache pressure
+	if v := dm["cache_usage_pct"]; v != "" {
+		pct, _ := strconv.ParseFloat(v, 64)
+		if pct > 95 {
+			recs = append(recs, mongoRec{"CRIT", "WT cache critically full — increase storage.wiredTiger.engineConfig.cacheSizeGB"})
+		} else if pct > 85 {
+			recs = append(recs, mongoRec{"WARN", "WT cache > 85% — consider increasing cacheSizeGB or reducing working set"})
+		}
+	}
+
+	// Connection pool
+	connCur, _ := strconv.Atoi(dm["conn_current"])
+	if connCur > 5000 {
+		recs = append(recs, mongoRec{"CRIT", fmt.Sprintf("%d connections — implement connection pooling (maxPoolSize in driver)", connCur)})
+	} else if connCur > 1000 {
+		recs = append(recs, mongoRec{"WARN", fmt.Sprintf("%d connections — consider connection pooling", connCur)})
+	}
+
+	// Lock contention
+	lockQ, _ := strconv.Atoi(dm["lock_queue_total"])
+	if lockQ > 10 {
+		recs = append(recs, mongoRec{"CRIT", "Heavy lock contention — review slow queries with db.currentOp(), add missing indexes"})
+	}
+
+	// Slow ops
+	slowOps, _ := strconv.Atoi(dm["slow_ops"])
+	if slowOps > 5 {
+		recs = append(recs, mongoRec{"CRIT", fmt.Sprintf("%d slow operations (>5s) — run db.setProfilingLevel(1) and check system.profile", slowOps)})
+	} else if slowOps > 0 {
+		recs = append(recs, mongoRec{"WARN", "Slow operations detected — check query plans with .explain()"})
+	}
+
+	// WT tickets
+	readAvail, _ := strconv.Atoi(dm["wt_read_avail"])
+	writeAvail, _ := strconv.Atoi(dm["wt_write_avail"])
+	if readAvail > 0 && readAvail < 20 {
+		recs = append(recs, mongoRec{"WARN", "Read tickets low — increase wiredTigerConcurrentReadTransactions or reduce load"})
+	}
+	if writeAvail > 0 && writeAvail < 20 {
+		recs = append(recs, mongoRec{"WARN", "Write tickets low — increase wiredTigerConcurrentWriteTransactions or reduce write load"})
+	}
+
+	// Security
+	if dm["auth_enabled"] == "disabled" {
+		recs = append(recs, mongoRec{"CRIT", "Authentication DISABLED — set security.authorization: enabled in mongod.conf"})
+	}
+	if dm["tls_mode"] == "disabled" || dm["tls_mode"] == "" {
+		recs = append(recs, mongoRec{"WARN", "TLS disabled — enable net.tls.mode: requireTLS for encrypted connections"})
+	}
+	if dm["bind_ip"] == "0.0.0.0" {
+		recs = append(recs, mongoRec{"WARN", "Bound to all interfaces — restrict net.bindIp to specific addresses"})
+	}
+
+	// Replication
+	if lagStr := dm["repl_lag_sec"]; lagStr != "" && lagStr != "0" {
+		lag, _ := strconv.Atoi(lagStr)
+		if lag > 60 {
+			recs = append(recs, mongoRec{"CRIT", fmt.Sprintf("Replication lag %ds — increase oplog size (replSetResizeOplog) or check network", lag)})
+		}
+	}
+
+	// Cursor timeouts
+	curTimeout, _ := strconv.Atoi(dm["cursor_timed_out"])
+	if curTimeout > 100 {
+		recs = append(recs, mongoRec{"WARN", "High cursor timeouts — use noCursorTimeout cautiously or process batches faster"})
+	}
+
+	// Collection scans
+	collScans, _ := strconv.Atoi(dm["collection_scans"])
+	if collScans > 1000 {
+		recs = append(recs, mongoRec{"CRIT", fmt.Sprintf("%d collection scans — create indexes for frequent query patterns", collScans)})
+	} else if collScans > 100 {
+		recs = append(recs, mongoRec{"WARN", fmt.Sprintf("%d collection scans — review queries without index support", collScans)})
+	}
+
+	// Scan efficiency
+	scannedObj, _ := strconv.ParseFloat(dm["scanned_objects"], 64)
+	docReturned, _ := strconv.ParseFloat(dm["doc_returned"], 64)
+	if docReturned > 0 && scannedObj/docReturned > 5 {
+		recs = append(recs, mongoRec{"WARN", fmt.Sprintf("Scanning %.0fx more docs than returning — create compound indexes matching query filters", scannedObj/docReturned)})
+	}
+
+	// High write latency
+	avgWrUs, _ := strconv.Atoi(dm["avg_write_latency_us"])
+	if avgWrUs > 50000 {
+		recs = append(recs, mongoRec{"CRIT", fmt.Sprintf("Avg write latency %s — check disk I/O, journal, and write concern", mongoFmtLatency(int64(avgWrUs)))})
+	} else if avgWrUs > 10000 {
+		recs = append(recs, mongoRec{"WARN", fmt.Sprintf("Avg write latency %s — consider write concern w:1 or faster storage", mongoFmtLatency(int64(avgWrUs)))})
+	}
+
+	// Client disconnects killing ops
+	killedDisc, _ := strconv.Atoi(dm["killed_disconnect"])
+	if killedDisc > 10000 {
+		recs = append(recs, mongoRec{"WARN", fmt.Sprintf("%s operations killed by client disconnect — increase client timeouts", mongoFmtCount(int64(killedDisc)))})
+	}
+
+	// No replication on production
+	if dm["repl_set"] == "" && connCur > 100 {
+		recs = append(recs, mongoRec{"WARN", "Standalone instance with significant traffic — consider replica set for HA"})
+	}
+
+	return recs
 }
 
 // ── Memcached Detail ───────────────────────────────────────────────────
@@ -3468,6 +5090,195 @@ func renderAppInfoResourceBox(app model.AppInstance, iw int) string {
 	}
 	sb.WriteString(boxBot(iw) + "\n")
 	return sb.String()
+}
+
+// ── Plesk Detail ──────────────────────────────────────────────────────
+
+func renderPleskDeepMetrics(app model.AppInstance, iw int) string {
+	var sb strings.Builder
+	dm := app.DeepMetrics
+
+	// Panel Info
+	var panelRows []string
+	if v := dm["plesk_version"]; v != "" {
+		panelRows = append(panelRows, pleskMetricRow("Version", v))
+	}
+	if v := dm["os_platform"]; v != "" {
+		panelRows = append(panelRows, pleskMetricRow("Platform", v))
+	}
+	if v := dm["license_type"]; v != "" {
+		panelRows = append(panelRows, pleskMetricRow("License", v))
+	}
+	if v := dm["updates_available"]; v != "" && v != "0" {
+		panelRows = append(panelRows, pleskMetricRow("Updates", v+" available"))
+	}
+	if len(panelRows) > 0 {
+		sb.WriteString(boxSection("PANEL INFO", panelRows, iw))
+	}
+
+	// Service Status
+	svcDefs := []struct {
+		key  string
+		name string
+	}{
+		{"svc_panel", "Control Panel"},
+		{"svc_engine", "SW Engine"},
+		{"svc_nginx", "Nginx"},
+		{"svc_apache", "Apache"},
+		{"svc_mariadb", "MariaDB"},
+		{"svc_postfix", "Postfix"},
+		{"svc_dovecot", "Dovecot"},
+		{"svc_named", "BIND DNS"},
+		{"svc_php83", "PHP 8.3 FPM"},
+		{"svc_php84", "PHP 8.4 FPM"},
+		{"svc_fail2ban", "Fail2Ban"},
+		{"svc_imunify", "Imunify360"},
+	}
+	var svcRows []string
+	for _, s := range svcDefs {
+		status := dm[s.key]
+		if status == "" || status == "n/a" {
+			continue
+		}
+		var badge string
+		if status == "active" {
+			badge = okStyle.Render("active")
+		} else {
+			badge = critStyle.Render("DOWN")
+		}
+		svcRows = append(svcRows, fmt.Sprintf("  %s %s",
+			styledPad(dimStyle.Render(s.name+":"), 18), badge))
+	}
+	if len(svcRows) > 0 {
+		sb.WriteString(boxSection("PLESK SERVICES", svcRows, iw))
+	}
+
+	// Hosting
+	var hostRows []string
+	if v := dm["domains"]; v != "" {
+		hostRows = append(hostRows, pleskMetricRow("Domains", v))
+	}
+	if v := dm["suspended_domains"]; v != "" && v != "0" {
+		hostRows = append(hostRows, fmt.Sprintf("  %s %s",
+			styledPad(dimStyle.Render("Suspended:"), 18),
+			warnStyle.Render(v)))
+	}
+	if v := dm["hosting_subscriptions"]; v != "" {
+		hostRows = append(hostRows, pleskMetricRow("Subscriptions", v))
+	}
+	if v := dm["databases"]; v != "" {
+		hostRows = append(hostRows, pleskMetricRow("Databases", v))
+	}
+	if v := dm["mail_accounts"]; v != "" {
+		hostRows = append(hostRows, pleskMetricRow("Mail Accounts", v))
+	}
+	if len(hostRows) > 0 {
+		sb.WriteString(boxSection("HOSTING", hostRows, iw))
+	}
+
+	// PHP-FPM Pools
+	var phpRows []string
+	for _, ver := range []string{"81", "82", "83", "84"} {
+		if v := dm["php"+ver+"_pools"]; v != "" && v != "0" {
+			phpRows = append(phpRows, pleskMetricRow("PHP "+ver[:1]+"."+ver[1:], v+" pools"))
+		}
+	}
+	if t := dm["php_pools_total"]; t != "" && t != "0" {
+		phpRows = append(phpRows, pleskMetricRow("Total Pools", t))
+	}
+	if len(phpRows) > 0 {
+		sb.WriteString(boxSection("PHP-FPM", phpRows, iw))
+	}
+
+	// Mail
+	var mailRows []string
+	if v := dm["mail_queue"]; v != "" {
+		mailRows = append(mailRows, pleskMetricRow("Queue Size", v))
+	}
+	if len(mailRows) > 0 {
+		sb.WriteString(boxSection("MAIL", mailRows, iw))
+	}
+
+	// Certificates
+	var certRows []string
+	if v := dm["cert_total"]; v != "" && v != "0" {
+		certRows = append(certRows, pleskMetricRow("Total Certs", v))
+		if ok := dm["certs_ok"]; ok != "" {
+			certRows = append(certRows, pleskMetricRow("Valid", ok))
+		}
+		if v := dm["certs_expiring"]; v != "" && v != "0" {
+			certRows = append(certRows, fmt.Sprintf("  %s %s",
+				styledPad(dimStyle.Render("Expiring:"), 18),
+				warnStyle.Render(v)))
+		}
+		if v := dm["certs_expired"]; v != "" && v != "0" {
+			certRows = append(certRows, fmt.Sprintf("  %s %s",
+				styledPad(dimStyle.Render("Expired:"), 18),
+				critStyle.Render(v)))
+		}
+	}
+	if len(certRows) > 0 {
+		sb.WriteString(boxSection("CERTIFICATES", certRows, iw))
+	}
+
+	// Security
+	var secRows []string
+	if v := dm["imunify_status"]; v == "active" {
+		secRows = append(secRows, pleskMetricRow("Imunify360", "active"))
+		if inf := dm["imunify_infected"]; inf != "" && inf != "0" {
+			secRows = append(secRows, fmt.Sprintf("  %s %s",
+				styledPad(dimStyle.Render("Infected:"), 18),
+				critStyle.Render(inf+" files")))
+		}
+	}
+	if len(secRows) > 0 {
+		sb.WriteString(boxSection("SECURITY", secRows, iw))
+	}
+
+	// Disk Usage
+	var diskRows []string
+	for _, d := range []struct {
+		key  string
+		name string
+	}{
+		{"disk_vhosts_mb", "Web Data"},
+		{"disk_mysql_mb", "MySQL Data"},
+		{"disk_mail_mb", "Mail Data"},
+	} {
+		if v := dm[d.key]; v != "" {
+			mb, _ := strconv.Atoi(v)
+			var disp string
+			if mb > 1024 {
+				disp = fmt.Sprintf("%.1f GB", float64(mb)/1024)
+			} else {
+				disp = v + " MB"
+			}
+			diskRows = append(diskRows, pleskMetricRow(d.name, disp))
+		}
+	}
+	if len(diskRows) > 0 {
+		sb.WriteString(boxSection("DISK USAGE", diskRows, iw))
+	}
+
+	// Web Traffic
+	var webRows []string
+	if v := dm["http_connections"]; v != "" && v != "0" {
+		webRows = append(webRows, pleskMetricRow("HTTP Conns", v))
+	}
+	if v := dm["https_connections"]; v != "" && v != "0" {
+		webRows = append(webRows, pleskMetricRow("HTTPS Conns", v))
+	}
+	if len(webRows) > 0 {
+		sb.WriteString(boxSection("WEB TRAFFIC", webRows, iw))
+	}
+
+	return sb.String()
+}
+
+func pleskMetricRow(key, val string) string {
+	return fmt.Sprintf("  %s %s",
+		styledPad(dimStyle.Render(key+":"), 18),
+		valueStyle.Render(val))
 }
 
 func appSection(title string, iw int, kvs []kv) string {

@@ -58,6 +58,8 @@ type DoctorReport struct {
 	Checks      []CheckResult `json:"checks"`
 	WorstStatus CheckStatus   `json:"worst_status"`
 	RCA         interface{}   `json:"rca,omitempty"`
+	Snap        *model.Snapshot     `json:"-"` // for diagnosis rendering
+	Rates       *model.RateSnapshot `json:"-"`
 }
 
 // runDoctor performs all health checks and outputs the report.
@@ -89,6 +91,8 @@ func runDoctor(cfg Config) error {
 	report := DoctorReport{
 		Timestamp: time.Now(),
 		Hostname:  hostname,
+		Snap:      snap,
+		Rates:     rates,
 	}
 
 	if showProgress {
@@ -100,19 +104,21 @@ func runDoctor(cfg Config) error {
 	report.Checks = append(report.Checks, checkMemory(snap, rates, result)...)
 	report.Checks = append(report.Checks, checkDisk(snap, rates, result)...)
 	report.Checks = append(report.Checks, checkNetwork(snap, rates, result)...)
-	report.Checks = append(report.Checks, checkFDSystemWide(snap)...)
-	report.Checks = append(report.Checks, checkInodeUsage(snap, rates)...)
 	report.Checks = append(report.Checks, checkFileless(snap)...)
 
 	if showProgress {
 		fmt.Fprintf(os.Stderr, "\r  Checking external services...      ")
 	}
 
-	// External tool checks (graceful skip if missing)
+	// System checks — grouped together to avoid duplicate headers
+	report.Checks = append(report.Checks, checkFDSystemWide(snap)...)
+	report.Checks = append(report.Checks, checkInodeUsage(snap, rates)...)
 	report.Checks = append(report.Checks, checkSystemdFailed()...)
-	report.Checks = append(report.Checks, checkDockerDisk()...)
 	report.Checks = append(report.Checks, checkSecurityUpdates()...)
 	report.Checks = append(report.Checks, checkNTPSync()...)
+
+	// Docker (only shows if installed)
+	report.Checks = append(report.Checks, checkDockerDisk()...)
 	report.Checks = append(report.Checks, checkSSLCerts()...)
 
 	if showProgress {
@@ -135,12 +141,7 @@ func runDoctor(cfg Config) error {
 
 	// Include RCA if available
 	if result != nil && result.PrimaryScore > 0 {
-		report.RCA = map[string]interface{}{
-			"health":     result.Health.String(),
-			"bottleneck": result.PrimaryBottleneck,
-			"score":      result.PrimaryScore,
-			"culprit":    result.PrimaryCulprit,
-		}
+		report.RCA = result
 	}
 
 	// Render output
@@ -214,6 +215,8 @@ func runDoctorWatch(cfg Config) error {
 			report := DoctorReport{
 				Timestamp: time.Now(),
 				Hostname:  hostname,
+				Snap:      snap,
+				Rates:     rates,
 			}
 
 			report.Checks = append(report.Checks, checkCPU(snap, rates, result)...)
@@ -241,12 +244,7 @@ func runDoctorWatch(cfg Config) error {
 
 			// Include RCA if available
 			if result != nil && result.PrimaryScore > 0 {
-				report.RCA = map[string]interface{}{
-					"health":     result.Health.String(),
-					"bottleneck": result.PrimaryBottleneck,
-					"score":      result.PrimaryScore,
-					"culprit":    result.PrimaryCulprit,
-				}
+				report.RCA = result
 			}
 
 			// Clear screen and render
@@ -276,10 +274,18 @@ func runDoctorWatch(cfg Config) error {
 func checkCPU(snap *model.Snapshot, rates *model.RateSnapshot, result *model.AnalysisResult) []CheckResult {
 	var checks []CheckResult
 
-	// CPU utilization
+	nCPU := snap.Global.CPU.NumCPUs
+	if nCPU == 0 {
+		nCPU = 1
+	}
+	la := snap.Global.CPU.LoadAvg
+
+	// CPU utilization + load average combined overview
 	if rates != nil {
 		status := CheckOK
-		detail := fmt.Sprintf("%.1f%% busy", rates.CPUBusyPct)
+		loadPct := la.Load1 / float64(nCPU) * 100
+		detail := fmt.Sprintf("%.1f%% busy — load avg: %.2f/%.2f/%.2f (%d CPUs, %.0f%% capacity)",
+			rates.CPUBusyPct, la.Load1, la.Load5, la.Load15, nCPU, loadPct)
 		advice := ""
 		if rates.CPUBusyPct > 90 {
 			status = CheckCrit
@@ -293,26 +299,54 @@ func checkCPU(snap *model.Snapshot, rates *model.RateSnapshot, result *model.Ana
 		})
 	}
 
-	// Load average with breakdown explanation
-	nCPU := snap.Global.CPU.NumCPUs
-	if nCPU == 0 {
-		nCPU = 1
-	}
-	load := snap.Global.CPU.LoadAvg.Load1
-	loadPerCPU := load / float64(nCPU)
+	// Load average with human-readable interpretation
+	load1 := la.Load1
+	load5 := la.Load5
+	load15 := la.Load15
+	loadPerCPU := load1 / float64(nCPU)
+	loadPct := loadPerCPU * 100
 	status := CheckOK
-	detail := fmt.Sprintf("%.2f (%.2f per CPU, %d CPUs)", load, loadPerCPU, nCPU)
+	// Human interpretation
+	var interpretation string
+	switch {
+	case loadPct < 25:
+		interpretation = "idle"
+	case loadPct < 50:
+		interpretation = "light load"
+	case loadPct < 75:
+		interpretation = "moderate load"
+	case loadPct < 100:
+		interpretation = "heavy load"
+	case loadPct < 150:
+		interpretation = "overloaded — more tasks than CPUs can handle"
+	case loadPct < 200:
+		interpretation = "severely overloaded — tasks queueing significantly"
+	default:
+		interpretation = "critically overloaded — extreme queueing"
+	}
+	detail := fmt.Sprintf("1m=%.2f  5m=%.2f  15m=%.2f | %d CPUs → %.0f%% capacity (%s)",
+		load1, load5, load15, nCPU, loadPct, interpretation)
 	advice := ""
 	if loadPerCPU > 2 {
 		status = CheckCrit
-		advice = "System severely overloaded"
+		advice = "System severely overloaded — tasks waiting far exceed CPU capacity"
 	} else if loadPerCPU > 1 {
 		status = CheckWarn
-		advice = "Load exceeds CPU count"
+		advice = "Load exceeds CPU count — tasks are queueing for CPU time"
+	}
+	// Trend: is load rising or falling?
+	if load1 > 0 {
+		if load1 > load15*1.5 && load15 > 0 {
+			detail += " [RISING]"
+		} else if load1 < load15*0.5 && load15 > 0 {
+			detail += " [FALLING]"
+		} else {
+			detail += " [STABLE]"
+		}
 	}
 	// Decompose load into runnable vs IO-blocked when load is meaningful
-	if load > 1 && rates != nil {
-		runnable := int(snap.Global.CPU.LoadAvg.Running)
+	if load1 > 1 && rates != nil {
+		runnable := int(la.Running)
 		dState := 0
 		for _, p := range snap.Processes {
 			if p.State == "D" {
@@ -320,18 +354,141 @@ func checkCPU(snap *model.Snapshot, rates *model.RateSnapshot, result *model.Ana
 			}
 		}
 		if dState > 0 && rates.CPUBusyPct < 50 {
-			detail += fmt.Sprintf(" → %d runnable + %d IO-blocked → NOT CPU, it's IO", runnable, dState)
+			detail += fmt.Sprintf("\n                           %d runnable + %d IO-blocked (D state) → load is IO-driven, NOT CPU", runnable, dState)
 			if status == CheckOK {
 				status = CheckWarn
 			}
 			advice = "Load driven by IO-waiting processes, not CPU contention"
 		} else if runnable > nCPU {
-			detail += fmt.Sprintf(" → %d runnable vs %d cores → CPU saturated", runnable, nCPU)
+			detail += fmt.Sprintf("\n                           %d runnable threads vs %d cores → CPU saturated, tasks queueing", runnable, nCPU)
 		}
 	}
 	checks = append(checks, CheckResult{
 		Category: "CPU", Name: "Load average", Status: status, Detail: detail, Advice: advice,
 	})
+
+	// Run queue — which processes are actually running/runnable (R state)
+	type rqEntry struct {
+		pid     int
+		comm    string
+		threads int
+	}
+	var rProcs []rqEntry
+	var dProcs []rqEntry
+	for _, p := range snap.Processes {
+		if p.State == "R" {
+			rProcs = append(rProcs, rqEntry{pid: p.PID, comm: p.Comm, threads: p.NumThreads})
+		} else if p.State == "D" {
+			dProcs = append(dProcs, rqEntry{pid: p.PID, comm: p.Comm, threads: p.NumThreads})
+		}
+	}
+	if len(rProcs) > 0 || len(dProcs) > 0 {
+		status = CheckOK
+		advice = ""
+		// Classify R-state processes
+		rDetail := fmt.Sprintf("%d running (R)", len(rProcs))
+		if len(dProcs) > 0 {
+			rDetail += fmt.Sprintf(", %d IO-blocked (D)", len(dProcs))
+		}
+		totalActive := len(rProcs) + len(dProcs)
+		if totalActive > nCPU*2 {
+			status = CheckCrit
+			advice = "Far more active tasks than CPUs — severe contention"
+		} else if totalActive > nCPU {
+			status = CheckWarn
+			advice = "More active tasks than CPUs — some are queueing"
+		}
+		// Show top R-state processes (sorted by thread count already from proc collector)
+		if len(rProcs) > 0 {
+			rDetail += "\n                           RUNNING:"
+			shown := 0
+			// Aggregate by comm name
+			commCount := map[string]int{}
+			commThreads := map[string]int{}
+			commPIDs := map[string][]int{}
+			for _, p := range rProcs {
+				commCount[p.comm]++
+				commThreads[p.comm] += p.threads
+				if len(commPIDs[p.comm]) < 3 {
+					commPIDs[p.comm] = append(commPIDs[p.comm], p.pid)
+				}
+			}
+			// Sort by count descending
+			type commSummary struct {
+				comm    string
+				count   int
+				threads int
+				pids    []int
+			}
+			var sorted []commSummary
+			for c, n := range commCount {
+				sorted = append(sorted, commSummary{comm: c, count: n, threads: commThreads[c], pids: commPIDs[c]})
+			}
+			for i := 0; i < len(sorted); i++ {
+				for j := i + 1; j < len(sorted); j++ {
+					if sorted[j].count > sorted[i].count {
+						sorted[i], sorted[j] = sorted[j], sorted[i]
+					}
+				}
+			}
+			for _, s := range sorted {
+				if shown >= 8 {
+					rDetail += fmt.Sprintf("\n                             ... and %d more", len(sorted)-shown)
+					break
+				}
+				pidStr := ""
+				for k, pid := range s.pids {
+					if k > 0 {
+						pidStr += ","
+					}
+					pidStr += fmt.Sprintf("%d", pid)
+				}
+				if s.count > len(s.pids) {
+					pidStr += ",..."
+				}
+				if s.count == 1 {
+					rDetail += fmt.Sprintf("\n                             %-16s  PID %-8s  %d threads", s.comm, pidStr, s.threads)
+				} else {
+					rDetail += fmt.Sprintf("\n                             %-16s  x%-3d PIDs %-12s  %d threads total", s.comm, s.count, pidStr, s.threads)
+				}
+				shown++
+			}
+		}
+		if len(dProcs) > 0 {
+			rDetail += "\n                           IO-BLOCKED (D state):"
+			shown := 0
+			commCount := map[string]int{}
+			for _, p := range dProcs {
+				commCount[p.comm]++
+			}
+			type cs struct {
+				comm  string
+				count int
+			}
+			var sorted []cs
+			for c, n := range commCount {
+				sorted = append(sorted, cs{comm: c, count: n})
+			}
+			for i := 0; i < len(sorted); i++ {
+				for j := i + 1; j < len(sorted); j++ {
+					if sorted[j].count > sorted[i].count {
+						sorted[i], sorted[j] = sorted[j], sorted[i]
+					}
+				}
+			}
+			for _, s := range sorted {
+				if shown >= 5 {
+					rDetail += fmt.Sprintf("\n                             ... and %d more", len(sorted)-shown)
+					break
+				}
+				rDetail += fmt.Sprintf("\n                             %-16s  x%d", s.comm, s.count)
+				shown++
+			}
+		}
+		checks = append(checks, CheckResult{
+			Category: "CPU", Name: "Run queue", Status: status, Detail: rDetail, Advice: advice,
+		})
+	}
 
 	// PSI CPU
 	psi := snap.Global.PSI.CPU.Some.Avg10
@@ -857,10 +1014,7 @@ func checkSystemdFailed() []CheckResult {
 func checkDockerDisk() []CheckResult {
 	path, err := exec.LookPath("docker")
 	if err != nil {
-		return []CheckResult{{
-			Category: "Docker", Name: "Disk usage",
-			Status: CheckSkip, Detail: "docker not found",
-		}}
+		return nil // don't show Docker section if not installed
 	}
 	out, err := exec.Command(path, "system", "df", "--format", "{{.Type}}\t{{.TotalCount}}\t{{.Size}}\t{{.Reclaimable}}").Output()
 	if err != nil {
@@ -1066,12 +1220,158 @@ func renderDoctorCLI(report DoctorReport, iterInfo string) {
 		fmt.Printf(" %s%s✗ Critical issues found%s\n", B, FBRed, R)
 	}
 
-	// RCA summary if present
-	if report.RCA != nil {
-		if m, ok := report.RCA.(map[string]interface{}); ok {
-			if bn, _ := m["bottleneck"].(string); bn != "" {
-				fmt.Printf(" %sRCA:%s %s%s%s (score=%v, culprit=%v)\n",
-					B, R, FBYel, bn, R, m["score"], m["culprit"])
+	// RCA diagnosis if present
+	if result, ok := report.RCA.(*model.AnalysisResult); ok && result != nil {
+		fmt.Println()
+		fmt.Println(titleLine("Diagnosis"))
+
+		// Root cause from narrative engine
+		if result.Narrative != nil && result.Narrative.RootCause != "" {
+			fmt.Printf(" %s%sROOT CAUSE:%s %s\n", B, FBRed, R, result.Narrative.RootCause)
+			if result.Narrative.Impact != "" {
+				fmt.Printf(" %sIMPACT:%s     %s\n", B, R, result.Narrative.Impact)
+			}
+			if result.Narrative.Pattern != "" {
+				fmt.Printf(" %sPATTERN:%s    %s\n", B, R, result.Narrative.Pattern)
+			}
+			fmt.Println()
+		} else if result.PrimaryBottleneck != "" {
+			fmt.Printf(" %s%sROOT CAUSE:%s %s (confidence: %d%%)\n",
+				B, FBRed, R, result.PrimaryBottleneck, result.Confidence)
+			fmt.Println()
+		}
+
+		// Load average summary in diagnosis (always show when snap available)
+		if report.Snap != nil {
+			la := report.Snap.Global.CPU.LoadAvg
+			nc := report.Snap.Global.CPU.NumCPUs
+			if nc == 0 {
+				nc = 1
+			}
+			lpct := la.Load1 / float64(nc) * 100
+			var loadLabel string
+			switch {
+			case lpct < 50:
+				loadLabel = "light"
+			case lpct < 100:
+				loadLabel = "moderate"
+			case lpct < 150:
+				loadLabel = "overloaded"
+			default:
+				loadLabel = "severely overloaded"
+			}
+			fmt.Printf(" %sLOAD AVG:%s   %.2f / %.2f / %.2f  (%d CPUs → %.0f%% capacity = %s)\n",
+				B, R, la.Load1, la.Load5, la.Load15, nc, lpct, loadLabel)
+			if report.Rates != nil {
+				fmt.Printf(" %sCPU BUSY:%s   %.1f%%", B, R, report.Rates.CPUBusyPct)
+				if report.Rates.CPUBusyPct > 0 && la.Load1 > 0 {
+					// Show if load is CPU-driven or IO-driven
+					dCount := 0
+					rCount := 0
+					for _, p := range report.Snap.Processes {
+						if p.State == "D" {
+							dCount++
+						} else if p.State == "R" {
+							rCount++
+						}
+					}
+					if dCount > 0 && report.Rates.CPUBusyPct < 50 {
+						fmt.Printf("  (low CPU but high load → %d IO-blocked processes inflating load)", dCount)
+					} else if rCount > nc {
+						fmt.Printf("  (%d running threads competing for %d cores)", rCount, nc)
+					}
+				}
+				fmt.Println()
+			}
+		}
+
+		// Evidence with actual values
+		if result.Narrative != nil && len(result.Narrative.Evidence) > 0 {
+			fmt.Printf("\n %sEVIDENCE:%s\n", B, R)
+			for _, ev := range result.Narrative.Evidence {
+				fmt.Printf("   %s•%s %s\n", FBYel, R, ev)
+			}
+			fmt.Println()
+		} else if len(result.PrimaryEvidence) > 0 {
+			fmt.Printf("\n %sEVIDENCE:%s\n", B, R)
+			for _, ev := range result.PrimaryEvidence {
+				fmt.Printf("   %s•%s %s\n", FBYel, R, ev)
+			}
+			fmt.Println()
+		}
+
+		// Culprit process
+		culpritName := result.PrimaryAppName
+		if culpritName == "" {
+			culpritName = result.PrimaryProcess
+		}
+		if culpritName != "" {
+			fmt.Printf(" %sCULPRIT:%s    %s (PID %d)\n", B, R, culpritName, result.PrimaryPID)
+		}
+
+		// Top offenders per domain
+		if len(result.CPUOwners) > 0 && result.PrimaryBottleneck != "" {
+			fmt.Printf(" %sTOP CPU:%s    ", B, R)
+			for i, o := range result.CPUOwners {
+				if i >= 3 {
+					break
+				}
+				if i > 0 {
+					fmt.Print(", ")
+				}
+				fmt.Printf("%s (%.1f%%)", o.Name, o.Pct)
+			}
+			fmt.Println()
+		}
+		if len(result.MemOwners) > 0 {
+			fmt.Printf(" %sTOP MEM:%s    ", B, R)
+			for i, o := range result.MemOwners {
+				if i >= 3 {
+					break
+				}
+				if i > 0 {
+					fmt.Print(", ")
+				}
+				if o.Value != "" {
+					fmt.Printf("%s (%s)", o.Name, o.Value)
+				} else {
+					fmt.Printf("%s (%.1f%%)", o.Name, o.Pct)
+				}
+			}
+			fmt.Println()
+		}
+
+		// Temporal chain (what happened first)
+		if result.TemporalChain != nil && result.TemporalChain.Summary != "" {
+			fmt.Printf("\n %sTIMELINE:%s   %s\n", B, R, result.TemporalChain.Summary)
+		}
+
+		// Causal chain
+		if result.CausalChain != "" {
+			fmt.Printf(" %sCAUSAL:%s     %s\n", B, R, result.CausalChain)
+		}
+
+		// Suggested actions
+		if len(result.Actions) > 0 {
+			fmt.Printf("\n %s%sRECOMMENDED ACTIONS:%s\n", B, FBGrn, R)
+			for i, a := range result.Actions {
+				if i >= 5 {
+					break
+				}
+				fmt.Printf("   %s%d.%s %s\n", B, i+1, R, a.Summary)
+				if a.Command != "" {
+					fmt.Printf("      %s$ %s%s\n", D, a.Command, R)
+				}
+			}
+		}
+
+		// Exhaustion predictions
+		if len(result.Exhaustions) > 0 {
+			for _, ex := range result.Exhaustions {
+				if ex.EstMinutes > 0 && ex.EstMinutes < 60 {
+					fmt.Printf("\n %s%s⚠ EXHAUSTION WARNING:%s %s at %.0f%% — estimated %.0f minutes to full\n",
+						B, FBRed, R, ex.Resource, ex.CurrentPct, ex.EstMinutes)
+				}
 			}
 		}
 	}
