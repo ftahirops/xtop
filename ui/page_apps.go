@@ -158,13 +158,17 @@ func renderAppsDetail(app model.AppInstance, iw int) string {
 
 	// MySQL handles its own diagnostics; other apps use generic health issues
 	if app.AppType != "mysql" && len(app.HealthIssues) > 0 {
-		sb.WriteString("  " + titleStyle.Render("HEALTH ISSUES") + "\n")
-		sb.WriteString(boxTop(iw) + "\n")
-		for _, issue := range app.HealthIssues {
-			row := "  " + critStyle.Render("\u25cf") + " " + valueStyle.Render(issue)
-			sb.WriteString(boxRow(row, iw) + "\n")
+		if app.AppType == "haproxy" && app.HasDeepMetrics {
+			sb.WriteString(renderHAProxyHealthIssues(app, iw))
+		} else {
+			sb.WriteString("  " + titleStyle.Render("HEALTH ISSUES") + "\n")
+			sb.WriteString(boxTop(iw) + "\n")
+			for _, issue := range app.HealthIssues {
+				row := "  " + critStyle.Render("\u25cf") + " " + valueStyle.Render(issue)
+				sb.WriteString(boxRow(row, iw) + "\n")
+			}
+			sb.WriteString(boxBot(iw) + "\n\n")
 		}
-		sb.WriteString(boxBot(iw) + "\n\n")
 	}
 
 	sb.WriteString(pageFooter("b:Back  d:Summary  Y:Apps"))
@@ -2856,6 +2860,141 @@ func haRender3Col(sb *strings.Builder, iw, thirdW int, c1, c2, c3 []kv) {
 		if i < len(c3) && c3[i].Val != "" { s3 = fmt.Sprintf("  %s %s", styledPad(dimStyle.Render(c3[i].Key+":"), 12), valueStyle.Render(c3[i].Val)) }
 		sb.WriteString(boxRow(fmt.Sprintf("%s%s%s", styledPad(s1, thirdW), styledPad(s2, thirdW), s3), iw) + "\n")
 	}
+}
+
+// renderHAProxyHealthIssues shows health issues with per-backend error attribution.
+func renderHAProxyHealthIssues(app model.AppInstance, iw int) string {
+	dm := app.DeepMetrics
+	var sb strings.Builder
+
+	sb.WriteString("  " + titleStyle.Render("HEALTH ISSUES") + "\n")
+	sb.WriteString(boxTop(iw) + "\n")
+
+	// Show each issue
+	for _, issue := range app.HealthIssues {
+		row := "  " + critStyle.Render("\u25cf") + " " + valueStyle.Render(issue)
+		sb.WriteString(boxRow(row, iw) + "\n")
+	}
+
+	// Per-backend error breakdown — find backends with errors
+	type beErr struct {
+		name     string
+		addr     string
+		e5xx     int64
+		eresp    int64 // response errors = econ (connection errors on backend side)
+		econ     int64
+		retries  int64
+		cliAbrt  int64
+		rtime    int64
+		reqTot   int64
+		health   string
+	}
+	beCount, _ := strconv.Atoi(dm["be_detail_count"])
+	var problemBEs []beErr
+	for i := 0; i < beCount; i++ {
+		pre := fmt.Sprintf("be_detail_%d_", i)
+		e5, _ := strconv.ParseInt(dm[pre+"5xx"], 10, 64)
+		ec, _ := strconv.ParseInt(dm[pre+"econ"], 10, 64)
+		ret, _ := strconv.ParseInt(dm[pre+"retries"], 10, 64)
+		ca, _ := strconv.ParseInt(dm[pre+"cli_abrt"], 10, 64)
+		rt, _ := strconv.ParseInt(dm[pre+"rtime"], 10, 64)
+		rq, _ := strconv.ParseInt(dm[pre+"req_total"], 10, 64)
+		h := dm[pre+"health"]
+		if e5 > 0 || ec > 0 || ret > 0 || ca > 100 || h == "DEGRADED" || h == "CRITICAL" || h == "DOWN" || h == "SLOW" {
+			problemBEs = append(problemBEs, beErr{
+				name: dm[pre+"name"], addr: dm[pre+"addr"],
+				e5xx: e5, econ: ec, retries: ret, cliAbrt: ca,
+				rtime: rt, reqTot: rq, health: h,
+			})
+		}
+	}
+
+	if len(problemBEs) > 0 {
+		sb.WriteString(boxMid(iw) + "\n")
+		sb.WriteString(boxRow("  "+titleStyle.Render("ERROR BREAKDOWN BY BACKEND"), iw) + "\n")
+		sb.WriteString(boxMid(iw) + "\n")
+
+		cN, cA, c5, cE, cR, cAb, cRt := 20, 18, 10, 10, 9, 12, 9
+		hdr := fmt.Sprintf("  %s%s%s%s%s%s%s%s",
+			styledPad(dimStyle.Render("Backend"), cN),
+			styledPad(dimStyle.Render("Endpoint"), cA),
+			styledPad(dimStyle.Render("5xx"), c5),
+			styledPad(dimStyle.Render("ConnErr"), cE),
+			styledPad(dimStyle.Render("Retries"), cR),
+			styledPad(dimStyle.Render("Cli Aborts"), cAb),
+			styledPad(dimStyle.Render("Resp ms"), cRt),
+			dimStyle.Render("Status"))
+		sb.WriteString(boxRow(hdr, iw) + "\n")
+
+		for _, be := range problemBEs {
+			name := be.name
+			if len(name) > 18 { name = name[:18] }
+			addr := be.addr
+			if len(addr) > 16 { addr = addr[:16] }
+
+			// 5xx with percentage
+			e5str := haFmtNum(fmt.Sprintf("%d", be.e5xx))
+			if be.reqTot > 0 && be.e5xx > 0 {
+				pct := float64(be.e5xx) / float64(be.reqTot) * 100
+				e5str += fmt.Sprintf(" %.1f%%", pct)
+				if pct > 1 {
+					e5str = critStyle.Render(e5str)
+				} else {
+					e5str = warnStyle.Render(e5str)
+				}
+			} else {
+				e5str = dimStyle.Render("—")
+			}
+
+			ecStr := dimStyle.Render("—")
+			if be.econ > 0 { ecStr = critStyle.Render(haFmtNum(fmt.Sprintf("%d", be.econ))) }
+
+			retStr := dimStyle.Render("—")
+			if be.retries > 0 { retStr = warnStyle.Render(haFmtNum(fmt.Sprintf("%d", be.retries))) }
+
+			abStr := dimStyle.Render("—")
+			if be.cliAbrt > 100 { abStr = warnStyle.Render(haFmtNum(fmt.Sprintf("%d", be.cliAbrt))) }
+
+			rtStr := fmt.Sprintf("%dms", be.rtime)
+			if be.rtime > 5000 {
+				rtStr = critStyle.Render(rtStr)
+			} else if be.rtime > 2000 {
+				rtStr = warnStyle.Render(rtStr)
+			} else {
+				rtStr = valueStyle.Render(rtStr)
+			}
+
+			var hBadge string
+			switch be.health {
+			case "HEALTHY":  hBadge = okStyle.Render("OK")
+			case "DEGRADED": hBadge = warnStyle.Render("DEGRADED")
+			case "SLOW":     hBadge = warnStyle.Render("SLOW")
+			case "CRITICAL": hBadge = critStyle.Render("CRITICAL")
+			case "DOWN":     hBadge = critStyle.Render("DOWN")
+			default:         hBadge = dimStyle.Render(be.health)
+			}
+
+			row := fmt.Sprintf("  %s%s%s%s%s%s%s%s",
+				styledPad(valueStyle.Render(name), cN),
+				styledPad(dimStyle.Render(addr), cA),
+				styledPad(e5str, c5),
+				styledPad(ecStr, cE),
+				styledPad(retStr, cR),
+				styledPad(abStr, cAb),
+				styledPad(rtStr, cRt),
+				hBadge)
+			sb.WriteString(boxRow(row, iw) + "\n")
+		}
+	}
+
+	// RCA summary — the root cause explanation
+	if rca := dm["rca_summary"]; rca != "" && rca != "No significant issues detected" {
+		sb.WriteString(boxMid(iw) + "\n")
+		sb.WriteString(boxRow("  "+titleStyle.Render("ROOT CAUSE")+"  "+valueStyle.Render(rca), iw) + "\n")
+	}
+
+	sb.WriteString(boxBot(iw) + "\n\n")
+	return sb.String()
 }
 
 // HAProxy UI helpers
