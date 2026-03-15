@@ -269,7 +269,7 @@ func NewModel(ticker engine.Ticker, interval time.Duration, dataDir string) Mode
 		frozenPIDs:     make(map[int]frozenProc),
 		showOnboarding:  showOnboarding,
 		beginnerMode:    beginnerMode,
-		appsViewCompact: true,
+		appsViewCompact: false,
 		overviewCompact: true,
 	}
 }
