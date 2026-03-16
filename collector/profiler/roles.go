@@ -4,7 +4,7 @@ package profiler
 
 import (
 	"os"
-	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -22,7 +22,7 @@ type roleScore struct {
 
 // detectRole determines the server's primary role using weighted scoring.
 // Instant shortcuts for known panels/hypervisors, then multi-signal scoring.
-func detectRole(snap *model.Snapshot) (model.ServerRole, string, string) {
+func detectRole(snap *model.Snapshot, uptimeSec int64, numCPUs int) (model.ServerRole, string, string) {
 	// ── Instant shortcuts: panel/hypervisor detection ──
 	if role, detail, panel := detectPanel(); role != model.RoleUnknown {
 		return role, detail, panel
@@ -50,7 +50,7 @@ func detectRole(snap *model.Snapshot) (model.ServerRole, string, string) {
 	totalRAMMB := float64(snap.Global.Memory.Total) / (1024 * 1024)
 
 	// Signal 1: Process presence & resource dominance (heaviest weight)
-	scoreByProcessPresence(snap, scores, totalRAMMB)
+	scoreByProcessPresence(snap, scores, totalRAMMB, uptimeSec, numCPUs)
 
 	// Signal 2: App detection data (CPU%, RAM, connections)
 	scoreByAppInstances(snap, scores, totalRAMMB)
@@ -67,8 +67,8 @@ func detectRole(snap *model.Snapshot) (model.ServerRole, string, string) {
 	// Signal 6: Filesystem/disk usage patterns
 	scoreByDiskPatterns(snap, scores)
 
-	// Signal 7: System configuration clues
-	scoreBySystemConfig(scores)
+	// Signal 7: System configuration clues (no subprocess spawning)
+	scoreBySystemConfig(snap, scores)
 
 	// ── Pick the winner ──
 	var sorted []*roleScore
@@ -91,7 +91,6 @@ func detectRole(snap *model.Snapshot) (model.ServerRole, string, string) {
 	if len(sorted) >= 2 {
 		ratio := sorted[1].score / winner.score
 		if ratio > 0.80 && winner.role != model.RoleContainer {
-			// Build mixed detail from top roles
 			detail := buildMixedDetail(sorted)
 			return model.RoleMixed, detail, ""
 		}
@@ -109,8 +108,7 @@ func detectRole(snap *model.Snapshot) (model.ServerRole, string, string) {
 }
 
 // ── Signal 1: Process-level presence & resource usage ──
-func scoreByProcessPresence(snap *model.Snapshot, scores map[model.ServerRole]*roleScore, totalRAMMB float64) {
-	// Aggregate per-category resource usage from processes
+func scoreByProcessPresence(snap *model.Snapshot, scores map[model.ServerRole]*roleScore, totalRAMMB float64, uptimeSec int64, numCPUs int) {
 	type category struct {
 		role    model.ServerRole
 		cpuPct  float64
@@ -153,7 +151,6 @@ func scoreByProcessPresence(snap *model.Snapshot, scores map[model.ServerRole]*r
 		"puma": {"app", model.RoleAppServer}, "unicorn": {"app", model.RoleAppServer},
 	}
 
-	uptimeSec := readSystemUptime()
 	for _, proc := range snap.Processes {
 		mapping, ok := processRoleMap[proc.Comm]
 		if !ok {
@@ -164,27 +161,24 @@ func scoreByProcessPresence(snap *model.Snapshot, scores map[model.ServerRole]*r
 			c = &category{role: mapping.role}
 			cats[mapping.cat] = c
 		}
-		// Compute lifetime CPU%
-		if uptimeSec > 0 {
+		// Lifetime CPU% normalized by core count
+		if uptimeSec > 0 && numCPUs > 0 {
 			ticks := proc.UTime + proc.STime
-			c.cpuPct += float64(ticks) / 100.0 / float64(uptimeSec) * 100.0
+			c.cpuPct += float64(ticks) / 100.0 / float64(uptimeSec) / float64(numCPUs) * 100.0
 		}
 		c.rssMB += float64(proc.RSS) / (1024 * 1024)
 		c.count++
 		c.threads += proc.NumThreads
 	}
 
-	// Score each category based on resource dominance
 	for _, c := range cats {
 		rs := scores[c.role]
 		if rs == nil {
 			continue
 		}
 
-		// Process count: each process adds a small score
 		rs.score += float64(c.count) * 1.0
 
-		// CPU dominance: high CPU = strong signal
 		if c.cpuPct > 50 {
 			rs.score += 25
 		} else if c.cpuPct > 20 {
@@ -195,7 +189,6 @@ func scoreByProcessPresence(snap *model.Snapshot, scores map[model.ServerRole]*r
 			rs.score += 3
 		}
 
-		// RAM dominance: percentage of total RAM
 		if totalRAMMB > 0 {
 			ramPct := c.rssMB / totalRAMMB * 100
 			if ramPct > 50 {
@@ -209,7 +202,6 @@ func scoreByProcessPresence(snap *model.Snapshot, scores map[model.ServerRole]*r
 			}
 		}
 
-		// Thread count: high threads = heavy workload (strong signal for DB/app)
 		if c.threads > 200 {
 			rs.score += 5
 		} else if c.threads > 50 {
@@ -242,7 +234,6 @@ func scoreByAppInstances(snap *model.Snapshot, scores map[model.ServerRole]*role
 			continue
 		}
 
-		// App-detected CPU% is delta-based (accurate)
 		if app.CPUPct > 30 {
 			rs.score += 15
 		} else if app.CPUPct > 10 {
@@ -251,7 +242,6 @@ func scoreByAppInstances(snap *model.Snapshot, scores map[model.ServerRole]*role
 			rs.score += 3
 		}
 
-		// App RAM dominance
 		if totalRAMMB > 0 {
 			ramPct := app.RSSMB / totalRAMMB * 100
 			if ramPct > 40 {
@@ -263,7 +253,6 @@ func scoreByAppInstances(snap *model.Snapshot, scores map[model.ServerRole]*role
 			}
 		}
 
-		// Connection count: strong signal for web/LB/DB
 		if app.Connections > 1000 {
 			rs.score += 10
 		} else if app.Connections > 200 {
@@ -275,40 +264,52 @@ func scoreByAppInstances(snap *model.Snapshot, scores map[model.ServerRole]*role
 }
 
 // ── Signal 3: Log activity analysis ──
-// High error/warn rates indicate heavy service usage.
+// Ordered slice for deterministic prefix matching (fixes non-deterministic map iteration).
+var logRoleMatchers = []struct {
+	prefix string
+	role   model.ServerRole
+}{
+	// Longer/more specific prefixes first
+	{"php-fpm", model.RoleWebServer},
+	{"apache2", model.RoleWebServer},
+	{"httpd", model.RoleWebServer},
+	{"litespeed", model.RoleWebServer},
+	{"mysql", model.RoleDatabase},
+	{"mariadb", model.RoleDatabase},
+	{"postgresql", model.RoleDatabase},
+	{"mongodb", model.RoleDatabase},
+	{"redis", model.RoleDatabase},
+	{"nginx", model.RoleWebServer},
+	{"apache", model.RoleWebServer},
+	{"haproxy", model.RoleLoadBalancer},
+	{"traefik", model.RoleLoadBalancer},
+	{"postfix", model.RoleMailServer},
+	{"dovecot", model.RoleMailServer},
+	{"exim4", model.RoleMailServer},
+	{"exim", model.RoleMailServer},
+	{"docker", model.RoleContainer},
+	{"containerd", model.RoleContainer},
+	{"kubelet", model.RoleContainer},
+}
+
 func scoreByLogActivity(snap *model.Snapshot, scores map[model.ServerRole]*roleScore) {
 	if snap.Global.Logs.Services == nil {
 		return
 	}
 
-	logRoleMap := map[string]model.ServerRole{
-		"mysql": model.RoleDatabase, "mariadb": model.RoleDatabase,
-		"postgresql": model.RoleDatabase, "mongodb": model.RoleDatabase,
-		"redis": model.RoleDatabase,
-		"nginx": model.RoleWebServer, "apache": model.RoleWebServer,
-		"apache2": model.RoleWebServer, "httpd": model.RoleWebServer,
-		"php-fpm": model.RoleWebServer, "litespeed": model.RoleWebServer,
-		"haproxy": model.RoleLoadBalancer, "traefik": model.RoleLoadBalancer,
-		"postfix": model.RoleMailServer, "dovecot": model.RoleMailServer,
-		"exim": model.RoleMailServer, "exim4": model.RoleMailServer,
-		"docker": model.RoleContainer, "containerd": model.RoleContainer,
-		"kubelet": model.RoleContainer,
-	}
-
 	for _, svc := range snap.Global.Logs.Services {
 		svcName := strings.ToLower(svc.Name)
-		// Try exact match first, then prefix match
-		role, ok := logRoleMap[svcName]
-		if !ok {
-			for prefix, r := range logRoleMap {
-				if strings.HasPrefix(svcName, prefix) || strings.Contains(svcName, prefix) {
-					role = r
-					ok = true
-					break
-				}
+
+		var role model.ServerRole
+		matched := false
+		for _, m := range logRoleMatchers {
+			if svcName == m.prefix || strings.HasPrefix(svcName, m.prefix) {
+				role = m.role
+				matched = true
+				break
 			}
 		}
-		if !ok {
+		if !matched {
 			continue
 		}
 
@@ -317,17 +318,15 @@ func scoreByLogActivity(snap *model.Snapshot, scores map[model.ServerRole]*roleS
 			continue
 		}
 
-		// Log activity = service is actively doing work
 		totalActivity := svc.ErrorRate + svc.WarnRate
 		if totalActivity > 10 {
-			rs.score += 8 // very active service
+			rs.score += 8
 		} else if totalActivity > 1 {
 			rs.score += 4
 		} else if totalActivity > 0 {
 			rs.score += 1
 		}
 
-		// High error count = service under heavy load or misconfigured
 		if svc.TotalErrors > 1000 {
 			rs.score += 5
 		} else if svc.TotalErrors > 100 {
@@ -338,35 +337,28 @@ func scoreByLogActivity(snap *model.Snapshot, scores map[model.ServerRole]*roleS
 
 // ── Signal 4: Network patterns ──
 func scoreByNetworkPatterns(snap *model.Snapshot, scores map[model.ServerRole]*roleScore) {
-	// Analyze listening ports for service signatures
 	webPorts := map[int]bool{80: true, 443: true, 8080: true, 8443: true}
 	dbPorts := map[int]bool{3306: true, 5432: true, 27017: true, 6379: true, 11211: true}
 	mailPorts := map[int]bool{25: true, 587: true, 993: true, 995: true, 143: true, 110: true, 465: true}
-	lbPorts := map[int]bool{80: true, 443: true, 8404: true, 1936: true} // HAProxy stats ports
 
 	webCount := 0
 	dbCount := 0
 	mailCount := 0
 
-	if snap.Global.Security.NewPorts != nil {
-		for _, p := range snap.Global.Security.NewPorts {
-			if webPorts[p.Port] {
-				webCount++
-			}
-			if dbPorts[p.Port] {
-				dbCount++
-			}
-			if mailPorts[p.Port] {
-				mailCount++
-			}
-			if lbPorts[p.Port] {
-				// Only count LB if haproxy/traefik owns it
-				if strings.Contains(strings.ToLower(p.Comm), "haproxy") ||
-					strings.Contains(strings.ToLower(p.Comm), "traefik") ||
-					strings.Contains(strings.ToLower(p.Comm), "envoy") {
-					scores[model.RoleLoadBalancer].score += 5
-				}
-			}
+	for _, p := range snap.Global.Security.NewPorts {
+		if webPorts[p.Port] {
+			webCount++
+		}
+		if dbPorts[p.Port] {
+			dbCount++
+		}
+		if mailPorts[p.Port] {
+			mailCount++
+		}
+		// LB: only if haproxy/traefik/envoy owns the port
+		comm := strings.ToLower(p.Comm)
+		if comm == "haproxy" || comm == "traefik" || comm == "envoy" {
+			scores[model.RoleLoadBalancer].score += 5
 		}
 	}
 
@@ -377,14 +369,12 @@ func scoreByNetworkPatterns(snap *model.Snapshot, scores map[model.ServerRole]*r
 		scores[model.RoleDatabase].score += float64(dbCount) * 3
 	}
 	if mailCount >= 3 {
-		scores[model.RoleMailServer].score += 10 // multiple mail ports = strong signal
+		scores[model.RoleMailServer].score += 10
 	} else if mailCount > 0 {
 		scores[model.RoleMailServer].score += float64(mailCount) * 2
 	}
 
-	// Total connection count from conntrack
 	if snap.Global.Conntrack.Count > 10000 {
-		// High connection count favors web/LB
 		scores[model.RoleWebServer].score += 3
 		scores[model.RoleLoadBalancer].score += 3
 	}
@@ -393,6 +383,9 @@ func scoreByNetworkPatterns(snap *model.Snapshot, scores map[model.ServerRole]*r
 // ── Signal 5: Container orchestration depth ──
 func scoreByContainerDepth(snap *model.Snapshot, scores map[model.ServerRole]*roleScore) {
 	rs := scores[model.RoleContainer]
+
+	// Track only Signal 5's own contribution (not other signals)
+	var signal5Score float64
 
 	k8sComponents := 0
 	dockerContainers := 0
@@ -408,62 +401,56 @@ func scoreByContainerDepth(snap *model.Snapshot, scores map[model.ServerRole]*ro
 		}
 	}
 
-	// K8s node: very strong container signal
 	if k8sComponents >= 2 {
-		rs.score += 30
+		signal5Score += 30
 		rs.detail = "Kubernetes Node"
 	} else if k8sComponents == 1 {
-		rs.score += 15
+		signal5Score += 15
 		rs.detail = "Kubernetes Node"
 	}
 
-	// Docker with many containers: strong signal
 	if dockerContainers > 10 {
-		rs.score += 15
+		signal5Score += 15
 		if rs.detail == "" {
 			rs.detail = "Docker Host"
 		}
 	} else if dockerContainers > 3 {
-		rs.score += 8
+		signal5Score += 8
 		if rs.detail == "" {
 			rs.detail = "Docker Host"
 		}
 	}
 
-	// Docker swarm
 	for _, app := range snap.Global.Apps.Instances {
 		if app.AppType == "docker" && app.OrchestrationType == "swarm" {
-			rs.score += 10
+			signal5Score += 10
 			rs.detail = "Docker Swarm"
 			break
 		}
 	}
 
-	// Penalty: if containerd/dockerd exists but is just infrastructure support
-	// (e.g. only 1-2 containers), reduce score
+	// Penalty: containerd/dockerd exists but just infrastructure support
+	// Only penalize Signal 5's contribution, not scores from other signals
 	if dockerContainers <= 1 && k8sComponents == 0 {
-		// Docker exists but isn't the primary workload — penalize
-		rs.score *= 0.3
+		signal5Score *= 0.3
 	}
+
+	rs.score += signal5Score
 }
 
 // ── Signal 6: Disk/filesystem patterns ──
 func scoreByDiskPatterns(snap *model.Snapshot, scores map[model.ServerRole]*roleScore) {
-	// Large data directories suggest DB or storage role
 	for _, mount := range snap.Global.Mounts {
-		// DB data directories
 		if strings.Contains(mount.MountPoint, "/var/lib/mysql") ||
 			strings.Contains(mount.MountPoint, "/var/lib/postgresql") ||
 			strings.Contains(mount.MountPoint, "/var/lib/mongodb") {
 			scores[model.RoleDatabase].score += 5
 		}
-		// Mail spool
 		if strings.Contains(mount.MountPoint, "/var/mail") ||
 			strings.Contains(mount.MountPoint, "/var/spool/mail") ||
 			strings.Contains(mount.MountPoint, "/var/vmail") {
 			scores[model.RoleMailServer].score += 5
 		}
-		// Docker/container data
 		if strings.Contains(mount.MountPoint, "/var/lib/docker") ||
 			strings.Contains(mount.MountPoint, "/var/lib/containerd") ||
 			strings.Contains(mount.MountPoint, "/var/lib/kubelet") {
@@ -471,7 +458,6 @@ func scoreByDiskPatterns(snap *model.Snapshot, scores map[model.ServerRole]*role
 		}
 	}
 
-	// Check for common DB data directories existence
 	dbDataDirs := []string{
 		"/var/lib/mysql", "/var/lib/postgresql",
 		"/var/lib/mongodb", "/var/lib/redis",
@@ -482,7 +468,6 @@ func scoreByDiskPatterns(snap *model.Snapshot, scores map[model.ServerRole]*role
 		}
 	}
 
-	// Check for mail queue directories
 	mailDirs := []string{"/var/spool/postfix", "/var/mail", "/var/vmail"}
 	for _, dir := range mailDirs {
 		if info, err := os.Stat(dir); err == nil && info.IsDir() {
@@ -492,20 +477,28 @@ func scoreByDiskPatterns(snap *model.Snapshot, scores map[model.ServerRole]*role
 }
 
 // ── Signal 7: System configuration clues ──
-func scoreBySystemConfig(scores map[model.ServerRole]*roleScore) {
+// No subprocess spawning — uses /proc reads only.
+func scoreBySystemConfig(snap *model.Snapshot, scores map[model.ServerRole]*roleScore) {
 	// IP forwarding → router
 	if v, err := util.ReadFileString("/proc/sys/net/ipv4/ip_forward"); err == nil {
 		if strings.TrimSpace(v) == "1" {
 			scores[model.RoleRouter].score += 10
-			// Check iptables for NAT/forwarding rules
-			out, err := exec.Command("iptables", "-t", "nat", "-S").Output()
-			if err == nil && strings.Contains(string(out), "MASQUERADE") {
-				scores[model.RoleRouter].score += 10
-				scores[model.RoleRouter].detail = "NAT Gateway"
-			}
-			out, err = exec.Command("iptables", "-S").Output()
-			if err == nil && strings.Count(string(out), "\n") > 10 {
-				scores[model.RoleRouter].score += 5
+			scores[model.RoleRouter].detail = "IP forwarding enabled"
+
+			// Check for NAT rules via /proc/net/nf_conntrack or ip_tables_names
+			if data, err := util.ReadFileString("/proc/net/ip_tables_names"); err == nil {
+				tables := strings.Fields(strings.TrimSpace(data))
+				for _, t := range tables {
+					if t == "nat" {
+						scores[model.RoleRouter].score += 8
+						scores[model.RoleRouter].detail = "NAT Gateway"
+						break
+					}
+				}
+				// Many filter tables = firewall/router
+				if len(tables) >= 3 {
+					scores[model.RoleRouter].score += 3
+				}
 			}
 		}
 	}
@@ -514,7 +507,6 @@ func scoreBySystemConfig(scores map[model.ServerRole]*roleScore) {
 	mysqlConfigs := []string{"/etc/mysql/my.cnf", "/etc/my.cnf"}
 	for _, path := range mysqlConfigs {
 		if data, err := util.ReadFileString(path); err == nil {
-			// Large innodb_buffer_pool = dedicated DB
 			if strings.Contains(data, "innodb_buffer_pool_size") {
 				scores[model.RoleDatabase].score += 3
 			}
@@ -526,22 +518,25 @@ func scoreBySystemConfig(scores map[model.ServerRole]*roleScore) {
 		scores[model.RoleDatabase].score += 3
 	}
 
-	// Web hosting indicators
-	webHostDirs := []string{
-		"/var/www", "/home/*/public_html",
+	// Web hosting indicators (fixed: use filepath.Glob for wildcard paths)
+	staticWebDirs := []string{
+		"/var/www",
 		"/etc/nginx/sites-enabled", "/etc/apache2/sites-enabled",
 		"/etc/httpd/conf.d",
 	}
-	for _, dir := range webHostDirs {
+	for _, dir := range staticWebDirs {
 		if info, err := os.Stat(dir); err == nil && info.IsDir() {
 			scores[model.RoleWebServer].score += 2
 		}
+	}
+	// Glob-based check for user web directories
+	if matches, err := filepath.Glob("/home/*/public_html"); err == nil && len(matches) > 0 {
+		scores[model.RoleWebServer].score += float64(len(matches)) * 2
 	}
 }
 
 // ── Panel detection (instant — file existence) ──
 func detectPanel() (model.ServerRole, string, string) {
-	// Plesk
 	if _, err := os.Stat("/usr/local/psa/version"); err == nil {
 		ver, _ := util.ReadFileString("/usr/local/psa/version")
 		ver = strings.TrimSpace(ver)
@@ -551,28 +546,19 @@ func detectPanel() (model.ServerRole, string, string) {
 		}
 		return model.RoleWebHosting, detail, "Plesk"
 	}
-
-	// cPanel
 	if _, err := os.Stat("/usr/local/cpanel/version"); err == nil {
 		ver, _ := util.ReadFileString("/usr/local/cpanel/version")
 		return model.RoleWebHosting, "cPanel " + strings.TrimSpace(ver), "cPanel"
 	}
-
-	// CyberPanel
 	if _, err := os.Stat("/usr/local/CyberCP"); err == nil {
 		return model.RoleWebHosting, "CyberPanel", "CyberPanel"
 	}
-
-	// DirectAdmin
 	if _, err := os.Stat("/usr/local/directadmin"); err == nil {
 		return model.RoleWebHosting, "DirectAdmin", "DirectAdmin"
 	}
-
-	// Webmin
 	if _, err := os.Stat("/etc/webmin"); err == nil {
 		return model.RoleWebHosting, "Webmin", "Webmin"
 	}
-
 	return model.RoleUnknown, "", ""
 }
 

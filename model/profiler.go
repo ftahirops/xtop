@@ -5,7 +5,7 @@ const (
 	RoleWebHosting ServerRole = "web_hosting"
 	RoleHypervisor ServerRole = "hypervisor"
 	RoleContainer  ServerRole = "container_platform"
-	RoleDatabase   ServerRole = "database_server"
+	RoleDatabase   ServerRole = RoleDatabaseServer // alias for consistency
 	RoleMixed      ServerRole = "mixed_workload"
 	RoleUnknown    ServerRole = "unknown"
 )

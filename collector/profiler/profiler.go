@@ -3,7 +3,6 @@
 package profiler
 
 import (
-	"fmt"
 	"os"
 	"sort"
 	"strconv"
@@ -16,10 +15,10 @@ import (
 
 // ProfilerCollector detects server role and audits configuration.
 type ProfilerCollector struct {
-	mu        sync.Mutex
-	lastRun   time.Time
-	cached    *model.ServerProfile
-	interval  time.Duration
+	mu       sync.Mutex
+	lastRun  time.Time
+	cached   *model.ServerProfile
+	interval time.Duration
 }
 
 // NewProfilerCollector creates a new profiler.
@@ -42,11 +41,18 @@ func (p *ProfilerCollector) Collect(snap *model.Snapshot) error {
 
 	profile := &model.ServerProfile{}
 
+	// Read uptime once for the entire profiler tick
+	uptimeSec := readSystemUptime()
+	numCPUs := snap.Global.CPU.NumCPUs
+	if numCPUs < 1 {
+		numCPUs = 1
+	}
+
 	// Step 1: Detect server role
-	profile.Role, profile.RoleDetail, profile.PanelName = detectRole(snap)
+	profile.Role, profile.RoleDetail, profile.PanelName = detectRole(snap, uptimeSec, numCPUs)
 
 	// Step 2: Build service census from running processes
-	profile.Services = buildServiceCensus(snap)
+	profile.Services = buildServiceCensus(snap, uptimeSec, numCPUs)
 
 	// Step 3: Run audit rules per domain
 	profile.Domains = runAudit(profile.Role, snap)
@@ -156,7 +162,7 @@ func computeDomainScore(rules []model.AuditRule) (int, int) {
 }
 
 // buildServiceCensus groups processes by service and aggregates resource usage.
-func buildServiceCensus(snap *model.Snapshot) []model.ServiceCensus {
+func buildServiceCensus(snap *model.Snapshot, uptimeSec int64, numCPUs int) []model.ServiceCensus {
 	type svcAccum struct {
 		display string
 		cpu     float64
@@ -198,8 +204,6 @@ func buildServiceCensus(snap *model.Snapshot) []model.ServiceCensus {
 		"pveproxy": "proxmox", "pvedaemon": "proxmox", "pvestatd": "proxmox",
 	}
 
-	uptimeSec := readSystemUptime()
-
 	for _, proc := range snap.Processes {
 		svcName, ok := knownComms[proc.Comm]
 		if !ok {
@@ -213,10 +217,10 @@ func buildServiceCensus(snap *model.Snapshot) []model.ServiceCensus {
 			a = &svcAccum{display: svcName}
 			m[svcName] = a
 		}
-		// Compute proper lifetime CPU% = (total_ticks / CLK_TCK) / uptime * 100
+		// Lifetime CPU% normalized by core count: (ticks/CLK_TCK) / uptime / numCPUs * 100
 		totalTicks := proc.UTime + proc.STime
 		if uptimeSec > 0 {
-			a.cpu += float64(totalTicks) / 100.0 / float64(uptimeSec) * 100.0
+			a.cpu += float64(totalTicks) / 100.0 / float64(uptimeSec) / float64(numCPUs) * 100.0
 		}
 		a.rss += float64(proc.RSS) / (1024 * 1024)
 		a.procs++
@@ -257,21 +261,4 @@ func readSystemUptime() int64 {
 		return 0
 	}
 	return int64(f)
-}
-
-// readProcConnections counts established TCP connections for a PID via /proc/PID/net/tcp.
-func readProcConnections(pid int) int {
-	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/net/tcp", pid))
-	if err != nil {
-		return 0
-	}
-	lines := strings.Split(string(data), "\n")
-	count := 0
-	for _, line := range lines[1:] {
-		fields := strings.Fields(line)
-		if len(fields) >= 4 && fields[3] == "01" { // 01 = ESTABLISHED
-			count++
-		}
-	}
-	return count
 }

@@ -4,7 +4,6 @@ package profiler
 
 import (
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/ftahirops/xtop/model"
@@ -64,10 +63,10 @@ func auditIO(role model.ServerRole, snap *model.Snapshot) []model.AuditRule {
 			ra := parseUint(strings.TrimSpace(raStr))
 			recRA := uint64(256)
 			if role == model.RoleDatabase {
-				recRA = 256 // databases do random IO, large readahead wastes
+				recRA = 256
 			}
 			if isNVMe {
-				recRA = 128 // NVMe is fast enough, don't waste cache
+				recRA = 128
 			}
 
 			status := model.RulePass
@@ -106,32 +105,29 @@ func auditIO(role model.ServerRole, snap *model.Snapshot) []model.AuditRule {
 		}
 	}
 
-	// Check mount options for important filesystems
-	for _, mount := range snap.Global.Mounts {
-		if mount.MountPoint == "/" || mount.MountPoint == "/var" || mount.MountPoint == "/home" {
-			result = append(result, checkMountOptions(mount, role)...)
+	// Check mount options — read /proc/mounts once for all mounts
+	mountData, err := util.ReadFileString("/proc/mounts")
+	if err == nil {
+		for _, mount := range snap.Global.Mounts {
+			if mount.MountPoint == "/" || mount.MountPoint == "/var" || mount.MountPoint == "/home" {
+				result = append(result, checkMountOptions(mount, mountData)...)
+			}
 		}
 	}
 
 	return result
 }
 
-func checkMountOptions(mount model.MountStats, role model.ServerRole) []model.AuditRule {
+func checkMountOptions(mount model.MountStats, mountData string) []model.AuditRule {
 	var result []model.AuditRule
 
-	// Read /proc/mounts for options
-	data, err := util.ReadFileString("/proc/mounts")
-	if err != nil {
-		return nil
-	}
-	for _, line := range strings.Split(data, "\n") {
+	for _, line := range strings.Split(mountData, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 4 || fields[1] != mount.MountPoint {
 			continue
 		}
 		opts := fields[3]
 
-		// Check noatime
 		if !strings.Contains(opts, "noatime") && !strings.Contains(opts, "relatime") {
 			result = append(result, model.AuditRule{
 				Domain:      model.OptDomainIO,
@@ -145,7 +141,6 @@ func checkMountOptions(mount model.MountStats, role model.ServerRole) []model.Au
 			})
 		}
 
-		// Check for nobarrier on ext4/xfs (only for non-battery-backed systems)
 		if strings.Contains(opts, "barrier=0") || strings.Contains(opts, "nobarrier") {
 			result = append(result, model.AuditRule{
 				Domain:      model.OptDomainIO,
@@ -164,8 +159,33 @@ func checkMountOptions(mount model.MountStats, role model.ServerRole) []model.Au
 	return result
 }
 
+// isPartition uses string-based heuristics to detect partitions.
+// NVMe: nvme0n1p1 has "p" followed by digits after the base device.
+// SCSI/virtio: sda1, vda1 end with digits after letters.
 func isPartition(name string) bool {
-	// Check if this is a partition by looking for the device dir
-	_, err := os.Stat(fmt.Sprintf("/sys/block/%s", name))
-	return err != nil
+	if len(name) == 0 {
+		return false
+	}
+	if strings.HasPrefix(name, "nvme") {
+		// nvme0n1 = disk, nvme0n1p1 = partition
+		// Find "n<digits>" then check for "p<digits>" after
+		idx := strings.LastIndex(name, "p")
+		if idx <= 0 {
+			return false
+		}
+		// Everything after 'p' must be digits
+		after := name[idx+1:]
+		if len(after) == 0 {
+			return false
+		}
+		for _, c := range after {
+			if c < '0' || c > '9' {
+				return false
+			}
+		}
+		return true
+	}
+	// sda1, vda1, xvda1 — last char is a digit
+	last := name[len(name)-1]
+	return last >= '0' && last <= '9'
 }
