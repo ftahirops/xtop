@@ -886,6 +886,7 @@ type GlobalMetrics struct {
 	Apps           AppMetrics
 	AppIdentities  map[int]AppIdentity // PID → resolved identity
 	Proxmox        *ProxmoxMetrics     // non-nil only on Proxmox hosts
+	Profile        *ServerProfile      // system profiler (optimization audit)
 }
 
 // CgroupMetrics holds metrics for a single cgroup.

@@ -35,10 +35,11 @@ const (
 	PageIntel
 	PageProxmox
 	PageApps
+	PageProfiler
 	pageCount
 )
 
-var pageNames = []string{"Overview", "CPU", "Memory", "IO", "Network", "CGroups", "Timeline", "Events", "Probe", "Thresholds", "DiskGuard", "Security", "Diagnostics", "Intel", "Proxmox", "Apps"}
+var pageNames = []string{"Overview", "CPU", "Memory", "IO", "Network", "CGroups", "Timeline", "Events", "Probe", "Thresholds", "DiskGuard", "Security", "Diagnostics", "Intel", "Proxmox", "Apps", "Profiler"}
 
 // signalEntry describes a signal option in the signal menu.
 type signalEntry struct {
@@ -204,6 +205,10 @@ type Model struct {
 	dockerStackCursor    int    // cursor in stack list (detail mode)
 	dockerStackExpanded  []bool // which stacks are expanded
 	dockerContainerIdx   int    // selected container within expanded stack
+
+	// Profiler page collapsible sections
+	profSectionCursor   int     // 0-5: highlighted domain
+	profSectionExpanded [6]bool // which domains are expanded
 
 	// Network page collapsible sections
 	netSectionCursor   int      // 0-5: highlighted section
@@ -777,6 +782,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			}
+			// Profiler page: expand/collapse section
+			if m.page == PageProfiler {
+				cur := m.profSectionCursor
+				if m.profSectionExpanded[cur] {
+					m.profSectionExpanded[cur] = false
+				} else {
+					for i := range m.profSectionExpanded {
+						m.profSectionExpanded[i] = false
+					}
+					m.profSectionExpanded[cur] = true
+				}
+				return m, nil
+			}
 			// Security page: expand/collapse section
 			if m.page == PageSecurity {
 				cur := m.secSectionCursor
@@ -833,6 +851,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.intelSectionCursor = (m.intelSectionCursor + 1) % intelSecCount
 			} else if m.page == PageSecurity {
 				m.secSectionCursor = (m.secSectionCursor + 1) % secSecCount
+			} else if m.page == PageProfiler {
+				m.profSectionCursor = (m.profSectionCursor + 1) % 6
 			}
 		case "shift+tab":
 			if m.explainPanelOpen {
@@ -849,6 +869,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.intelSectionCursor = (m.intelSectionCursor + intelSecCount - 1) % intelSecCount
 			} else if m.page == PageSecurity {
 				m.secSectionCursor = (m.secSectionCursor + secSecCount - 1) % secSecCount
+			} else if m.page == PageProfiler {
+				m.profSectionCursor = (m.profSectionCursor + 5) % 6
 			}
 		case "P":
 			// Export incident report as markdown (was E, moved for explain panel)
@@ -902,6 +924,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.secSectionExpanded[i] = true
 				}
 				m.secManualOverride = true
+			} else if m.page == PageProfiler {
+				for i := range m.profSectionExpanded {
+					m.profSectionExpanded[i] = true
+				}
 			} else if m.beginnerMode {
 				m.beginnerMode = false
 				_ = saveExperienceLevel("advanced")
@@ -940,6 +966,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.secSectionExpanded[i] = false
 				}
 				m.secManualOverride = false
+			} else if m.page == PageProfiler {
+				for i := range m.profSectionExpanded {
+					m.profSectionExpanded[i] = false
+				}
 			}
 		case "d":
 			// Toggle compact/detail view
@@ -1021,6 +1051,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.page = PageApps
 			m.scroll = 0
 			m.appsDetailMode = false
+		case "o", "O":
+			// Navigate to System Profiler page
+			m.page = PageProfiler
+			m.scroll = 0
+			m.explainScroll = 0
 		case "f", "F":
 			// Network page: toggle focus mode
 			if m.page == PageNetwork {
@@ -1248,6 +1283,8 @@ func (m Model) View() string {
 				m.appsViewCompact,
 				m.dockerStackCursor, m.dockerStackExpanded, m.dockerContainerIdx,
 				renderW, m.height)
+		case PageProfiler:
+			content = renderProfilerPage(m.snap, m.profSectionCursor, m.profSectionExpanded, renderW, m.height)
 		}
 	}
 
@@ -1327,6 +1364,8 @@ func (m Model) renderStatusBar(scrollInfo string) string {
 			return "Z"
 		case PageApps:
 			return "Y"
+		case PageProfiler:
+			return "O"
 		default:
 			return fmt.Sprintf("%d", i)
 		}

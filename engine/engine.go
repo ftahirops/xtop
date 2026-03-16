@@ -8,6 +8,7 @@ import (
 	cgcollector "github.com/ftahirops/xtop/collector/cgroup"
 	bpf "github.com/ftahirops/xtop/collector/ebpf"
 	"github.com/ftahirops/xtop/collector/apps"
+	"github.com/ftahirops/xtop/collector/profiler"
 	rt "github.com/ftahirops/xtop/collector/runtime"
 	"github.com/ftahirops/xtop/model"
 )
@@ -66,6 +67,9 @@ func NewEngine(historySize, intervalSec int) *Engine {
 	appm.Register(apps.NewPHPFPMModule())
 	appm.Register(apps.NewPleskModule())
 	reg.Add(appm)
+
+	// System Profiler — role detection + optimization audit (runs after Apps)
+	reg.Add(profiler.NewProfilerCollector())
 
 	return &Engine{
 		registry:      reg,
