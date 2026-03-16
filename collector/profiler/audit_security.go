@@ -26,6 +26,9 @@ func auditSecurity(role model.ServerRole, snap *model.Snapshot) []model.AuditRul
 	// Check kernel security
 	result = append(result, auditKernelSecurity()...)
 
+	// Check hardening
+	result = append(result, auditHardening()...)
+
 	return result
 }
 
@@ -40,8 +43,10 @@ func auditSSH(role model.ServerRole) []model.AuditRule {
 	// Check PermitRootLogin
 	rootLogin := sshConfigValue(sshConf, "PermitRootLogin", "yes")
 	status := model.RulePass
+	rootFix := ""
 	if rootLogin == "yes" {
 		status = model.RuleFail
+		rootFix = "sed -i 's/^#*PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config && systemctl restart sshd"
 	} else if rootLogin == "prohibit-password" || rootLogin == "without-password" {
 		status = model.RulePass
 	}
@@ -52,6 +57,7 @@ func auditSSH(role model.ServerRole) []model.AuditRule {
 		Current:     rootLogin,
 		Recommended: "prohibit-password or no",
 		Impact:      "Root account vulnerable to brute-force SSH attacks",
+		Fix:         rootFix,
 		Status:      status,
 		Weight:      10,
 	})
@@ -59,8 +65,10 @@ func auditSSH(role model.ServerRole) []model.AuditRule {
 	// Check PasswordAuthentication
 	passAuth := sshConfigValue(sshConf, "PasswordAuthentication", "yes")
 	status = model.RulePass
+	passFix := ""
 	if passAuth == "yes" {
 		status = model.RuleWarn
+		passFix = "sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config && systemctl restart sshd"
 	}
 	result = append(result, model.AuditRule{
 		Domain:      model.OptDomainSecurity,
@@ -69,6 +77,7 @@ func auditSSH(role model.ServerRole) []model.AuditRule {
 		Current:     passAuth,
 		Recommended: "no (use SSH keys only)",
 		Impact:      "Password brute-force vulnerability",
+		Fix:         passFix,
 		Status:      status,
 		Weight:      8,
 	})
@@ -77,8 +86,10 @@ func auditSSH(role model.ServerRole) []model.AuditRule {
 	maxAuth := sshConfigValue(sshConf, "MaxAuthTries", "6")
 	v := parseUint(maxAuth)
 	status = model.RulePass
+	authFix := ""
 	if v > 4 {
 		status = model.RuleWarn
+		authFix = "sed -i 's/^#*MaxAuthTries.*/MaxAuthTries 3/' /etc/ssh/sshd_config && systemctl restart sshd"
 	}
 	result = append(result, model.AuditRule{
 		Domain:      model.OptDomainSecurity,
@@ -87,6 +98,7 @@ func auditSSH(role model.ServerRole) []model.AuditRule {
 		Current:     maxAuth,
 		Recommended: "3-4",
 		Impact:      "More brute-force attempts before disconnect",
+		Fix:         authFix,
 		Status:      status,
 		Weight:      3,
 	})
@@ -101,8 +113,10 @@ func auditFail2ban() []model.AuditRule {
 		// Not running — check if installed
 		_, err2 := os.Stat("/etc/fail2ban/fail2ban.conf")
 		current := "not installed"
+		fix := "apt-get install -y fail2ban && systemctl enable --now fail2ban"
 		if err2 == nil {
 			current = "installed but not running"
+			fix = "systemctl enable --now fail2ban"
 		}
 		return []model.AuditRule{{
 			Domain:      model.OptDomainSecurity,
@@ -111,6 +125,7 @@ func auditFail2ban() []model.AuditRule {
 			Current:     current,
 			Recommended: "running",
 			Impact:      "No automated brute-force protection",
+			Fix:         fix,
 			Status:      model.RuleFail,
 			Weight:      8,
 		}}
@@ -155,9 +170,11 @@ func auditFirewall(role model.ServerRole, snap *model.Snapshot) []model.AuditRul
 
 	status := model.RulePass
 	current := "active"
+	fwFix := ""
 	if !firewallActive {
 		status = model.RuleFail
 		current = "no firewall detected"
+		fwFix = "apt-get install -y ufw && ufw default deny incoming && ufw default allow outgoing && ufw allow ssh && ufw --force enable"
 	}
 	result = append(result, model.AuditRule{
 		Domain:      model.OptDomainSecurity,
@@ -166,6 +183,7 @@ func auditFirewall(role model.ServerRole, snap *model.Snapshot) []model.AuditRul
 		Current:     current,
 		Recommended: "active",
 		Impact:      "All ports exposed to network without filtering",
+		Fix:         fwFix,
 		Status:      status,
 		Weight:      10,
 	})
@@ -265,6 +283,17 @@ func auditKernelSecurity() []model.AuditRule {
 		if err != nil {
 			continue
 		}
+		st := c.check(val)
+		fix := ""
+		if st != model.RulePass {
+			// Extract sysctl name from path
+			sysName := strings.TrimPrefix(c.path, "/proc/sys/")
+			sysName = strings.ReplaceAll(sysName, "/", ".")
+			recVal := extractFirstNumber(c.rec)
+			if recVal != "" {
+				fix = fmt.Sprintf("sysctl -w %s=%s && echo '%s=%s' >> /etc/sysctl.d/99-xtop.conf", sysName, recVal, sysName, recVal)
+			}
+		}
 		result = append(result, model.AuditRule{
 			Domain:      model.OptDomainSecurity,
 			Name:        c.name,
@@ -272,8 +301,85 @@ func auditKernelSecurity() []model.AuditRule {
 			Current:     strings.TrimSpace(val),
 			Recommended: c.rec,
 			Impact:      c.impact,
-			Status:      c.check(val),
+			Fix:         fix,
+			Status:      st,
 			Weight:      c.weight,
+		})
+	}
+
+	return result
+}
+
+func auditHardening() []model.AuditRule {
+	var result []model.AuditRule
+
+	// Check core dumps
+	if data, err := util.ReadFileString("/proc/sys/kernel/core_pattern"); err == nil {
+		pattern := strings.TrimSpace(data)
+		if !strings.HasPrefix(pattern, "|") && pattern != "" && pattern != "/dev/null" {
+			result = append(result, model.AuditRule{
+				Domain:      model.OptDomainSecurity,
+				Name:        "core_dumps",
+				Description: "Core dump handling",
+				Current:     pattern,
+				Recommended: "|/bin/false or /dev/null",
+				Impact:      "Core dumps may expose sensitive data (passwords, keys)",
+				Fix:         "echo '|/bin/false' > /proc/sys/kernel/core_pattern && echo 'kernel.core_pattern=|/bin/false' >> /etc/sysctl.d/99-xtop.conf",
+				Status:      model.RuleWarn,
+				Weight:      3,
+			})
+		}
+	}
+
+	// Check /tmp mounted noexec
+	mountData, _ := util.ReadFileString("/proc/mounts")
+	for _, line := range strings.Split(mountData, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 4 && fields[1] == "/tmp" {
+			if !strings.Contains(fields[3], "noexec") {
+				result = append(result, model.AuditRule{
+					Domain:      model.OptDomainSecurity,
+					Name:        "tmp_noexec",
+					Description: "/tmp mounted with noexec",
+					Current:     "exec allowed on /tmp",
+					Recommended: "noexec mount option on /tmp",
+					Impact:      "Attackers can execute uploaded malware from /tmp",
+					Fix:         "mount -o remount,noexec /tmp",
+					Status:      model.RuleWarn,
+					Weight:      5,
+				})
+			}
+			break
+		}
+	}
+
+	// Check unattended upgrades
+	unattendedInstalled := false
+	unattendedPaths := []string{
+		"/etc/apt/apt.conf.d/20auto-upgrades",
+		"/etc/apt/apt.conf.d/50unattended-upgrades",
+	}
+	for _, p := range unattendedPaths {
+		if _, err := os.Stat(p); err == nil {
+			unattendedInstalled = true
+			break
+		}
+	}
+	if _, err := os.Stat("/etc/yum/yum-cron.conf"); err == nil {
+		unattendedInstalled = true
+	}
+
+	if !unattendedInstalled {
+		result = append(result, model.AuditRule{
+			Domain:      model.OptDomainSecurity,
+			Name:        "auto_updates",
+			Description: "Automatic security updates",
+			Current:     "not configured",
+			Recommended: "unattended-upgrades or yum-cron",
+			Impact:      "Known vulnerabilities remain unpatched",
+			Fix:         "apt-get install -y unattended-upgrades && dpkg-reconfigure -plow unattended-upgrades",
+			Status:      model.RuleWarn,
+			Weight:      5,
 		})
 	}
 

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/ftahirops/xtop/model"
+	"github.com/ftahirops/xtop/util"
 )
 
 func auditApps(role model.ServerRole, snap *model.Snapshot) []model.AuditRule {
@@ -29,6 +30,9 @@ func auditApps(role model.ServerRole, snap *model.Snapshot) []model.AuditRule {
 			result = append(result, auditPostgres(app, snap)...)
 		}
 	}
+
+	// Check ulimits for important services
+	result = append(result, auditServiceLimits(snap)...)
 
 	return result
 }
@@ -57,10 +61,15 @@ func auditMySQL(app model.AppInstance, snap *model.Snapshot) []model.AuditRule {
 		}
 
 		status := model.RulePass
+		bpFix := ""
 		if bpPct < recPct/2 {
 			status = model.RuleFail
+			recBytes := int64(totalMB * recPct / 100 * 1024 * 1024)
+			bpFix = fmt.Sprintf("SET GLOBAL innodb_buffer_pool_size = %d; # Also update my.cnf", recBytes)
 		} else if bpPct < recPct*0.8 {
 			status = model.RuleWarn
+			recBytes := int64(totalMB * recPct / 100 * 1024 * 1024)
+			bpFix = fmt.Sprintf("SET GLOBAL innodb_buffer_pool_size = %d; # Also update my.cnf", recBytes)
 		}
 
 		result = append(result, model.AuditRule{
@@ -70,6 +79,7 @@ func auditMySQL(app model.AppInstance, snap *model.Snapshot) []model.AuditRule {
 			Current:     fmt.Sprintf("%.0fM (%.0f%% of RAM)", bpMB, bpPct),
 			Recommended: fmt.Sprintf("%.0f%% of RAM (~%.0fM)", recPct, totalMB*recPct/100),
 			Impact:      "Database reads hit disk instead of cache",
+			Fix:         bpFix,
 			Status:      status,
 			Weight:      10,
 		})
@@ -79,11 +89,14 @@ func auditMySQL(app model.AppInstance, snap *model.Snapshot) []model.AuditRule {
 	if mcStr, ok := dm["max_connections"]; ok {
 		mc, _ := strconv.Atoi(mcStr)
 		status := model.RulePass
+		mcFix := ""
 		if mc > 500 {
 			status = model.RuleWarn
+			mcFix = "SET GLOBAL max_connections = 300;"
 		}
 		if mc > 1000 {
 			status = model.RuleFail
+			mcFix = "SET GLOBAL max_connections = 300;"
 		}
 		result = append(result, model.AuditRule{
 			Domain:      model.OptDomainApps,
@@ -92,6 +105,7 @@ func auditMySQL(app model.AppInstance, snap *model.Snapshot) []model.AuditRule {
 			Current:     mcStr,
 			Recommended: "100-300 (use connection pooling for more)",
 			Impact:      "Each connection uses ~10MB RAM; too many causes OOM",
+			Fix:         mcFix,
 			Status:      status,
 			Weight:      5,
 		})
@@ -107,6 +121,7 @@ func auditMySQL(app model.AppInstance, snap *model.Snapshot) []model.AuditRule {
 				Current:     "ON",
 				Recommended: "OFF (deprecated since MySQL 5.7, removed in 8.0)",
 				Impact:      "Global mutex contention on every query",
+				Fix:         "SET GLOBAL query_cache_type = OFF; # Remove from my.cnf",
 				Status:      model.RuleFail,
 				Weight:      8,
 			})
@@ -123,6 +138,7 @@ func auditMySQL(app model.AppInstance, snap *model.Snapshot) []model.AuditRule {
 				Current:     "disabled",
 				Recommended: "enabled (for performance monitoring)",
 				Impact:      "Cannot identify slow queries causing performance issues",
+				Fix:         "SET GLOBAL slow_query_log = 'ON'; SET GLOBAL long_query_time = 1;",
 				Status:      model.RuleWarn,
 				Weight:      3,
 			})
@@ -143,11 +159,14 @@ func auditNginx(app model.AppInstance, snap *model.Snapshot) []model.AuditRule {
 	if wc, ok := dm["worker_connections"]; ok {
 		v, _ := strconv.Atoi(wc)
 		status := model.RulePass
+		wcFix := ""
 		if v < 4096 {
 			status = model.RuleWarn
+			wcFix = "Edit /etc/nginx/nginx.conf: worker_connections 4096; then nginx -s reload"
 		}
 		if v < 1024 {
 			status = model.RuleFail
+			wcFix = "Edit /etc/nginx/nginx.conf: worker_connections 4096; then nginx -s reload"
 		}
 		result = append(result, model.AuditRule{
 			Domain:      model.OptDomainApps,
@@ -156,6 +175,7 @@ func auditNginx(app model.AppInstance, snap *model.Snapshot) []model.AuditRule {
 			Current:     wc,
 			Recommended: ">=4096",
 			Impact:      "Connection limit reached under moderate traffic",
+			Fix:         wcFix,
 			Status:      status,
 			Weight:      8,
 		})
@@ -242,6 +262,7 @@ func auditPHPFPM(app model.AppInstance, snap *model.Snapshot) []model.AuditRule 
 					Current:     fmt.Sprintf("%d/%d workers (%.0f%%)", ws.Workers, ws.MaxWorkers, usePct),
 					Recommended: "<80% utilization",
 					Impact:      "Requests queued waiting for free PHP worker",
+					Fix:         "Increase pm.max_children in pool config and reload PHP-FPM",
 					Status:      status,
 					Weight:      8,
 				})
@@ -269,6 +290,7 @@ func auditRedis(app model.AppInstance, snap *model.Snapshot) []model.AuditRule {
 				Current:     "noeviction (writes fail at limit)",
 				Recommended: "allkeys-lru or volatile-lru",
 				Impact:      "Redis returns errors instead of evicting old data",
+				Fix:         "redis-cli CONFIG SET maxmemory-policy allkeys-lru",
 				Status:      model.RuleWarn,
 				Weight:      5,
 			})
@@ -286,6 +308,7 @@ func auditRedis(app model.AppInstance, snap *model.Snapshot) []model.AuditRule {
 			Current:     "no persistence configured",
 			Recommended: "RDB snapshots or AOF for durability",
 			Impact:      "All data lost on Redis restart",
+			Fix:         "redis-cli CONFIG SET save '900 1 300 10'",
 			Status:      model.RuleWarn,
 			Weight:      5,
 		})
@@ -301,6 +324,7 @@ func auditRedis(app model.AppInstance, snap *model.Snapshot) []model.AuditRule {
 				Current:     "0.0.0.0 (all interfaces)",
 				Recommended: "127.0.0.1 (localhost only)",
 				Impact:      "Redis accessible from external network without auth",
+				Fix:         "redis-cli CONFIG SET bind 127.0.0.1 && systemctl restart redis",
 				Status:      model.RuleFail,
 				Weight:      10,
 			})
@@ -326,10 +350,14 @@ func auditPostgres(app model.AppInstance, snap *model.Snapshot) []model.AuditRul
 		sbPct := sbMB / totalMB * 100
 
 		status := model.RulePass
+		pgFix := ""
+		recMB := int(totalMB * 25 / 100)
 		if sbPct < 15 {
 			status = model.RuleFail
+			pgFix = fmt.Sprintf("Edit postgresql.conf: shared_buffers = '%dMB'; then pg_ctl restart", recMB)
 		} else if sbPct < 20 {
 			status = model.RuleWarn
+			pgFix = fmt.Sprintf("Edit postgresql.conf: shared_buffers = '%dMB'; then pg_ctl restart", recMB)
 		}
 
 		result = append(result, model.AuditRule{
@@ -339,9 +367,68 @@ func auditPostgres(app model.AppInstance, snap *model.Snapshot) []model.AuditRul
 			Current:     fmt.Sprintf("%.0fM (%.0f%% of RAM)", sbMB, sbPct),
 			Recommended: "25% of RAM",
 			Impact:      "Suboptimal cache hit ratio, more disk reads",
+			Fix:         pgFix,
 			Status:      status,
 			Weight:      10,
 		})
+	}
+
+	return result
+}
+
+func auditServiceLimits(snap *model.Snapshot) []model.AuditRule {
+	var result []model.AuditRule
+
+	// Services that need high file limits
+	importantServices := map[string]int{
+		"mysql": 65535, "mysqld": 65535, "mariadbd": 65535,
+		"postgres": 65535,
+		"nginx": 65535,
+		"apache2": 65535, "httpd": 65535,
+		"haproxy": 65535,
+		"redis-server": 65535,
+		"mongod": 65535,
+	}
+
+	checked := map[string]bool{}
+	for _, proc := range snap.Processes {
+		needed, ok := importantServices[proc.Comm]
+		if !ok || checked[proc.Comm] {
+			continue
+		}
+		checked[proc.Comm] = true
+
+		// Read /proc/PID/limits
+		limitsPath := fmt.Sprintf("/proc/%d/limits", proc.PID)
+		data, err := util.ReadFileString(limitsPath)
+		if err != nil {
+			continue
+		}
+
+		for _, line := range strings.Split(data, "\n") {
+			if !strings.HasPrefix(line, "Max open files") {
+				continue
+			}
+			fields := strings.Fields(line)
+			// "Max open files    1024    1048576    files"
+			if len(fields) >= 5 {
+				soft := parseUint(fields[3])
+				if int(soft) < needed {
+					result = append(result, model.AuditRule{
+						Domain:      model.OptDomainApps,
+						Name:        fmt.Sprintf("ulimit.nofile[%s]", proc.Comm),
+						Description: fmt.Sprintf("Open file limit for %s (PID %d)", proc.Comm, proc.PID),
+						Current:     fmt.Sprintf("%d (soft)", soft),
+						Recommended: fmt.Sprintf(">=%d", needed),
+						Impact:      "'Too many open files' errors under load",
+						Fix:         fmt.Sprintf("echo '%s soft nofile %d\n%s hard nofile %d' >> /etc/security/limits.d/%s.conf", proc.Comm, needed, proc.Comm, needed, proc.Comm),
+						Status:      model.RuleFail,
+						Weight:      8,
+					})
+				}
+			}
+			break
+		}
 	}
 
 	return result

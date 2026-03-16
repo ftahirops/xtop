@@ -8,7 +8,7 @@ import (
 	"github.com/ftahirops/xtop/model"
 )
 
-func renderProfilerPage(snap *model.Snapshot, cursor int, expanded [6]bool, w, h int) string {
+func renderProfilerPage(snap *model.Snapshot, cursor int, expanded [7]bool, w, h int) string {
 	iw := pageInnerW(w)
 	var sb strings.Builder
 
@@ -43,6 +43,7 @@ func renderProfilerPage(snap *model.Snapshot, cursor int, expanded [6]bool, w, h
 	domains := []model.OptDomain{
 		model.OptDomainKernel, model.OptDomainNetwork, model.OptDomainMemory,
 		model.OptDomainIO, model.OptDomainSecurity, model.OptDomainApps,
+		model.OptDomainInfra,
 	}
 
 	for i, domain := range domains {
@@ -266,6 +267,11 @@ func renderProfilerDomainRules(ds *model.DomainScore, iw int) string {
 			sb.WriteString(fmt.Sprintf("           %s %s\n",
 				dimStyle.Render("Impact:"),
 				orangeStyle.Render(r.Impact)))
+			if r.Fix != "" {
+				sb.WriteString(fmt.Sprintf("           %s %s\n",
+					dimStyle.Render("Fix:"),
+					okStyle.Render(r.Fix)))
+			}
 		}
 	}
 

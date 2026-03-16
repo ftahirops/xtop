@@ -89,6 +89,8 @@ func domainWeight(d model.OptDomain) int {
 		return 15
 	case model.OptDomainApps:
 		return 15
+	case model.OptDomainInfra:
+		return 15
 	}
 	return 10
 }
@@ -101,6 +103,7 @@ func runAudit(role model.ServerRole, snap *model.Snapshot) []model.DomainScore {
 		model.OptDomainIO,
 		model.OptDomainSecurity,
 		model.OptDomainApps,
+		model.OptDomainInfra,
 	}
 
 	var scores []model.DomainScore
@@ -119,6 +122,8 @@ func runAudit(role model.ServerRole, snap *model.Snapshot) []model.DomainScore {
 			rules = auditSecurity(role, snap)
 		case model.OptDomainApps:
 			rules = auditApps(role, snap)
+		case model.OptDomainInfra:
+			rules = auditInfra(role, snap)
 		}
 
 		score, issues := computeDomainScore(rules)

@@ -207,8 +207,8 @@ type Model struct {
 	dockerContainerIdx   int    // selected container within expanded stack
 
 	// Profiler page collapsible sections
-	profSectionCursor   int     // 0-5: highlighted domain
-	profSectionExpanded [6]bool // which domains are expanded
+	profSectionCursor   int     // 0-6: highlighted domain
+	profSectionExpanded [7]bool // which domains are expanded
 
 	// Network page collapsible sections
 	netSectionCursor   int      // 0-5: highlighted section
@@ -852,7 +852,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else if m.page == PageSecurity {
 				m.secSectionCursor = (m.secSectionCursor + 1) % secSecCount
 			} else if m.page == PageProfiler {
-				m.profSectionCursor = (m.profSectionCursor + 1) % 6
+				m.profSectionCursor = (m.profSectionCursor + 1) % 7
 			}
 		case "shift+tab":
 			if m.explainPanelOpen {
@@ -870,7 +870,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else if m.page == PageSecurity {
 				m.secSectionCursor = (m.secSectionCursor + secSecCount - 1) % secSecCount
 			} else if m.page == PageProfiler {
-				m.profSectionCursor = (m.profSectionCursor + 5) % 6
+				m.profSectionCursor = (m.profSectionCursor + 6) % 7
 			}
 		case "P":
 			// Export incident report as markdown (was E, moved for explain panel)

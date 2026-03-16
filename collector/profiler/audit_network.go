@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/ftahirops/xtop/model"
+	"github.com/ftahirops/xtop/util"
 )
 
 func auditNetwork(role model.ServerRole, snap *model.Snapshot) []model.AuditRule {
@@ -184,7 +185,7 @@ func auditNetwork(role model.ServerRole, snap *model.Snapshot) []model.AuditRule
 		},
 	}
 
-	result := evalSysctlRules(rules, role)
+	result := evalSysctlRules(rules, role, model.OptDomainNetwork)
 
 	// Conntrack-specific checks
 	if snap.Global.Conntrack.Max > 0 {
@@ -193,12 +194,15 @@ func auditNetwork(role model.ServerRole, snap *model.Snapshot) []model.AuditRule
 		usePct := float64(ct.Count) / float64(ct.Max) * 100
 		rec := "nf_conntrack_max >= 4x current usage"
 		status := model.RulePass
+		ctFix := ""
 		if usePct > 75 {
 			status = model.RuleFail
 			rec = fmt.Sprintf("%d (current at %.0f%% of max)", ct.Max*4, usePct)
+			ctFix = fmt.Sprintf("sysctl -w net.netfilter.nf_conntrack_max=%d && echo 'net.netfilter.nf_conntrack_max=%d' >> /etc/sysctl.d/99-xtop.conf", ct.Max*4, ct.Max*4)
 		} else if usePct > 50 {
 			status = model.RuleWarn
 			rec = fmt.Sprintf("%d (at %.0f%%)", ct.Max*2, usePct)
+			ctFix = fmt.Sprintf("sysctl -w net.netfilter.nf_conntrack_max=%d && echo 'net.netfilter.nf_conntrack_max=%d' >> /etc/sysctl.d/99-xtop.conf", ct.Max*2, ct.Max*2)
 		}
 		result = append(result, model.AuditRule{
 			Domain:      model.OptDomainNetwork,
@@ -207,6 +211,7 @@ func auditNetwork(role model.ServerRole, snap *model.Snapshot) []model.AuditRule
 			Current:     fmt.Sprintf("%d (%.0f%% used)", ct.Max, usePct),
 			Recommended: rec,
 			Impact:      "New connections silently dropped when table full",
+			Fix:         ctFix,
 			Status:      status,
 			Weight:      8,
 		})
@@ -216,12 +221,15 @@ func auditNetwork(role model.ServerRole, snap *model.Snapshot) []model.AuditRule
 			ratio := ct.Max / ct.Buckets
 			status := model.RulePass
 			rec := "max/buckets ratio <= 4"
+			bucketFix := ""
 			if ratio > 8 {
 				status = model.RuleFail
 				rec = fmt.Sprintf("Increase buckets to %d", ct.Max/4)
+				bucketFix = fmt.Sprintf("echo %d > /sys/module/nf_conntrack/parameters/hashsize", ct.Max/4)
 			} else if ratio > 4 {
 				status = model.RuleWarn
 				rec = fmt.Sprintf("Increase buckets to %d", ct.Max/4)
+				bucketFix = fmt.Sprintf("echo %d > /sys/module/nf_conntrack/parameters/hashsize", ct.Max/4)
 			}
 			result = append(result, model.AuditRule{
 				Domain:      model.OptDomainNetwork,
@@ -230,9 +238,37 @@ func auditNetwork(role model.ServerRole, snap *model.Snapshot) []model.AuditRule
 				Current:     fmt.Sprintf("%d (ratio %d:1)", ct.Buckets, ratio),
 				Recommended: rec,
 				Impact:      "Hash collisions causing slow conntrack lookups",
+				Fix:         bucketFix,
 				Status:      status,
 				Weight:      5,
 			})
+		}
+	}
+
+	// NIC-level tuning checks
+	for _, iface := range snap.Global.Network {
+		name := iface.Name
+		if name == "lo" || strings.HasPrefix(name, "veth") || strings.HasPrefix(name, "br-") || strings.HasPrefix(name, "docker") {
+			continue
+		}
+
+		// Check TX queue length
+		txQueuePath := fmt.Sprintf("/sys/class/net/%s/tx_queue_len", name)
+		if txStr, err := util.ReadFileString(txQueuePath); err == nil {
+			txQ := parseUint(strings.TrimSpace(txStr))
+			if txQ < 1000 && (role == model.RoleWebHosting || role == model.RoleLoadBalancer) {
+				result = append(result, model.AuditRule{
+					Domain:      model.OptDomainNetwork,
+					Name:        fmt.Sprintf("nic.txqueuelen[%s]", name),
+					Description: fmt.Sprintf("TX queue length for %s", name),
+					Current:     fmt.Sprintf("%d", txQ),
+					Recommended: ">=1000",
+					Impact:      "Packet drops during traffic bursts",
+					Fix:         fmt.Sprintf("ip link set %s txqueuelen 10000", name),
+					Status:      model.RuleWarn,
+					Weight:      3,
+				})
+			}
 		}
 	}
 

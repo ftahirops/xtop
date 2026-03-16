@@ -45,6 +45,10 @@ func auditIO(role model.ServerRole, snap *model.Snapshot) []model.AuditRule {
 			}
 		}
 
+		schedFix := ""
+		if status != model.RulePass {
+			schedFix = fmt.Sprintf("echo %s > /sys/block/%s/queue/scheduler", recommended, name)
+		}
 		result = append(result, model.AuditRule{
 			Domain:      model.OptDomainIO,
 			Name:        fmt.Sprintf("io_scheduler[%s]", name),
@@ -52,6 +56,7 @@ func auditIO(role model.ServerRole, snap *model.Snapshot) []model.AuditRule {
 			Current:     currentSched,
 			Recommended: recommended,
 			Impact:      "Suboptimal IO ordering increases latency",
+			Fix:         schedFix,
 			Status:      status,
 			Weight:      8,
 		})
@@ -70,8 +75,10 @@ func auditIO(role model.ServerRole, snap *model.Snapshot) []model.AuditRule {
 			}
 
 			status := model.RulePass
+			raFix := ""
 			if ra > recRA*4 {
 				status = model.RuleWarn
+				raFix = fmt.Sprintf("echo %d > /sys/block/%s/queue/read_ahead_kb", recRA, name)
 			}
 			result = append(result, model.AuditRule{
 				Domain:      model.OptDomainIO,
@@ -80,6 +87,7 @@ func auditIO(role model.ServerRole, snap *model.Snapshot) []model.AuditRule {
 				Current:     fmt.Sprintf("%d", ra),
 				Recommended: fmt.Sprintf("<=%d", recRA),
 				Impact:      "Excessive readahead wastes page cache on random IO workloads",
+				Fix:         raFix,
 				Status:      status,
 				Weight:      3,
 			})
@@ -98,6 +106,7 @@ func auditIO(role model.ServerRole, snap *model.Snapshot) []model.AuditRule {
 					Current:     fmt.Sprintf("%d", nr),
 					Recommended: ">=256",
 					Impact:      "IO queue bottleneck under heavy concurrent access",
+					Fix:         fmt.Sprintf("echo 256 > /sys/block/%s/queue/nr_requests", name),
 					Status:      model.RuleWarn,
 					Weight:      5,
 				})
@@ -136,6 +145,7 @@ func checkMountOptions(mount model.MountStats, mountData string) []model.AuditRu
 				Current:     "atime (full access time tracking)",
 				Recommended: "noatime or relatime",
 				Impact:      "Extra write IO for every file read",
+				Fix:         fmt.Sprintf("Add 'noatime' to mount options in /etc/fstab and run 'mount -o remount,noatime %s'", mount.MountPoint),
 				Status:      model.RuleWarn,
 				Weight:      5,
 			})

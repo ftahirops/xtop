@@ -45,6 +45,7 @@ const (
 	OptDomainIO       OptDomain = "IO"
 	OptDomainSecurity OptDomain = "Security"
 	OptDomainApps     OptDomain = "Apps"
+	OptDomainInfra    OptDomain = "Infrastructure"
 )
 
 // AuditRule is a single optimization check result.
@@ -55,6 +56,7 @@ type AuditRule struct {
 	Current     string     `json:"current"`
 	Recommended string     `json:"recommended"`
 	Impact      string     `json:"impact"`
+	Fix         string     `json:"fix,omitempty"` // one-liner remediation command
 	Status      RuleStatus `json:"status"`
 	Weight      int        `json:"weight"` // 1=minor, 5=important, 10=critical
 }

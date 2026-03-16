@@ -134,10 +134,10 @@ func auditKernel(role model.ServerRole, snap *model.Snapshot) []model.AuditRule 
 		},
 	}
 
-	return evalSysctlRules(rules, role)
+	return evalSysctlRules(rules, role, model.OptDomainKernel)
 }
 
-func evalSysctlRules(rules []sysctlRule, role model.ServerRole) []model.AuditRule {
+func evalSysctlRules(rules []sysctlRule, role model.ServerRole, domain model.OptDomain) []model.AuditRule {
 	var result []model.AuditRule
 	for _, r := range rules {
 		current, err := util.ReadFileString(r.path)
@@ -147,18 +147,44 @@ func evalSysctlRules(rules []sysctlRule, role model.ServerRole) []model.AuditRul
 		current = strings.TrimSpace(current)
 		recommended, status := r.recommend(current, role)
 
+		fix := ""
+		if status != model.RulePass {
+			recVal := extractFirstNumber(recommended)
+			if recVal != "" {
+				fix = fmt.Sprintf("sysctl -w %s=%s && echo '%s=%s' >> /etc/sysctl.d/99-xtop.conf", r.name, recVal, r.name, recVal)
+			}
+		}
+
 		result = append(result, model.AuditRule{
-			Domain:      model.OptDomainKernel,
+			Domain:      domain,
 			Name:        r.name,
 			Description: r.description,
 			Current:     current,
 			Recommended: recommended,
 			Impact:      r.impact,
+			Fix:         fix,
 			Status:      status,
 			Weight:      r.weight,
 		})
 	}
 	return result
+}
+
+func extractFirstNumber(s string) string {
+	start := -1
+	for i, c := range s {
+		if c >= '0' && c <= '9' {
+			if start < 0 {
+				start = i
+			}
+		} else if start >= 0 {
+			return s[start:i]
+		}
+	}
+	if start >= 0 {
+		return s[start:]
+	}
+	return ""
 }
 
 func parseUint(s string) uint64 {
