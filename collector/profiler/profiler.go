@@ -3,7 +3,11 @@
 package profiler
 
 import (
+	"fmt"
+	"os"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -194,6 +198,8 @@ func buildServiceCensus(snap *model.Snapshot) []model.ServiceCensus {
 		"pveproxy": "proxmox", "pvedaemon": "proxmox", "pvestatd": "proxmox",
 	}
 
+	uptimeSec := readSystemUptime()
+
 	for _, proc := range snap.Processes {
 		svcName, ok := knownComms[proc.Comm]
 		if !ok {
@@ -207,7 +213,11 @@ func buildServiceCensus(snap *model.Snapshot) []model.ServiceCensus {
 			a = &svcAccum{display: svcName}
 			m[svcName] = a
 		}
-		a.cpu += float64(proc.UTime+proc.STime) / 100 // rough
+		// Compute proper lifetime CPU% = (total_ticks / CLK_TCK) / uptime * 100
+		totalTicks := proc.UTime + proc.STime
+		if uptimeSec > 0 {
+			a.cpu += float64(totalTicks) / 100.0 / float64(uptimeSec) * 100.0
+		}
 		a.rss += float64(proc.RSS) / (1024 * 1024)
 		a.procs++
 	}
@@ -230,4 +240,38 @@ func buildServiceCensus(snap *model.Snapshot) []model.ServiceCensus {
 		result = result[:15]
 	}
 	return result
+}
+
+// readSystemUptime reads system uptime in seconds from /proc/uptime.
+func readSystemUptime() int64 {
+	data, err := os.ReadFile("/proc/uptime")
+	if err != nil {
+		return 0
+	}
+	fields := strings.Fields(string(data))
+	if len(fields) < 1 {
+		return 0
+	}
+	f, err := strconv.ParseFloat(fields[0], 64)
+	if err != nil {
+		return 0
+	}
+	return int64(f)
+}
+
+// readProcConnections counts established TCP connections for a PID via /proc/PID/net/tcp.
+func readProcConnections(pid int) int {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/net/tcp", pid))
+	if err != nil {
+		return 0
+	}
+	lines := strings.Split(string(data), "\n")
+	count := 0
+	for _, line := range lines[1:] {
+		fields := strings.Fields(line)
+		if len(fields) >= 4 && fields[3] == "01" { // 01 = ESTABLISHED
+			count++
+		}
+	}
+	return count
 }
