@@ -18,7 +18,7 @@ func renderCPUPage(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 	}
 	sb.WriteString("\n")
 	sb.WriteString(renderRCAInline(result))
-	sb.WriteString(renderProbeStatusLine(pm, snap))
+	sb.WriteString(renderProbeStatusLine(pm, snap, intermediate))
 	sb.WriteString("\n")
 
 	// === Summary ===

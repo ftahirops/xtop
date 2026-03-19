@@ -13,7 +13,7 @@ import (
 // Left: Subsystem health with details
 // Right: Owners + Chain + Capacity + Trend
 func renderLayoutA(snap *model.Snapshot, rates *model.RateSnapshot, result *model.AnalysisResult,
-	history *engine.History, pm probeQuerier, ss []subsysInfo, compact bool, width, height int) string {
+	history *engine.History, pm probeQuerier, ss []subsysInfo, compact bool, width, height int, intermediate bool) string {
 
 	var sb strings.Builder
 
@@ -67,10 +67,10 @@ func renderLayoutA(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 		// Clean summary: RCA + Owners + Capacity + Apps + Security + Probe
 		right.WriteString(renderRCABox(result, rightW))
 		right.WriteString(renderOwnersBlock(result, rightW))
-		right.WriteString(renderCapacityBlock(result, true, 16, rightW))
+		right.WriteString(renderCapacityBlock(result, true, 16, rightW, intermediate))
 		right.WriteString(renderOverviewAppsSummary(snap, rightW))
 		right.WriteString(renderOverviewSecuritySummary(snap, rightW))
-		right.WriteString(renderProbeStatusLine(pm, snap))
+		right.WriteString(renderProbeStatusLine(pm, snap, intermediate))
 		// Show exhaustion/degradation only if active (not empty blocks)
 		if result != nil && len(result.Exhaustions) > 0 {
 			right.WriteString(renderExhaustionBlock(result, rightW))
@@ -84,8 +84,8 @@ func renderLayoutA(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 		right.WriteString(renderChangesBlock(result, rightW))
 		right.WriteString(renderActionsBlock(result, rightW))
 		right.WriteString(renderOwnersBlock(result, rightW))
-		right.WriteString(renderCapacityBlock(result, true, 16, rightW))
-		right.WriteString(renderProbeStatusLine(pm, snap))
+		right.WriteString(renderCapacityBlock(result, true, 16, rightW, intermediate))
+		right.WriteString(renderProbeStatusLine(pm, snap, intermediate))
 		right.WriteString(renderExhaustionBlock(result, rightW))
 		right.WriteString(renderDegradationBlock(result, rightW))
 		right.WriteString(renderTrendBlock(result, history, rightW, true))

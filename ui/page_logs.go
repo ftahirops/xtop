@@ -15,7 +15,7 @@ func renderLogsPage(snap *model.Snapshot, rates *model.RateSnapshot, result *mod
 	sb.WriteString(titleStyle.Render("LOG ANALYSIS"))
 	sb.WriteString("\n")
 	sb.WriteString(renderRCAInline(result))
-	sb.WriteString(renderProbeStatusLine(pm, snap))
+	sb.WriteString(renderProbeStatusLine(pm, snap, false))
 	sb.WriteString("\n")
 
 	services := snap.Global.Logs.Services

@@ -1242,7 +1242,7 @@ func (m Model) View() string {
 	} else {
 		switch m.page {
 		case PageOverview:
-			content = renderOverview(m.snap, m.rates, rcaResult, m.engine.History, smartDisks, m.probeManager, m.layoutMode, m.overviewCompact, renderW, m.height)
+			content = renderOverview(m.snap, m.rates, rcaResult, m.engine.History, smartDisks, m.probeManager, m.layoutMode, m.overviewCompact, renderW, m.height, m.intermediateMode)
 		case PageCPU:
 			content = renderCPUPage(m.snap, m.rates, m.result, m.probeManager, renderW, m.height, m.intermediateMode)
 		case PageMemory:

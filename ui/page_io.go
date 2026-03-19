@@ -18,7 +18,7 @@ func renderIOPage(snap *model.Snapshot, rates *model.RateSnapshot, result *model
 	}
 	sb.WriteString("\n")
 	sb.WriteString(renderRCAInline(result))
-	sb.WriteString(renderProbeStatusLine(pm, snap))
+	sb.WriteString(renderProbeStatusLine(pm, snap, intermediate))
 	sb.WriteString("\n")
 
 	// === DISK HEALTH (at top — most critical info first, bare metal only) ===

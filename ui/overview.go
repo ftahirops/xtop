@@ -36,30 +36,30 @@ func (l LayoutMode) String() string {
 // renderOverview dispatches to the selected layout.
 func renderOverview(snap *model.Snapshot, rates *model.RateSnapshot, result *model.AnalysisResult,
 	history *engine.History, smartDisks []model.SMARTDisk, pm probeQuerier,
-	layout LayoutMode, compact bool, width, height int) string {
+	layout LayoutMode, compact bool, width, height int, intermediate bool) string {
 
 	if snap == nil {
 		return "Collecting first sample..."
 	}
 
-	ss := extractSubsystems(snap, rates, result)
+	ss := extractSubsystems(snap, rates, result, intermediate)
 
 	var content string
 	switch layout {
 	case LayoutTwoCol:
-		content = renderLayoutA(snap, rates, result, history, pm, ss, compact, width, height)
+		content = renderLayoutA(snap, rates, result, history, pm, ss, compact, width, height, intermediate)
 	case LayoutCompact:
-		content = renderLayoutB(snap, rates, result, history, pm, ss, width, height)
+		content = renderLayoutB(snap, rates, result, history, pm, ss, width, height, intermediate)
 	case LayoutAdaptive:
-		content = renderLayoutC(snap, rates, result, history, pm, ss, width, height)
+		content = renderLayoutC(snap, rates, result, history, pm, ss, width, height, intermediate)
 	case LayoutGrid:
-		content = renderLayoutD(snap, rates, result, history, pm, ss, width, height)
+		content = renderLayoutD(snap, rates, result, history, pm, ss, width, height, intermediate)
 	case LayoutHtop:
-		content = renderLayoutE(snap, rates, result, history, pm, ss, width, height)
+		content = renderLayoutE(snap, rates, result, history, pm, ss, width, height, intermediate)
 	case LayoutBtop:
-		content = renderLayoutF(snap, rates, result, history, pm, ss, width, height)
+		content = renderLayoutF(snap, rates, result, history, pm, ss, width, height, intermediate)
 	default:
-		content = renderLayoutA(snap, rates, result, history, pm, ss, compact, width, height)
+		content = renderLayoutA(snap, rates, result, history, pm, ss, compact, width, height, intermediate)
 	}
 
 	// Inject layout indicator into the first line (top right)
@@ -279,7 +279,7 @@ type kv struct {
 	Val string
 }
 
-func extractSubsystems(snap *model.Snapshot, rates *model.RateSnapshot, result *model.AnalysisResult) []subsysInfo {
+func extractSubsystems(snap *model.Snapshot, rates *model.RateSnapshot, result *model.AnalysisResult, intermediate bool) []subsysInfo {
 	var ss []subsysInfo
 
 	// CPU
@@ -358,9 +358,20 @@ func extractSubsystems(snap *model.Snapshot, rates *model.RateSnapshot, result *
 		{"Usage", fmt.Sprintf("%.1f%% busy", busyPct)},
 		{"Load avg", loadStr},
 		{"Run queue", rqStr},
-		{"Ctx switch", fmt.Sprintf("%.0f/s", ctxRate)},
-		{"System CPU", fmt.Sprintf("%.1f%%", sysPct)},
-		{"Steal", stealStr},
+	}
+	if intermediate {
+		cpu.Details[0].Val += " " + metricVerdict(busyPct, 70, 90)
+		cpu.Details[1].Val += " " + metricVerdict(loadPct, 100, 200)
+	}
+	if !intermediate {
+		cpu.Details = append(cpu.Details, kv{abbr("Ctx switch", "Context switches", intermediate), fmt.Sprintf("%.0f/s", ctxRate)})
+	}
+	cpu.Details = append(cpu.Details, kv{"System CPU", fmt.Sprintf("%.1f%%", sysPct)})
+	if intermediate {
+		cpu.Details[len(cpu.Details)-1].Val += " " + metricVerdict(sysPct, 20, 40)
+	}
+	if !intermediate {
+		cpu.Details = append(cpu.Details, kv{"Steal", stealStr})
 	}
 	// Throttling from cgroups
 	throttled := "none"
@@ -406,13 +417,22 @@ func extractSubsystems(snap *model.Snapshot, rates *model.RateSnapshot, result *
 		dirtyPct = float64(snap.Global.Memory.Dirty) / float64(memTotal) * 100
 	}
 
+	usedVal := fmt.Sprintf("%.1f%% (%s free)", memUsedPct, fmtBytes(memAvail))
+	if intermediate {
+		usedVal += " " + metricVerdict(memUsedPct, 80, 95)
+	}
 	mem.Details = []kv{
-		{"Used", fmt.Sprintf("%.1f%% (%s free)", memUsedPct, fmtBytes(memAvail))},
+		{"Used", usedVal},
 		{"Cache", fmtBytes(snap.Global.Memory.Cached)},
 	}
 	swapStr := "unused"
+	swapPct := float64(0)
 	if snap.Global.Memory.SwapTotal > 0 && snap.Global.Memory.SwapUsed > 0 {
 		swapStr = fmt.Sprintf("%s/%s", fmtBytes(snap.Global.Memory.SwapUsed), fmtBytes(snap.Global.Memory.SwapTotal))
+		swapPct = float64(snap.Global.Memory.SwapUsed) / float64(snap.Global.Memory.SwapTotal) * 100
+		if intermediate {
+			swapStr += " " + metricVerdict(swapPct, 30, 70)
+		}
 	}
 	mem.Details = append(mem.Details, kv{"Swap", swapStr})
 
@@ -420,19 +440,25 @@ func extractSubsystems(snap *model.Snapshot, rates *model.RateSnapshot, result *
 	if dirtyPct > 0.1 {
 		dirtyStr = fmt.Sprintf("%s (%.1f%%)", fmtBytes(snap.Global.Memory.Dirty), dirtyPct)
 	}
-	mem.Details = append(mem.Details, kv{"Dirty pages", dirtyStr})
+	if !intermediate {
+		mem.Details = append(mem.Details, kv{"Dirty pages", dirtyStr})
+	}
 
 	reclaimStr := "none"
 	if rates != nil && rates.DirectReclaimRate > 0 {
 		reclaimStr = fmt.Sprintf("%.0f pages/s", rates.DirectReclaimRate)
 	}
-	mem.Details = append(mem.Details, kv{"Reclaim", reclaimStr})
+	if !intermediate || reclaimStr != "none" {
+		mem.Details = append(mem.Details, kv{abbr("Reclaim", "Memory reclaim (kernel recovering pages)", intermediate), reclaimStr})
+	}
 
 	faultStr := "normal"
 	if rates != nil && rates.MajFaultRate > 10 {
 		faultStr = fmt.Sprintf("%.0f major/s", rates.MajFaultRate)
 	}
-	mem.Details = append(mem.Details, kv{"Page faults", faultStr})
+	if !intermediate || faultStr != "normal" {
+		mem.Details = append(mem.Details, kv{"Page faults", faultStr})
+	}
 
 	if result != nil && len(result.MemOwners) > 0 {
 		mem.TopOwner = result.MemOwners[0].Name
@@ -473,10 +499,22 @@ func extractSubsystems(snap *model.Snapshot, rates *model.RateSnapshot, result *
 	if worstName != "" {
 		utilVal = fmt.Sprintf("%.1f%% (%s)", worstUtil, worstName)
 	}
+	utilValStr := utilVal
+	if intermediate {
+		utilValStr += " " + metricVerdict(worstUtil, 70, 90)
+	}
+	latencyVal := fmt.Sprintf("%.1f ms", worstAwait)
+	if intermediate {
+		latencyVal += " " + metricVerdict(worstAwait, 10, 50)
+	}
+	qdVal := fmt.Sprintf("%d", worstQ)
+	if intermediate {
+		qdVal += " " + metricVerdict(float64(worstQ), 32, 128)
+	}
 	io.Details = []kv{
-		{"Utilization", utilVal},
-		{"Latency", fmt.Sprintf("%.1f ms", worstAwait)},
-		{"Queue depth", fmt.Sprintf("%d", worstQ)},
+		{"Utilization", utilValStr},
+		{"Latency", latencyVal},
+		{abbr("Queue depth", "Queue depth (pending IO requests)", intermediate), qdVal},
 	}
 
 	// Read/write throughput
@@ -499,7 +537,7 @@ func extractSubsystems(snap *model.Snapshot, rates *model.RateSnapshot, result *
 			writeIOPS += d.WriteIOPS
 		}
 	}
-	io.Details = append(io.Details, kv{"IOPS", fmt.Sprintf("R:%.0f W:%.0f", readIOPS, writeIOPS)})
+	io.Details = append(io.Details, kv{abbr("IOPS", "IOPS (IO operations/sec)", intermediate), fmt.Sprintf("R:%.0f W:%.0f", readIOPS, writeIOPS)})
 
 	if result != nil && len(result.IOOwners) > 0 {
 		io.TopOwner = result.IOOwners[0].Name
@@ -590,13 +628,43 @@ func extractSubsystems(snap *model.Snapshot, rates *model.RateSnapshot, result *
 		}
 	}
 
+	dropsVal := fmt.Sprintf("%.0f/s", totalDrops)
+	if intermediate {
+		dropsVal += " " + metricVerdict(totalDrops, 1, 100)
+	}
+	retransVal := fmt.Sprintf("%.0f/s", retransRate)
+	if intermediate {
+		retransVal += " " + metricVerdict(retransRate, 10, 50)
+	}
+
 	net.Details = []kv{
 		{"RX/TX", rxTx},
-		{"Drops", fmt.Sprintf("%.0f/s", totalDrops)},
-		{"Retransmits", fmt.Sprintf("%.0f/s", retransRate)},
-		{"Ephemeral", ephStr},
-		{"Conntrack", ctStr},
-		{"SoftIRQ load", fmt.Sprintf("%.1f%%", softIRQ)},
+		{"Drops", dropsVal},
+		{"Retransmits", retransVal},
+	}
+
+	// Ephemeral ports: when intermediate, hide if usage < 50%
+	ephPctVal := float64(0)
+	if eph.RangeHi > 0 {
+		ephRange := eph.RangeHi - eph.RangeLo + 1
+		ephPctVal = float64(eph.InUse) / float64(ephRange) * 100
+	}
+	if !intermediate || ephPctVal >= 50 {
+		net.Details = append(net.Details, kv{abbr("Ephemeral", "Ephemeral ports (outbound connections)", intermediate), ephStr})
+	}
+
+	// Conntrack: when intermediate, hide if count < 80% of max
+	ctPctVal := float64(0)
+	if ct.Max > 0 {
+		ctPctVal = float64(ct.Count) / float64(ct.Max) * 100
+	}
+	if !intermediate || ctPctVal >= 80 {
+		net.Details = append(net.Details, kv{abbr("Conntrack", "Conntrack (connection tracking table)", intermediate), ctStr})
+	}
+
+	// SoftIRQ load: when intermediate, hide if < 5%
+	if !intermediate || softIRQ >= 5 {
+		net.Details = append(net.Details, kv{abbr("SoftIRQ load", "SoftIRQ (kernel network processing overhead)", intermediate), fmt.Sprintf("%.1f%%", softIRQ)})
 	}
 
 	if result != nil && len(result.NetOwners) > 0 {
@@ -659,11 +727,19 @@ func extractSubsystems(snap *model.Snapshot, rates *model.RateSnapshot, result *
 			}
 		}
 
+		worstMountVal := fmt.Sprintf("%s (%.0f%% used)", worstMount, usedPct)
+		if intermediate {
+			worstMountVal += " " + metricVerdict(usedPct, 80, 95)
+		}
+		inodeVal := fmt.Sprintf("%.0f%%", worstInodePct)
+		if intermediate {
+			inodeVal += " " + metricVerdict(worstInodePct, 80, 95)
+		}
 		disk.Details = []kv{
-			{"Worst mount", fmt.Sprintf("%s (%.0f%% used)", worstMount, usedPct)},
+			{"Worst mount", worstMountVal},
 			{"Free", fmt.Sprintf("%.0f%%", worstFreePct)},
 			{"Fill rate", etaStr},
-			{"Inode usage", fmt.Sprintf("%.0f%%", worstInodePct)},
+			{abbr("Inode usage", "Inode usage (file count capacity)", intermediate), inodeVal},
 		}
 
 		if result != nil && result.DiskGuardWorst != "" {
@@ -1060,7 +1136,8 @@ func renderRCABox(result *model.AnalysisResult, width int) string {
 
 // ─── SHARED: CAPACITY BLOCK ─────────────────────────────────────────────────
 
-func renderCapacityBlock(result *model.AnalysisResult, withBars bool, barW int, width int) string {
+func renderCapacityBlock(result *model.AnalysisResult, withBars bool, barW int, width int, intermediate ...bool) string {
+	isIntermediate := len(intermediate) > 0 && intermediate[0]
 	var sb strings.Builder
 
 	innerW := width - 7
@@ -1101,7 +1178,20 @@ func renderCapacityBlock(result *model.AnalysisResult, withBars bool, barW int, 
 			style = warnStyle
 		}
 
-		lbl := styledPad(cap.Label, colKey)
+		capLabel := cap.Label
+		if isIntermediate {
+			switch capLabel {
+			case "Conntrack":
+				capLabel = "Conntrack (connection tracker)"
+			case "Ephemeral ports":
+				capLabel = "Ephemeral ports (outbound connections)"
+			case "File descriptors":
+				capLabel = "File descriptors (open files/sockets)"
+			case "MemAvailable":
+				capLabel = "Memory available"
+			}
+		}
+		lbl := styledPad(capLabel, colKey)
 		var content string
 		if withBars {
 			limitInfo := ""
@@ -1431,7 +1521,7 @@ func isBenignSentinelDrop(reason string) bool {
 
 // renderProbeStatusLine renders the sentinel + probe status. Always produces exactly 1 line.
 // Pass nil for idle state (no probe engine available yet).
-func renderProbeStatusLine(pm probeQuerier, snap *model.Snapshot) string {
+func renderProbeStatusLine(pm probeQuerier, snap *model.Snapshot, intermediate bool) string {
 	var sb strings.Builder
 	sb.WriteString(" ")
 
@@ -1444,26 +1534,51 @@ func renderProbeStatusLine(pm probeQuerier, snap *model.Snapshot) string {
 		var parts []string
 		if sent.PktDropRate > 0 {
 			// Build drop string with top non-benign reason
-			dropStr := fmt.Sprintf("Drops:%.0f/s", sent.PktDropRate)
+			var dropLabel string
+			if intermediate {
+				dropLabel = fmt.Sprintf("Packet drops: %.0f/s", sent.PktDropRate)
+			} else {
+				dropLabel = fmt.Sprintf("Drops:%.0f/s", sent.PktDropRate)
+			}
 			for _, d := range sent.PktDrops {
 				if d.Rate >= 1 && !d.Benign {
-					dropStr += fmt.Sprintf(" [%s:%.0f/s]", d.ReasonStr, d.Rate)
+					if intermediate {
+						dropLabel += fmt.Sprintf(" [%s: %.0f/s — %s]", d.ReasonStr, d.Rate, dropReasonHint(d.ReasonStr))
+					} else {
+						dropLabel += fmt.Sprintf(" [%s:%.0f/s]", d.ReasonStr, d.Rate)
+					}
 					break
 				}
 			}
-			parts = append(parts, dropStr)
+			parts = append(parts, dropLabel)
 		}
 		if sent.TCPResetRate > 0 {
-			parts = append(parts, fmt.Sprintf("RSTs:%.0f/s", sent.TCPResetRate))
+			if intermediate {
+				parts = append(parts, fmt.Sprintf("TCP resets: %.0f/s", sent.TCPResetRate))
+			} else {
+				parts = append(parts, fmt.Sprintf("RSTs:%.0f/s", sent.TCPResetRate))
+			}
 		}
 		if sent.RetransRate > 0 {
-			parts = append(parts, fmt.Sprintf("Retrans:%.0f/s", sent.RetransRate))
+			if intermediate {
+				parts = append(parts, fmt.Sprintf("TCP retransmissions: %.0f/s", sent.RetransRate))
+			} else {
+				parts = append(parts, fmt.Sprintf("Retrans:%.0f/s", sent.RetransRate))
+			}
 		}
 		if sent.ThrottleRate > 0 {
-			parts = append(parts, fmt.Sprintf("Throttle:%.0f/s", sent.ThrottleRate))
+			if intermediate {
+				parts = append(parts, fmt.Sprintf("CPU throttling: %.0f/s", sent.ThrottleRate))
+			} else {
+				parts = append(parts, fmt.Sprintf("Throttle:%.0f/s", sent.ThrottleRate))
+			}
 		}
 		if len(sent.OOMKills) > 0 {
-			parts = append(parts, fmt.Sprintf("OOM:%d", len(sent.OOMKills)))
+			if intermediate {
+				parts = append(parts, fmt.Sprintf("Out-of-memory kills: %d", len(sent.OOMKills)))
+			} else {
+				parts = append(parts, fmt.Sprintf("OOM:%d", len(sent.OOMKills)))
+			}
 		}
 		if len(parts) == 0 {
 			sb.WriteString(okStyle.Render("ok"))
@@ -1508,6 +1623,68 @@ func renderProbeStatusLine(pm probeQuerier, snap *model.Snapshot) string {
 
 	sb.WriteString("\n")
 	return sb.String()
+}
+
+// dropReasonHint returns a human-friendly explanation for a drop reason string.
+func dropReasonHint(reason string) string {
+	switch reason {
+	case "OTHERHOST":
+		return "packets for other VMs, benign"
+	case "NO_SOCKET":
+		return "no matching socket, connection closed"
+	case "NETFILTER_DROP":
+		return "dropped by firewall rules"
+	case "SOCKET_FILTER":
+		return "dropped by socket filter (tcpdump/BPF)"
+	case "SOCKET_RCVBUFF":
+		return "receive buffer full, app too slow"
+	case "SOCKET_BACKLOG":
+		return "socket backlog full, app too slow"
+	case "PROTO_MEM":
+		return "kernel protocol memory exhausted"
+	case "TCP_CSUM":
+		return "TCP checksum error"
+	case "UDP_CSUM":
+		return "UDP checksum error"
+	case "IP_CSUM":
+		return "IP checksum error"
+	case "TCP_OVERWINDOW":
+		return "packet exceeds TCP window"
+	case "TCP_OLD_DATA":
+		return "stale retransmit, normal"
+	case "TCP_OLD_SEQUENCE":
+		return "old sequence number, normal"
+	case "TCP_RESET":
+		return "connection reset"
+	case "TCP_INVALID_SEQUENCE":
+		return "unexpected sequence number"
+	case "TCP_INVALID_SYN":
+		return "malformed SYN packet"
+	case "TCP_CLOSE":
+		return "connection closing, normal"
+	case "TCP_OFOMERGE":
+		return "out-of-order merge, normal"
+	case "TCP_ZEROWINDOW":
+		return "flow control, receiver paused"
+	case "TCP_FLAGS":
+		return "normal FIN/RST handling"
+	case "QDISC_DROP":
+		return "queue discipline overflow"
+	case "FULL_RING":
+		return "NIC ring buffer full"
+	case "NOMEM":
+		return "out of memory"
+	case "CPU_BACKLOG":
+		return "CPU processing backlog full"
+	case "IP_RPFILTER":
+		return "reverse path filter, spoofing protection"
+	case "NEIGH_FAILED":
+		return "ARP/neighbor resolution failed"
+	case "NEIGH_QUEUEFULL":
+		return "neighbor queue full"
+	default:
+		return "kernel drop"
+	}
 }
 
 // probeQuerier is an interface for querying probe state without importing engine.

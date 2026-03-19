@@ -13,7 +13,7 @@ import (
 // Middle: RCA + Probe status
 // Bottom: process table filling remaining height
 func renderLayoutE(snap *model.Snapshot, rates *model.RateSnapshot, result *model.AnalysisResult,
-	history *engine.History, pm probeQuerier, _ []subsysInfo, width, height int) string {
+	history *engine.History, pm probeQuerier, _ []subsysInfo, width, height int, intermediate bool) string {
 
 	var sb strings.Builder
 
@@ -141,7 +141,7 @@ func renderLayoutE(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 
 	// ─── RCA + Probe inline ─────────────────────────────────────────────
 	sb.WriteString(renderRCAInline(result))
-	sb.WriteString(renderProbeStatusLine(pm, snap))
+	sb.WriteString(renderProbeStatusLine(pm, snap, intermediate))
 	usedLines += 2
 
 	sb.WriteString(separator(width))

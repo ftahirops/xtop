@@ -12,7 +12,7 @@ import (
 // renderLayoutD renders the Dashboard Grid layout.
 // 2x2 grid: CPU | Memory / Disk IO | Network, then bottom bar.
 func renderLayoutD(snap *model.Snapshot, rates *model.RateSnapshot, result *model.AnalysisResult,
-	history *engine.History, pm probeQuerier, ss []subsysInfo, width, height int) string {
+	history *engine.History, pm probeQuerier, ss []subsysInfo, width, height int, intermediate bool) string {
 
 	var sb strings.Builder
 
@@ -50,7 +50,7 @@ func renderLayoutD(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 	sb.WriteString(renderChangesInline(result))
 	sb.WriteString(renderOwnersInline(result))
 	sb.WriteString(renderCapacityInline(result))
-	sb.WriteString(renderProbeStatusLine(pm, snap))
+	sb.WriteString(renderProbeStatusLine(pm, snap, intermediate))
 
 	// Trend
 	sb.WriteString(renderTrendBlock(result, history, width, true))

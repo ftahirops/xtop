@@ -204,9 +204,11 @@ func isBenignDropReason(reason uint32) bool {
 		return true
 	case 29: // TCP_OLD_DATA — retransmit arriving after ACK (normal)
 		return true
-	case 33: // TCP_OVERWINDOW — flow control
+	case 30: // TCP_OVERWINDOW — flow control
 		return true
-	case 37: // TCP_OFOMERGE — out-of-order segment merged
+	case 31: // TCP_OFOMERGE — out-of-order segment merged
+		return true
+	case 33: // TCP_OLD_SEQUENCE — stale retransmit (normal)
 		return true
 	case 82: // SKB_CONSUMED — packet consumed normally
 		return true
@@ -228,8 +230,22 @@ func dropReasonString(reason uint32) string {
 		return "TCP_CSUM"
 	case 6:
 		return "SOCKET_FILTER"
+	case 7:
+		return "UDP_CSUM"
 	case 8:
 		return "NETFILTER_DROP"
+	case 9:
+		return "OTHERHOST"
+	case 10:
+		return "IP_CSUM"
+	case 11:
+		return "IP_INHDR"
+	case 12:
+		return "IP_RPFILTER"
+	case 13:
+		return "UNICAST_IN_L2_MULTICAST"
+	case 15:
+		return "IP_NOPROTO"
 	case 16:
 		return "SOCKET_RCVBUFF"
 	case 17:
@@ -242,14 +258,60 @@ func dropReasonString(reason uint32) string {
 		return "TCP_ZEROWINDOW"
 	case 29:
 		return "TCP_OLD_DATA"
-	case 33:
+	case 30:
 		return "TCP_OVERWINDOW"
-	case 37:
+	case 31:
 		return "TCP_OFOMERGE"
+	case 32:
+		return "TCP_RFC7323_PAWS"
+	case 33:
+		return "TCP_OLD_SEQUENCE"
+	case 34:
+		return "TCP_INVALID_SEQUENCE"
+	case 35:
+		return "TCP_RESET"
+	case 36:
+		return "TCP_INVALID_SYN"
+	case 37:
+		return "TCP_CLOSE"
+	case 38:
+		return "TCP_FASTOPEN"
+	case 39:
+		return "TCP_OLD_ACK"
+	case 40:
+		return "TCP_TOO_OLD_ACK"
+	case 41:
+		return "TCP_ACK_UNSENT_DATA"
+	case 42:
+		return "TCP_OFO_QUEUE_PRUNE"
+	case 43:
+		return "TCP_OFO_DROP"
 	case 44:
 		return "IP_OUTNOROUTES"
+	case 45:
+		return "BPF_CGROUP_EGRESS"
+	case 46:
+		return "IPV6DISABLED"
+	case 47:
+		return "NEIGH_CREATEFAIL"
+	case 48:
+		return "NEIGH_FAILED"
+	case 49:
+		return "NEIGH_QUEUEFULL"
+	case 50:
+		return "NEIGH_DEAD"
+	case 51:
+		return "TC_EGRESS"
 	case 52:
 		return "QDISC_DROP"
+	case 53:
+		return "CPU_BACKLOG"
+	case 54:
+		return "XDP"
+	case 55:
+		return "TC_INGRESS"
+	case 56:
+		return "UNHANDLED_PROTO"
 	case 62:
 		return "FULL_RING"
 	case 63:

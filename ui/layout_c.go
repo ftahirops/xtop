@@ -11,7 +11,7 @@ import (
 // renderLayoutC renders the Adaptive Expand layout.
 // All subsystems always show full detail box for layout stability.
 func renderLayoutC(snap *model.Snapshot, rates *model.RateSnapshot, result *model.AnalysisResult,
-	history *engine.History, pm probeQuerier, ss []subsysInfo, width, height int) string {
+	history *engine.History, pm probeQuerier, ss []subsysInfo, width, height int, intermediate bool) string {
 
 	var sb strings.Builder
 
@@ -65,7 +65,7 @@ func renderLayoutC(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 	// Capacity (always render inline)
 	sb.WriteString(renderCapacityInline(result))
 	// Probe status
-	sb.WriteString(renderProbeStatusLine(pm, snap))
+	sb.WriteString(renderProbeStatusLine(pm, snap, intermediate))
 	// Exhaustion + Degradation
 	sb.WriteString(renderExhaustionBlock(result, width))
 	sb.WriteString(renderDegradationBlock(result, width))

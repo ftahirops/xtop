@@ -53,7 +53,7 @@ func renderProxmoxPage(snap *model.Snapshot, rates *model.RateSnapshot, result *
 
 	// RCA + probe
 	sb.WriteString(renderRCAInline(result))
-	sb.WriteString(renderProbeStatusLine(pm, snap))
+	sb.WriteString(renderProbeStatusLine(pm, snap, false))
 	sb.WriteString("\n")
 
 	// === HOST OVERVIEW ===

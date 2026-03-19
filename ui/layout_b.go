@@ -11,7 +11,7 @@ import (
 // renderLayoutB renders the Compact Table layout.
 // Everything in a single dense table + detail for worst subsystem + trend.
 func renderLayoutB(snap *model.Snapshot, rates *model.RateSnapshot, result *model.AnalysisResult,
-	history *engine.History, pm probeQuerier, ss []subsysInfo, width, height int) string {
+	history *engine.History, pm probeQuerier, ss []subsysInfo, width, height int, intermediate bool) string {
 
 	var sb strings.Builder
 
@@ -116,7 +116,7 @@ func renderLayoutB(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 	sb.WriteString(renderRCAInline(result))
 	sb.WriteString(renderChangesInline(result))
 	sb.WriteString(renderOwnersInline(result))
-	sb.WriteString(renderProbeStatusLine(pm, snap))
+	sb.WriteString(renderProbeStatusLine(pm, snap, intermediate))
 
 	// Trend (one line per resource)
 	sb.WriteString(renderTrendBlock(result, history, width, true))

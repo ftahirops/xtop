@@ -227,7 +227,7 @@ func renderSecurityPage(snap *model.Snapshot, rates *model.RateSnapshot,
 	sb.WriteString(titleStyle.Render("SECURITY MONITOR"))
 	sb.WriteString("\n")
 	sb.WriteString(renderRCAInline(result))
-	sb.WriteString(renderProbeStatusLine(pm, snap))
+	sb.WriteString(renderProbeStatusLine(pm, snap, false))
 	sb.WriteString("\n")
 
 	sec := snap.Global.Security
