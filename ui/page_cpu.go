@@ -8,11 +8,14 @@ import (
 	"github.com/ftahirops/xtop/model"
 )
 
-func renderCPUPage(snap *model.Snapshot, rates *model.RateSnapshot, result *model.AnalysisResult, pm probeQuerier, width, height int) string {
+func renderCPUPage(snap *model.Snapshot, rates *model.RateSnapshot, result *model.AnalysisResult, pm probeQuerier, width, height int, intermediate bool) string {
 	var sb strings.Builder
 	iw := pageInnerW(width)
 
 	sb.WriteString(titleStyle.Render("CPU SUBSYSTEM"))
+	if intermediate {
+		sb.WriteString(dimStyle.Render("  [verdicts ON]"))
+	}
 	sb.WriteString("\n")
 	sb.WriteString(renderRCAInline(result))
 	sb.WriteString(renderProbeStatusLine(pm, snap))
@@ -53,11 +56,37 @@ func renderCPUPage(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 	}
 
 	var sumLines []string
-	sumLines = append(sumLines, fmt.Sprintf("CPU busy:    %s %s  (%d cores)", bar(busyPct, bw), fmtPct(busyPct), nCPU))
-	sumLines = append(sumLines, fmt.Sprintf("User:        %s  System: %s  IOWait: %s", fmtPct(userPct), fmtPct(sysPct), fmtPct(iowPct)))
-	sumLines = append(sumLines, fmt.Sprintf("SoftIRQ:     %s  IRQ: %s  Steal: %s  Nice: %s", fmtPct(softPct), fmtPct(irqPct), fmtPct(stealPct), fmtPct(nicePct)))
-	sumLines = append(sumLines, fmt.Sprintf("Ctx switches: %.0f/s (%.0f/core)", ctxRate, ctxPerCore))
-	sumLines = append(sumLines, fmt.Sprintf("PSI some/full: %s / %s", fmtPSI(psi.Some.Avg10), fmtPSI(psi.Full.Avg10)))
+	cpuLine := fmt.Sprintf("CPU busy:    %s %s  (%d cores)", bar(busyPct, bw), fmtPct(busyPct), nCPU)
+	if intermediate {
+		cpuLine += "  " + metricVerdict(busyPct, 70, 90)
+	}
+	sumLines = append(sumLines, cpuLine)
+
+	userLine := fmt.Sprintf("User:        %s  System: %s  %s: %s",
+		fmtPct(userPct), fmtPct(sysPct),
+		abbr("IOWait", "CPU idle waiting for disk", intermediate), fmtPct(iowPct))
+	if intermediate && iowPct > 0 {
+		userLine += "  " + metricVerdict(iowPct, 10, 30)
+	}
+	sumLines = append(sumLines, userLine)
+
+	sumLines = append(sumLines, fmt.Sprintf("%s: %s  %s: %s  Steal: %s  Nice: %s",
+		abbr("SoftIRQ", "network/timer interrupt overhead", intermediate), fmtPct(softPct),
+		abbr("IRQ", "hardware interrupt time", intermediate), fmtPct(irqPct),
+		fmtPct(stealPct), fmtPct(nicePct)))
+
+	ctxLine := fmt.Sprintf("%s: %.0f/s (%.0f/core)",
+		abbr("Ctx switches", "task context switches", intermediate), ctxRate, ctxPerCore)
+	sumLines = append(sumLines, ctxLine)
+
+	psiLine := fmt.Sprintf("%s some/full: %s / %s",
+		abbr("PSI", "Pressure Stall Information — % time tasks wait", intermediate),
+		fmtPSI(psi.Some.Avg10), fmtPSI(psi.Full.Avg10))
+	if intermediate {
+		psiLine += "  " + metricVerdict(psi.Some.Avg10, 5, 25)
+	}
+	sumLines = append(sumLines, psiLine)
+
 	// Load average with capacity interpretation
 	cpuLoadPct := float64(0)
 	if nCPU > 0 {
@@ -80,8 +109,13 @@ func renderCPUPage(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 	default:
 		cpuLoadInterp = "critically overloaded"
 	}
-	sumLines = append(sumLines, fmt.Sprintf("Load avg:    1m=%.2f  5m=%.2f  15m=%.2f  → %.0f%% of %d CPUs (%s)",
-		load.Load1, load.Load5, load.Load15, cpuLoadPct, nCPU, cpuLoadInterp))
+	loadLine := fmt.Sprintf("Load avg:    1m=%.2f  5m=%.2f  15m=%.2f  → %.0f%% of %d CPUs (%s)",
+		load.Load1, load.Load5, load.Load15, cpuLoadPct, nCPU, cpuLoadInterp)
+	if intermediate {
+		loadLine += "  " + metricVerdict(cpuLoadPct, 100, 200)
+	}
+	sumLines = append(sumLines, loadLine)
+
 	cpuRQPct := float64(load.Running) / float64(nCPU) * 100
 	var cpuRQLabel string
 	switch {
@@ -148,7 +182,11 @@ func renderCPUPage(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 			if i >= 5 || cg.ThrottlePct < 0.1 {
 				break
 			}
-			thrLines = append(thrLines, fmt.Sprintf("%-30s throttled %5.1f%%", cg.Name, cg.ThrottlePct))
+			line := fmt.Sprintf("%-30s %s %5.1f%%", cg.Name, abbr("throttled", "cgroup hit its CPU limit", intermediate), cg.ThrottlePct)
+			if intermediate {
+				line += "  " + metricVerdict(cg.ThrottlePct, 10, 50)
+			}
+			thrLines = append(thrLines, line)
 			shown++
 		}
 		if shown == 0 {
@@ -161,7 +199,10 @@ func renderCPUPage(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 
 	// === Top PIDs ===
 	var procLines []string
-	procLines = append(procLines, dimStyle.Render(fmt.Sprintf("%7s %-16s %8s %8s %12s", "PID", "COMMAND", "CPU%", "STATE", "CTXSW/s")))
+	procHeader := fmt.Sprintf("%7s %-16s %8s %8s %12s",
+		"PID", "COMMAND", "CPU%", "STATE",
+		abbr("CTXSW/s", "context switches/sec", intermediate))
+	procLines = append(procLines, dimStyle.Render(procHeader))
 
 	if rates != nil && len(rates.ProcessRates) > 0 {
 		procs := make([]model.ProcessRate, len(rates.ProcessRates))
@@ -177,6 +218,9 @@ func renderCPUPage(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 			}
 			row := fmt.Sprintf("%7d %-16s %7.1f%% %8s %11.0f", p.PID, comm, p.CPUPct, p.State, p.CtxSwitchRate)
 			if p.State == "D" {
+				if intermediate {
+					row += "  " + warnStyle.Render("← stuck waiting for disk")
+				}
 				procLines = append(procLines, warnStyle.Render(row))
 			} else {
 				procLines = append(procLines, row)
@@ -188,95 +232,97 @@ func renderCPUPage(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 	sb.WriteString(boxSection("TOP PROCESSES BY CPU", procLines, iw))
 
 	// === Process Tree for top CPU consumers ===
-	if len(snap.Processes) > 0 && rates != nil && len(rates.ProcessRates) > 0 {
-		var treeLines []string
-		treeLines = append(treeLines, dimStyle.Render(fmt.Sprintf("%7s %-16s %7s %8s  %s", "PID", "COMMAND", "CPU%", "STATE", "TREE")))
+	if !intermediate { // Hide tree in intermediate mode to reduce complexity
+		if len(snap.Processes) > 0 && rates != nil && len(rates.ProcessRates) > 0 {
+			var treeLines []string
+			treeLines = append(treeLines, dimStyle.Render(fmt.Sprintf("%7s %-16s %7s %8s  %s", "PID", "COMMAND", "CPU%", "STATE", "TREE")))
 
-		// Build PID→Process lookup and PID→children map
-		pidProc := make(map[int]*model.ProcessMetrics, len(snap.Processes))
-		children := make(map[int][]int)
-		for i := range snap.Processes {
-			p := &snap.Processes[i]
-			pidProc[p.PID] = p
-			if p.PPID > 1 {
-				children[p.PPID] = append(children[p.PPID], p.PID)
-			}
-		}
-
-		// Build CPU% lookup from rates
-		cpuByPID := make(map[int]float64, len(rates.ProcessRates))
-		for _, pr := range rates.ProcessRates {
-			cpuByPID[pr.PID] = pr.CPUPct
-		}
-
-		// Find top 8 CPU consumers and show their ancestry
-		procs := make([]model.ProcessRate, len(rates.ProcessRates))
-		copy(procs, rates.ProcessRates)
-		sort.Slice(procs, func(i, j int) bool { return procs[i].CPUPct > procs[j].CPUPct })
-
-		shown := make(map[int]bool)
-		for i, p := range procs {
-			if i >= 8 || p.CPUPct < 0.5 {
-				break
-			}
-			if shown[p.PID] {
-				continue
+			// Build PID→Process lookup and PID→children map
+			pidProc := make(map[int]*model.ProcessMetrics, len(snap.Processes))
+			children := make(map[int][]int)
+			for i := range snap.Processes {
+				p := &snap.Processes[i]
+				pidProc[p.PID] = p
+				if p.PPID > 1 {
+					children[p.PPID] = append(children[p.PPID], p.PID)
+				}
 			}
 
-			// Build ancestry chain: PID → parent → grandparent → ...
-			var chain []int
-			pid := p.PID
-			for pid > 1 && len(chain) < 5 {
-				chain = append(chain, pid)
-				if proc, ok := pidProc[pid]; ok {
-					pid = proc.PPID
-				} else {
+			// Build CPU% lookup from rates
+			cpuByPID := make(map[int]float64, len(rates.ProcessRates))
+			for _, pr := range rates.ProcessRates {
+				cpuByPID[pr.PID] = pr.CPUPct
+			}
+
+			// Find top 8 CPU consumers and show their ancestry
+			procs := make([]model.ProcessRate, len(rates.ProcessRates))
+			copy(procs, rates.ProcessRates)
+			sort.Slice(procs, func(i, j int) bool { return procs[i].CPUPct > procs[j].CPUPct })
+
+			shown := make(map[int]bool)
+			for i, p := range procs {
+				if i >= 8 || p.CPUPct < 0.5 {
 					break
 				}
-			}
-
-			// Render chain from root → child (reverse)
-			for j := len(chain) - 1; j >= 0; j-- {
-				cpid := chain[j]
-				if shown[cpid] {
+				if shown[p.PID] {
 					continue
 				}
-				shown[cpid] = true
-				proc := pidProc[cpid]
-				if proc == nil {
-					continue
-				}
-				indent := len(chain) - 1 - j
-				prefix := strings.Repeat("  ", indent)
-				if indent > 0 {
-					prefix = strings.Repeat("  ", indent-1) + "└─"
-				}
-				comm := proc.Comm
-				if len(comm) > 14 {
-					comm = comm[:11] + "..."
+
+				// Build ancestry chain: PID → parent → grandparent → ...
+				var chain []int
+				pid := p.PID
+				for pid > 1 && len(chain) < 5 {
+					chain = append(chain, pid)
+					if proc, ok := pidProc[pid]; ok {
+						pid = proc.PPID
+					} else {
+						break
+					}
 				}
 
-				// Count child threads/processes
-				childCount := len(children[cpid])
-				tree := ""
-				if childCount > 0 {
-					tree = fmt.Sprintf("(%d children)", childCount)
-				}
+				// Render chain from root → child (reverse)
+				for j := len(chain) - 1; j >= 0; j-- {
+					cpid := chain[j]
+					if shown[cpid] {
+						continue
+					}
+					shown[cpid] = true
+					proc := pidProc[cpid]
+					if proc == nil {
+						continue
+					}
+					indent := len(chain) - 1 - j
+					prefix := strings.Repeat("  ", indent)
+					if indent > 0 {
+						prefix = strings.Repeat("  ", indent-1) + "└─"
+					}
+					comm := proc.Comm
+					if len(comm) > 14 {
+						comm = comm[:11] + "..."
+					}
 
-				cpuPct := cpuByPID[cpid]
-				row := fmt.Sprintf("%7d %s%-*s %6.1f%% %8s  %s",
-					cpid, prefix, 16-len(prefix), comm, cpuPct, proc.State, tree)
-				if proc.State == "D" {
-					treeLines = append(treeLines, warnStyle.Render(row))
-				} else if cpuPct > 50 {
-					treeLines = append(treeLines, critStyle.Render(row))
-				} else {
-					treeLines = append(treeLines, row)
+					// Count child threads/processes
+					childCount := len(children[cpid])
+					tree := ""
+					if childCount > 0 {
+						tree = fmt.Sprintf("(%d children)", childCount)
+					}
+
+					cpuPct := cpuByPID[cpid]
+					row := fmt.Sprintf("%7d %s%-*s %6.1f%% %8s  %s",
+						cpid, prefix, 16-len(prefix), comm, cpuPct, proc.State, tree)
+					if proc.State == "D" {
+						treeLines = append(treeLines, warnStyle.Render(row))
+					} else if cpuPct > 50 {
+						treeLines = append(treeLines, critStyle.Render(row))
+					} else {
+						treeLines = append(treeLines, row)
+					}
 				}
 			}
-		}
-		if len(treeLines) > 1 {
-			sb.WriteString(boxSection("PROCESS TREE (top CPU)", treeLines, iw))
+			if len(treeLines) > 1 {
+				sb.WriteString(boxSection("PROCESS TREE (top CPU)", treeLines, iw))
+			}
 		}
 	}
 
@@ -339,7 +385,9 @@ func renderCPUPage(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 
 		if len(netProcs) > 0 {
 			netProcLines = append(netProcLines, dimStyle.Render(fmt.Sprintf("%7s %-14s %7s %8s %10s %10s",
-				"PID", "COMMAND", "CPU%", "RETRANS", "CONN LAT", "OUT")))
+				"PID", "COMMAND", "CPU%",
+				abbr("RETRANS", "TCP resends", intermediate),
+				abbr("CONN LAT", "connect latency", intermediate), "OUT")))
 			for i, np := range netProcs {
 				if i >= 10 {
 					break

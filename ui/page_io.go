@@ -8,11 +8,14 @@ import (
 	"github.com/ftahirops/xtop/model"
 )
 
-func renderIOPage(snap *model.Snapshot, rates *model.RateSnapshot, result *model.AnalysisResult, smartDisks []model.SMARTDisk, pm probeQuerier, width, height int) string {
+func renderIOPage(snap *model.Snapshot, rates *model.RateSnapshot, result *model.AnalysisResult, smartDisks []model.SMARTDisk, pm probeQuerier, width, height int, intermediate bool) string {
 	var sb strings.Builder
 	iw := pageInnerW(width)
 
 	sb.WriteString(titleStyle.Render("IO / DISK SUBSYSTEM"))
+	if intermediate {
+		sb.WriteString(dimStyle.Render("  [verdicts ON]"))
+	}
 	sb.WriteString("\n")
 	sb.WriteString(renderRCAInline(result))
 	sb.WriteString(renderProbeStatusLine(pm, snap))
@@ -27,7 +30,13 @@ func renderIOPage(snap *model.Snapshot, rates *model.RateSnapshot, result *model
 
 	// === Summary ===
 	var sumLines []string
-	sumLines = append(sumLines, fmt.Sprintf("IO PSI some/full: %s / %s", fmtPSI(psi.Some.Avg10), fmtPSI(psi.Full.Avg10)))
+	psiLine := fmt.Sprintf("%s some/full: %s / %s",
+		abbr("IO PSI", "Pressure Stall — % time tasks wait for disk", intermediate),
+		fmtPSI(psi.Some.Avg10), fmtPSI(psi.Full.Avg10))
+	if intermediate {
+		psiLine += "  " + metricVerdict(psi.Some.Avg10, 5, 25)
+	}
+	sumLines = append(sumLines, psiLine)
 
 	dCount := 0
 	var dProcs []string
@@ -40,9 +49,16 @@ func renderIOPage(snap *model.Snapshot, rates *model.RateSnapshot, result *model
 		}
 	}
 	if dCount > 0 {
-		sumLines = append(sumLines, warnStyle.Render(fmt.Sprintf("D-state tasks: %d  [%s]", dCount, strings.Join(dProcs, ", "))))
+		dLine := fmt.Sprintf("%s: %d  [%s]",
+			abbr("D-state tasks", "processes stuck waiting for disk IO", intermediate),
+			dCount, strings.Join(dProcs, ", "))
+		if intermediate {
+			dLine += "  " + metricVerdict(float64(dCount), 3, 10)
+		}
+		sumLines = append(sumLines, warnStyle.Render(dLine))
 	} else {
-		sumLines = append(sumLines, "D-state tasks: 0")
+		sumLines = append(sumLines, fmt.Sprintf("%s: 0",
+			abbr("D-state tasks", "processes stuck waiting for disk IO", intermediate)))
 	}
 	sb.WriteString(boxSection("SUMMARY", sumLines, iw))
 
@@ -50,12 +66,20 @@ func renderIOPage(snap *model.Snapshot, rates *model.RateSnapshot, result *model
 	var devLines []string
 	if rates != nil && len(rates.DiskRates) > 0 {
 		devLines = append(devLines, dimStyle.Render(fmt.Sprintf("%-8s %10s %10s %8s %8s %8s %7s %6s",
-			"DEVICE", "READ MB/s", "WRITE MB/s", "R IOPS", "W IOPS", "AWAIT", "UTIL%", "QDEP")))
+			"DEVICE", "READ MB/s", "WRITE MB/s",
+			abbr("R IOPS", "read IO ops/s", intermediate),
+			abbr("W IOPS", "write IO ops/s", intermediate),
+			abbr("AWAIT", "avg IO time ms", intermediate),
+			"UTIL%",
+			abbr("QDEP", "queue depth", intermediate))))
 
 		for _, d := range rates.DiskRates {
 			utilBar := styledPad(bar(d.UtilPct, 8), 8)
 			row := fmt.Sprintf("%-8s %9.1f %10.1f %8.0f %8.0f %7.1fms %s %5d",
 				d.Name, d.ReadMBs, d.WriteMBs, d.ReadIOPS, d.WriteIOPS, d.AvgAwaitMs, utilBar, d.QueueDepth)
+			if intermediate {
+				row += "  " + metricVerdict(d.UtilPct, 70, 90)
+			}
 			if d.UtilPct > 90 || d.AvgAwaitMs > 50 {
 				devLines = append(devLines, critStyle.Render(row))
 			} else if d.UtilPct > 70 || d.AvgAwaitMs > 20 {
@@ -82,8 +106,9 @@ func renderIOPage(snap *model.Snapshot, rates *model.RateSnapshot, result *model
 				writePct = 100 - readPct
 			}
 
-			ioLines = append(ioLines, fmt.Sprintf("%s: Read %5.0f%% / Write %5.0f%%  (total: %.1f MB/s, %.0f IOPS)",
-				d.Name, readPct, writePct, totalMBs, totalIOPS))
+			ioLines = append(ioLines, fmt.Sprintf("%s: Read %5.0f%% / Write %5.0f%%  (total: %.1f MB/s, %.0f %s)",
+				d.Name, readPct, writePct, totalMBs, totalIOPS,
+				abbr("IOPS", "IO operations/sec", intermediate)))
 
 			avgSizeKB := float64(0)
 			ioType := "idle"
@@ -96,7 +121,16 @@ func renderIOPage(snap *model.Snapshot, rates *model.RateSnapshot, result *model
 					ioType = "random (small IOs)"
 				}
 			}
-			ioLines = append(ioLines, fmt.Sprintf("  avg IO size: %.0f KB  pattern: %s", avgSizeKB, ioType))
+			patternLine := fmt.Sprintf("  avg IO size: %.0f KB  pattern: %s", avgSizeKB, ioType)
+			if intermediate {
+				switch ioType {
+				case "random (small IOs)":
+					patternLine += "  " + dimStyle.Render("← database-like workload")
+				case "sequential (large IOs)":
+					patternLine += "  " + dimStyle.Render("← streaming/backup workload")
+				}
+			}
+			ioLines = append(ioLines, patternLine)
 		}
 	} else {
 		ioLines = append(ioLines, dimStyle.Render("(collecting...)"))
@@ -151,6 +185,9 @@ func renderIOPage(snap *model.Snapshot, rates *model.RateSnapshot, result *model
 			row := fmt.Sprintf("%7d %-16s %5s %9.2f %10.2f",
 				p.PID, comm, p.State, p.ReadMBs, p.WriteMBs)
 			if p.State == "D" {
+				if intermediate {
+					row += "  " + warnStyle.Render("← stuck waiting for disk")
+				}
 				procLines = append(procLines, warnStyle.Render(row))
 			} else {
 				procLines = append(procLines, row)

@@ -28,7 +28,7 @@ const (
 )
 
 // renderProbePage renders the full probe investigation page (page 8).
-func renderProbePage(pm *engine.ProbeManager, snap *model.Snapshot, width, height int, cursor int, expanded [13]bool) string {
+func renderProbePage(pm *engine.ProbeManager, snap *model.Snapshot, width, height int, cursor int, expanded [13]bool, intermediate bool) string {
 	var sb strings.Builder
 
 	if pm == nil {
@@ -48,11 +48,11 @@ func renderProbePage(pm *engine.ProbeManager, snap *model.Snapshot, width, heigh
 
 	switch state {
 	case engine.ProbeIdle:
-		sb.WriteString(renderProbeIdle(width))
+		sb.WriteString(renderProbeIdle(width, intermediate))
 	case engine.ProbeRunning:
 		sb.WriteString(renderProbeRunning(pm, width))
 	case engine.ProbeDone:
-		sb.WriteString(renderProbeDone(pm, width, cursor, expanded))
+		sb.WriteString(renderProbeDone(pm, width, cursor, expanded, intermediate))
 	}
 	sb.WriteString(pageFooter("I:probe  Tab:section  Enter:expand  A:all  C:collapse"))
 
@@ -184,7 +184,7 @@ func renderSentinelSection(snap *model.Snapshot, width int) string {
 	return sb.String()
 }
 
-func renderProbeIdle(width int) string {
+func renderProbeIdle(width int, intermediate bool) string {
 	var sb strings.Builder
 	sb.WriteString(titleStyle.Render(" PROBE INVESTIGATION"))
 	sb.WriteString("\n\n")
@@ -202,27 +202,30 @@ func renderProbeIdle(width int) string {
 	sb.WriteString(boxMid(innerW) + "\n")
 	sb.WriteString(boxRow(titleStyle.Render("Available probe packs:"), innerW) + "\n")
 	sb.WriteString(boxRow(" ", innerW) + "\n")
-	sb.WriteString(boxRow(fmt.Sprintf("  %s  %s",
-		styledPad(valueStyle.Render("offcpu"), 14),
-		dimStyle.Render("Trace off-CPU wait durations per process (reason from /proc wchan) [H]")), innerW) + "\n")
-	sb.WriteString(boxRow(fmt.Sprintf("  %s  %s",
-		styledPad(valueStyle.Render("iolatency"), 14),
-		dimStyle.Render("Block IO latency histograms per device (BPF tracepoint) [H]")), innerW) + "\n")
-	sb.WriteString(boxRow(fmt.Sprintf("  %s  %s",
-		styledPad(valueStyle.Render("lockwait"), 14),
-		dimStyle.Render("Lock contention (futex, rwsem, mutex) (BPF tracepoint) [H]")), innerW) + "\n")
-	sb.WriteString(boxRow(fmt.Sprintf("  %s  %s",
-		styledPad(valueStyle.Render("tcpretrans"), 14),
-		dimStyle.Render("TCP retransmit tracing (PID may be kernel context) [L]")), innerW) + "\n")
-	sb.WriteString(boxRow(fmt.Sprintf("  %s  %s",
-		styledPad(valueStyle.Render("netthroughput"), 14),
-		dimStyle.Render("Per-process TCP send/receive throughput")), innerW) + "\n")
-	sb.WriteString(boxRow(fmt.Sprintf("  %s  %s",
-		styledPad(valueStyle.Render("tcprtt"), 14),
-		dimStyle.Render("TCP RTT per remote endpoint")), innerW) + "\n")
-	sb.WriteString(boxRow(fmt.Sprintf("  %s  %s",
-		styledPad(valueStyle.Render("tcpconnlat"), 14),
-		dimStyle.Render("TCP connection establishment latency")), innerW) + "\n")
+
+	type probeDesc struct {
+		name, plain, technical string
+	}
+	packs := []probeDesc{
+		{"offcpu", "Find what's blocking your processes (disk, network, locks)", "Trace off-CPU wait durations per process (reason from /proc wchan) [H]"},
+		{"iolatency", "Measure how slow each disk really is", "Block IO latency histograms per device (BPF tracepoint) [H]"},
+		{"lockwait", "Find processes fighting over shared resources", "Lock contention (futex, rwsem, mutex) (BPF tracepoint) [H]"},
+		{"tcpretrans", "Find connections with packet loss", "TCP retransmit tracing (PID may be kernel context) [L]"},
+		{"netthroughput", "See which processes use the most network bandwidth", "Per-process TCP send/receive throughput"},
+		{"tcprtt", "Measure network latency to each destination", "TCP RTT per remote endpoint"},
+		{"tcpconnlat", "Find slow connection setup (DNS, firewall, routing)", "TCP connection establishment latency"},
+	}
+
+	for _, p := range packs {
+		desc := p.technical
+		if intermediate {
+			desc = p.plain
+		}
+		sb.WriteString(boxRow(fmt.Sprintf("  %s  %s",
+			styledPad(valueStyle.Render(p.name), 14),
+			dimStyle.Render(desc)), innerW) + "\n")
+	}
+
 	sb.WriteString(boxMid(innerW) + "\n")
 	sb.WriteString(boxRow(headerStyle.Render("Press I")+dimStyle.Render(" to auto-detect and run all packs (10s)"), innerW) + "\n")
 	sb.WriteString(boxBot(innerW) + "\n")
@@ -281,7 +284,7 @@ func renderProbeSectionHeader(title string, hasData bool, count int, selected, e
 	return titleStyle.Render(line) + "\n"
 }
 
-func renderProbeDone(pm *engine.ProbeManager, width int, cursor int, expanded [13]bool) string {
+func renderProbeDone(pm *engine.ProbeManager, width int, cursor int, expanded [13]bool, intermediate bool) string {
 	var sb strings.Builder
 	f := pm.Findings()
 	if f == nil {
@@ -313,6 +316,11 @@ func renderProbeDone(pm *engine.ProbeManager, width int, cursor int, expanded [1
 	if hdr := renderProbeSectionHeader("Off-CPU (Top waiters)", len(f.OffCPUWaiters) > 0, len(f.OffCPUWaiters), cursor == probSecOffCPU, expanded[probSecOffCPU]); hdr != "" {
 		sb.WriteString(hdr)
 		if expanded[probSecOffCPU] {
+			// Plain-English interpretation for top finding
+			if intermediate && len(f.OffCPUWaiters) > 0 {
+				top := f.OffCPUWaiters[0]
+				sb.WriteString("  " + dimStyle.Render(probeInterpretOffCPU(top.Comm, top.WaitPct, top.Reason)) + "\n")
+			}
 			sb.WriteString(boxTop(innerW) + "\n")
 			hdrLine := fmt.Sprintf("  %s %s %s %s %s",
 				styledPad(dimStyle.Render("PID"), 8),
@@ -350,6 +358,10 @@ func renderProbeDone(pm *engine.ProbeManager, width int, cursor int, expanded [1
 	if hdr := renderProbeSectionHeader("Block IO Latency", len(f.IOLatency) > 0, len(f.IOLatency), cursor == probSecIOLat, expanded[probSecIOLat]); hdr != "" {
 		sb.WriteString(hdr)
 		if expanded[probSecIOLat] {
+			if intermediate && len(f.IOLatency) > 0 {
+				top := f.IOLatency[0]
+				sb.WriteString("  " + dimStyle.Render(probeInterpretIOLat(top.Device, top.P95Ms)) + "\n")
+			}
 			sb.WriteString(boxTop(innerW) + "\n")
 			hdrLine := fmt.Sprintf("  %s %s %s %s %s %s",
 				styledPad(dimStyle.Render("DEV"), 12),
@@ -390,6 +402,10 @@ func renderProbeDone(pm *engine.ProbeManager, width int, cursor int, expanded [1
 	if hdr := renderProbeSectionHeader("Lock Waits", len(f.LockWaiters) > 0, len(f.LockWaiters), cursor == probSecLockWait, expanded[probSecLockWait]); hdr != "" {
 		sb.WriteString(hdr)
 		if expanded[probSecLockWait] {
+			if intermediate && len(f.LockWaiters) > 0 {
+				top := f.LockWaiters[0]
+				sb.WriteString("  " + dimStyle.Render(probeInterpretLock(top.Comm, top.WaitPct, top.LockType)) + "\n")
+			}
 			sb.WriteString(boxTop(innerW) + "\n")
 			hdrLine := fmt.Sprintf("  %s %s %s %s %s", styledPad(dimStyle.Render("PID"), 8), styledPad(dimStyle.Render("CMD"), 14), styledPad(dimStyle.Render("WAIT%"), 8), styledPad(dimStyle.Render("CONF"), 6), dimStyle.Render("LOCK TYPE"))
 			sb.WriteString(boxRow(hdrLine, innerW) + "\n")
@@ -414,6 +430,10 @@ func renderProbeDone(pm *engine.ProbeManager, width int, cursor int, expanded [1
 	if hdr := renderProbeSectionHeader("TCP Retransmits", len(f.TCPRetrans) > 0, len(f.TCPRetrans), cursor == probSecTCPRetrans, expanded[probSecTCPRetrans]); hdr != "" {
 		sb.WriteString(hdr)
 		if expanded[probSecTCPRetrans] {
+			if intermediate && len(f.TCPRetrans) > 0 {
+				top := f.TCPRetrans[0]
+				sb.WriteString("  " + dimStyle.Render(probeInterpretRetrans(top.Comm, top.Retrans)) + "\n")
+			}
 			sb.WriteString(boxTop(innerW) + "\n")
 			hdrLine := fmt.Sprintf("  %s %s %s %s %s", styledPad(dimStyle.Render("PID"), 8), styledPad(dimStyle.Render("CMD"), 14), styledPad(dimStyle.Render("RETRANS"), 10), styledPad(dimStyle.Render("CONF"), 6), dimStyle.Render("IFACE"))
 			sb.WriteString(boxRow(hdrLine, innerW) + "\n")
@@ -453,6 +473,10 @@ func renderProbeDone(pm *engine.ProbeManager, width int, cursor int, expanded [1
 	if hdr := renderProbeSectionHeader("TCP RTT", len(f.TCPRTT) > 0, len(f.TCPRTT), cursor == probSecTCPRTT, expanded[probSecTCPRTT]); hdr != "" {
 		sb.WriteString(hdr)
 		if expanded[probSecTCPRTT] {
+			if intermediate && len(f.TCPRTT) > 0 {
+				top := f.TCPRTT[0]
+				sb.WriteString("  " + dimStyle.Render(probeInterpretRTT(top.DstAddr, top.AvgRTTMs)) + "\n")
+			}
 			sb.WriteString(boxTop(innerW) + "\n")
 			hdrLine := fmt.Sprintf("  %s %s %s %s %s %s", styledPad(dimStyle.Render("DEST"), 18), styledPad(dimStyle.Render("AVG"), 10), styledPad(dimStyle.Render("MIN"), 10), styledPad(dimStyle.Render("MAX"), 10), styledPad(dimStyle.Render("SAMPLES"), 8), dimStyle.Render("PROCESS"))
 			sb.WriteString(boxRow(hdrLine, innerW) + "\n")
@@ -471,6 +495,10 @@ func renderProbeDone(pm *engine.ProbeManager, width int, cursor int, expanded [1
 	if hdr := renderProbeSectionHeader("TCP Connect Latency", len(f.TCPConnLat) > 0, len(f.TCPConnLat), cursor == probSecTCPConnLat, expanded[probSecTCPConnLat]); hdr != "" {
 		sb.WriteString(hdr)
 		if expanded[probSecTCPConnLat] {
+			if intermediate && len(f.TCPConnLat) > 0 {
+				top := f.TCPConnLat[0]
+				sb.WriteString("  " + dimStyle.Render(probeInterpretConnLat(top.Comm, top.AvgMs, top.DstAddr)) + "\n")
+			}
 			sb.WriteString(boxTop(innerW) + "\n")
 			hdrLine := fmt.Sprintf("  %s %s %s %s %s %s", styledPad(dimStyle.Render("PID"), 8), styledPad(dimStyle.Render("CMD"), 14), styledPad(dimStyle.Render("DEST"), 16), styledPad(dimStyle.Render("AVG"), 10), styledPad(dimStyle.Render("MAX"), 10), dimStyle.Render("COUNT"))
 			sb.WriteString(boxRow(hdrLine, innerW) + "\n")
@@ -489,6 +517,10 @@ func renderProbeDone(pm *engine.ProbeManager, width int, cursor int, expanded [1
 	if hdr := renderProbeSectionHeader("Run Queue Latency (watchdog)", len(f.RunQLat) > 0, len(f.RunQLat), cursor == probSecRunQLat, expanded[probSecRunQLat]); hdr != "" {
 		sb.WriteString(hdr)
 		if expanded[probSecRunQLat] {
+			if intermediate && len(f.RunQLat) > 0 {
+				top := f.RunQLat[0]
+				sb.WriteString("  " + dimStyle.Render(probeInterpretRunQLat(top.Comm, top.AvgUs)) + "\n")
+			}
 			sb.WriteString(boxTop(innerW) + "\n")
 			hdrLine := fmt.Sprintf("  %s %s %s %s %s", styledPad(dimStyle.Render("PID"), 8), styledPad(dimStyle.Render("CMD"), 14), styledPad(dimStyle.Render("AVG"), 10), styledPad(dimStyle.Render("MAX"), 10), dimStyle.Render("COUNT"))
 			sb.WriteString(boxRow(hdrLine, innerW) + "\n")
@@ -507,6 +539,10 @@ func renderProbeDone(pm *engine.ProbeManager, width int, cursor int, expanded [1
 	if hdr := renderProbeSectionHeader("Writeback Stalls (watchdog)", len(f.WBStall) > 0, len(f.WBStall), cursor == probSecWBStall, expanded[probSecWBStall]); hdr != "" {
 		sb.WriteString(hdr)
 		if expanded[probSecWBStall] {
+			if intermediate && len(f.WBStall) > 0 {
+				top := f.WBStall[0]
+				sb.WriteString("  " + dimStyle.Render(probeInterpretWBStall(top.Comm, top.Count)) + "\n")
+			}
 			sb.WriteString(boxTop(innerW) + "\n")
 			hdrLine := fmt.Sprintf("  %s %s %s %s", styledPad(dimStyle.Render("PID"), 8), styledPad(dimStyle.Render("CMD"), 14), styledPad(dimStyle.Render("STALLS"), 10), dimStyle.Render("PAGES"))
 			sb.WriteString(boxRow(hdrLine, innerW) + "\n")
@@ -523,6 +559,10 @@ func renderProbeDone(pm *engine.ProbeManager, width int, cursor int, expanded [1
 	if hdr := renderProbeSectionHeader("Page Fault Latency (watchdog)", len(f.PgFault) > 0, len(f.PgFault), cursor == probSecPgFault, expanded[probSecPgFault]); hdr != "" {
 		sb.WriteString(hdr)
 		if expanded[probSecPgFault] {
+			if intermediate && len(f.PgFault) > 0 {
+				top := f.PgFault[0]
+				sb.WriteString("  " + dimStyle.Render(probeInterpretPgFault(top.Comm, top.MajorCount)) + "\n")
+			}
 			sb.WriteString(boxTop(innerW) + "\n")
 			hdrLine := fmt.Sprintf("  %s %s %s %s %s", styledPad(dimStyle.Render("PID"), 8), styledPad(dimStyle.Render("CMD"), 14), styledPad(dimStyle.Render("AVG"), 10), styledPad(dimStyle.Render("MAJOR"), 8), dimStyle.Render("TOTAL"))
 			sb.WriteString(boxRow(hdrLine, innerW) + "\n")
@@ -579,6 +619,10 @@ func renderProbeDone(pm *engine.ProbeManager, width int, cursor int, expanded [1
 	if hdr := renderProbeSectionHeader("Socket IO Attribution (watchdog)", len(f.SockIO) > 0, len(f.SockIO), cursor == probSecSockIO, expanded[probSecSockIO]); hdr != "" {
 		sb.WriteString(hdr)
 		if expanded[probSecSockIO] {
+			if intermediate && len(f.SockIO) > 0 {
+				top := f.SockIO[0]
+				sb.WriteString("  " + dimStyle.Render(probeInterpretSockIO(top.Comm, top.DstAddr, top.AvgWaitMs)) + "\n")
+			}
 			sb.WriteString(boxTop(innerW) + "\n")
 			hdrLine := fmt.Sprintf("  %s %s %s %s %s %s", styledPad(dimStyle.Render("PID"), 8), styledPad(dimStyle.Render("CMD"), 12), styledPad(dimStyle.Render("DEST"), 24), styledPad(dimStyle.Render("TX"), 8), styledPad(dimStyle.Render("RX"), 8), dimStyle.Render("WAIT"))
 			sb.WriteString(boxRow(hdrLine, innerW) + "\n")

@@ -388,11 +388,174 @@ func pageInnerW(termWidth int) int {
 // pageFooter renders a consistent key-hint footer line.
 // pageKeys: page-specific bindings (can be ""). Universal keys always appended.
 func pageFooter(pageKeys string) string {
-	universal := "j/k:scroll  ?:help  Esc:back  q:quit"
+	universal := "N:verdicts  E:explain  j/k:scroll  ?:help  Esc:back  q:quit"
 	if pageKeys == "" {
 		return "\n" + dimStyle.Render("  "+universal) + "\n"
 	}
 	return "\n" + dimStyle.Render("  "+pageKeys+"  "+universal) + "\n"
+}
+
+// ─── METRIC VERDICT HELPERS ────────────────────────────────────────────────
+
+// metricVerdict returns a styled verdict badge for a numeric value against thresholds.
+// warnAt/critAt: thresholds (higher-is-worse). Returns "● OK" / "▲ HIGH" / "▲▲ CRITICAL".
+func metricVerdict(val, warnAt, critAt float64) string {
+	if val >= critAt {
+		return critStyle.Render("▲▲ CRITICAL")
+	}
+	if val >= warnAt {
+		return warnStyle.Render("▲ HIGH")
+	}
+	return okStyle.Render("● OK")
+}
+
+// metricVerdictLow returns verdict where LOWER is worse (e.g., available memory %).
+func metricVerdictLow(val, warnBelow, critBelow float64) string {
+	if val <= critBelow {
+		return critStyle.Render("▼▼ CRITICAL")
+	}
+	if val <= warnBelow {
+		return warnStyle.Render("▼ LOW")
+	}
+	return okStyle.Render("● OK")
+}
+
+// metricVerdictStr returns a one-word verdict string without styling.
+func metricVerdictStr(val, warnAt, critAt float64) string {
+	if val >= critAt {
+		return "CRITICAL"
+	}
+	if val >= warnAt {
+		return "HIGH"
+	}
+	return "OK"
+}
+
+// ─── INLINE ABBREVIATION HELPER ──────────────────────────────────────────────
+
+// abbr formats a metric abbreviation with its expansion on first use.
+// intermediate=true shows the expansion, false shows abbreviation only.
+func abbr(short, long string, intermediate bool) string {
+	if intermediate {
+		return short + " (" + long + ")"
+	}
+	return short
+}
+
+// ─── EXPLAIN HINT ────────────────────────────────────────────────────────────
+
+// explainHint returns a subtle hint about the explain panel.
+func explainHint() string {
+	return dimStyle.Render("  Press E for metric explanations")
+}
+
+// ─── PROBE INTERPRETATION ───────────────────────────────────────────────────
+
+// probeInterpretation returns a one-line plain-English verdict for a probe finding.
+func probeInterpretOffCPU(comm string, waitPct float64, reason string) string {
+	if reason == "" {
+		reason = "unknown"
+	}
+	switch {
+	case waitPct >= 50:
+		return fmt.Sprintf("%s is severely blocked — spending %.0f%% of time waiting (%s)", comm, waitPct, reason)
+	case waitPct >= 30:
+		return fmt.Sprintf("%s is frequently blocked — %.0f%% time waiting (%s)", comm, waitPct, reason)
+	default:
+		return fmt.Sprintf("%s has minor blocking — %.0f%% wait (%s)", comm, waitPct, reason)
+	}
+}
+
+func probeInterpretIOLat(device string, p95 float64) string {
+	switch {
+	case p95 >= 50:
+		return fmt.Sprintf("%s has very slow IO — 95th percentile latency is %.0fms (severely degraded)", device, p95)
+	case p95 >= 20:
+		return fmt.Sprintf("%s IO is sluggish — 95th percentile at %.0fms (may cause app slowdowns)", device, p95)
+	default:
+		return fmt.Sprintf("%s IO is healthy — p95 latency %.1fms", device, p95)
+	}
+}
+
+func probeInterpretLock(comm string, waitPct float64, lockType string) string {
+	switch {
+	case waitPct >= 50:
+		return fmt.Sprintf("%s has severe lock contention — %.0f%% time waiting for %s", comm, waitPct, lockType)
+	case waitPct >= 30:
+		return fmt.Sprintf("%s has notable lock contention — %.0f%% on %s", comm, waitPct, lockType)
+	default:
+		return fmt.Sprintf("%s has minor lock waits — %.0f%% on %s", comm, waitPct, lockType)
+	}
+}
+
+func probeInterpretRetrans(comm string, retrans int) string {
+	switch {
+	case retrans >= 100:
+		return fmt.Sprintf("%s has severe packet loss — %d retransmits/s (network congestion or faulty link)", comm, retrans)
+	case retrans >= 30:
+		return fmt.Sprintf("%s is seeing packet loss — %d retransmits/s", comm, retrans)
+	default:
+		return fmt.Sprintf("%s has minor retransmits — %d/s (normal)", comm, retrans)
+	}
+}
+
+func probeInterpretRunQLat(comm string, avgUs float64) string {
+	switch {
+	case avgUs >= 1000:
+		return fmt.Sprintf("%s waits %.0fus in CPU queue — tasks are starved for CPU time", comm, avgUs)
+	case avgUs >= 100:
+		return fmt.Sprintf("%s has moderate CPU queue delay — %.0fus average", comm, avgUs)
+	default:
+		return fmt.Sprintf("%s has fast CPU scheduling — %.0fus queue wait", comm, avgUs)
+	}
+}
+
+func probeInterpretConnLat(comm string, avgMs float64, dest string) string {
+	switch {
+	case avgMs >= 500:
+		return fmt.Sprintf("%s takes %.0fms to connect to %s — possible DNS/firewall/routing issue", comm, avgMs, dest)
+	case avgMs >= 100:
+		return fmt.Sprintf("%s has slow connections to %s — %.0fms average", comm, dest, avgMs)
+	default:
+		return fmt.Sprintf("%s connects quickly to %s — %.1fms", comm, dest, avgMs)
+	}
+}
+
+func probeInterpretRTT(dest string, avgMs float64) string {
+	switch {
+	case avgMs >= 50:
+		return fmt.Sprintf("High latency to %s — %.0fms round-trip (remote endpoint or network issue)", dest, avgMs)
+	case avgMs >= 10:
+		return fmt.Sprintf("Moderate latency to %s — %.0fms round-trip", dest, avgMs)
+	default:
+		return fmt.Sprintf("Low latency to %s — %.1fms round-trip (healthy)", dest, avgMs)
+	}
+}
+
+func probeInterpretWBStall(comm string, count int) string {
+	return fmt.Sprintf("%s was stalled %d times waiting for dirty pages to flush to disk", comm, count)
+}
+
+func probeInterpretPgFault(comm string, majorCount int) string {
+	switch {
+	case majorCount > 100:
+		return fmt.Sprintf("%s triggered %d major page faults — frequently fetching data from disk (memory pressure)", comm, majorCount)
+	case majorCount > 10:
+		return fmt.Sprintf("%s has %d major page faults — some pages evicted and re-fetched from disk", comm, majorCount)
+	default:
+		return fmt.Sprintf("%s has %d major faults (normal — mostly minor faults)", comm, majorCount)
+	}
+}
+
+func probeInterpretSockIO(comm string, dest string, avgWaitMs float64) string {
+	switch {
+	case avgWaitMs >= 50:
+		return fmt.Sprintf("%s waits %.0fms for IO to %s — slow remote endpoint or network", comm, avgWaitMs, dest)
+	case avgWaitMs >= 10:
+		return fmt.Sprintf("%s has moderate socket wait to %s — %.0fms", comm, dest, avgWaitMs)
+	default:
+		return fmt.Sprintf("%s has fast socket IO to %s — %.1fms wait", comm, dest, avgWaitMs)
+	}
 }
 
 // renderHealthBadge returns a styled status badge from a string status.

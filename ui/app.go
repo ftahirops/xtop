@@ -225,6 +225,9 @@ type Model struct {
 	secSectionExpanded [secSecCount]bool // which sections are expanded
 	secManualOverride  bool             // user toggled section; disable auto-expand
 
+	// Intermediate mode — show verdicts + abbreviation expansions + reduced detail
+	intermediateMode bool // M key toggles; adds verdicts to all metrics, hides kernel internals
+
 	// Process signal (kill) overlay — works on CPU, Memory, IO pages
 	signalMode       bool   // true = signal overlay is open
 	signalProcIdx    int    // selected process index in sorted list
@@ -832,6 +835,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.explainFocused = false
 				m.explainScroll = 0
 			}
+		case "N":
+			// Toggle intermediate mode (verdicts + abbreviation expansions)
+			m.intermediateMode = !m.intermediateMode
 		case "tab":
 			if m.explainPanelOpen {
 				m.explainFocused = !m.explainFocused
@@ -1238,11 +1244,11 @@ func (m Model) View() string {
 		case PageOverview:
 			content = renderOverview(m.snap, m.rates, rcaResult, m.engine.History, smartDisks, m.probeManager, m.layoutMode, m.overviewCompact, renderW, m.height)
 		case PageCPU:
-			content = renderCPUPage(m.snap, m.rates, m.result, m.probeManager, renderW, m.height)
+			content = renderCPUPage(m.snap, m.rates, m.result, m.probeManager, renderW, m.height, m.intermediateMode)
 		case PageMemory:
-			content = renderMemPage(m.snap, m.rates, m.result, m.probeManager, renderW, m.height)
+			content = renderMemPage(m.snap, m.rates, m.result, m.probeManager, renderW, m.height, m.intermediateMode)
 		case PageIO:
-			content = renderIOPage(m.snap, m.rates, m.result, smartDisks, m.probeManager, renderW, m.height)
+			content = renderIOPage(m.snap, m.rates, m.result, smartDisks, m.probeManager, renderW, m.height, m.intermediateMode)
 		case PageNetwork:
 			netSum, netResAgo := m.displayNetSummary()
 			content = renderNetPage(m.snap, m.rates, m.result, m.probeManager,
@@ -1257,7 +1263,7 @@ func (m Model) View() string {
 			active, completed := m.eventDetector.AllEvents()
 			content = renderEventsPage(active, completed, m.evtSelected, renderW, m.height)
 		case PageProbe:
-			content = renderProbePage(m.probeManager, m.snap, renderW, m.height, m.probeSectionCursor, m.probeSectionExpanded)
+			content = renderProbePage(m.probeManager, m.snap, renderW, m.height, m.probeSectionCursor, m.probeSectionExpanded, m.intermediateMode)
 		case PageThresholds:
 			content = renderThresholdsPage(m.snap, m.rates, m.result, renderW, m.height, m.threshShowAll)
 		case PageDiskGuard:
@@ -1784,6 +1790,7 @@ func (m Model) renderHelp() string {
 	sb.WriteString("  S         Save RCA snapshot to JSON file\n")
 	sb.WriteString("  E         Toggle explain side panel (metric glossary)\n")
 	sb.WriteString("  e         Toggle explain verdict panel (evidence detail)\n")
+	sb.WriteString("  N         Toggle verdict mode (adds ● OK / ▲ HIGH badges + abbreviation expansions)\n")
 	sb.WriteString("  P         Export incident report as markdown\n")
 	sb.WriteString("  A         Switch to advanced mode\n")
 	sb.WriteString("  B         Switch to simple/beginner mode\n")
