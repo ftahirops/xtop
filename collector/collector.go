@@ -57,6 +57,7 @@ func NewRegistry() *Registry {
 			&HealthCheckCollector{},
 			&DiagCollector{interval: 15 * time.Second},
 			&ProxmoxCollector{},
+			&GPUCollector{},
 		},
 	}
 }

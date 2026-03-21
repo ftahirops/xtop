@@ -163,6 +163,11 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History) 
 	// Narrative engine: build human-readable root cause explanation
 	result.Narrative = BuildNarrative(result, curr, rates)
 
+	// Enrich narrative with app-specific context (e.g., "MySQL slow because IO")
+	if result.Narrative != nil && curr != nil {
+		EnrichNarrativeWithApps(result.Narrative, result, curr.Global.Apps.Instances)
+	}
+
 	// Temporal causality: update signal onsets and build chain
 	UpdateSignalOnsets(hist, result)
 	result.TemporalChain = BuildTemporalChain(result, hist)
@@ -1026,9 +1031,9 @@ func isPrivateIPStr(ip string) bool {
 // isBenignDropReasonStr returns true for drop reasons that are normal TCP lifecycle.
 func isBenignDropReasonStr(reason string) bool {
 	switch reason {
-	case "NOT_SPECIFIED", "NO_SOCKET", "SOCKET_FILTER", "TCP_FLAGS",
-		"TCP_ZEROWINDOW", "TCP_OLD_DATA", "TCP_OVERWINDOW",
-		"TCP_OFOMERGE", "SKB_CONSUMED":
+	case "NOT_SPECIFIED", "NO_SOCKET", "SOCKET_FILTER", "OTHERHOST",
+		"TCP_FLAGS", "TCP_ZEROWINDOW", "TCP_OLD_DATA", "TCP_OVERWINDOW",
+		"TCP_OFOMERGE", "TCP_OLD_SEQUENCE", "SKB_CONSUMED":
 		return true
 	}
 	return false

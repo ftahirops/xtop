@@ -11,6 +11,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/ftahirops/xtop/collector"
 	"github.com/ftahirops/xtop/engine"
 	"github.com/ftahirops/xtop/model"
 )
@@ -36,10 +37,11 @@ const (
 	PageProxmox
 	PageApps
 	PageProfiler
+	PageGPU
 	pageCount
 )
 
-var pageNames = []string{"Overview", "CPU", "Memory", "IO", "Network", "CGroups", "Timeline", "Events", "Probe", "Thresholds", "DiskGuard", "Security", "Diagnostics", "Intel", "Proxmox", "Apps", "Profiler"}
+var pageNames = []string{"Overview", "CPU", "Memory", "IO", "Network", "CGroups", "Timeline", "Events", "Probe", "Thresholds", "DiskGuard", "Security", "Diagnostics", "Intel", "Proxmox", "Apps", "Profiler", "GPU"}
 
 // signalEntry describes a signal option in the signal menu.
 type signalEntry struct {
@@ -228,6 +230,14 @@ type Model struct {
 	// Intermediate mode — show verdicts + abbreviation expansions + reduced detail
 	intermediateMode bool // M key toggles; adds verdicts to all metrics, hides kernel internals
 
+	// Page picker overlay
+	pagePickerActive bool
+	pagePickerQuery  string
+	pagePickerCursor int
+
+	// Container name resolution
+	containerResolver *collector.ContainerResolver
+
 	// Process signal (kill) overlay — works on CPU, Memory, IO pages
 	signalMode       bool   // true = signal overlay is open
 	signalProcIdx    int    // selected process index in sorted list
@@ -277,8 +287,9 @@ func NewModel(ticker engine.Ticker, interval time.Duration, dataDir string) Mode
 		frozenPIDs:     make(map[int]frozenProc),
 		showOnboarding:  showOnboarding,
 		beginnerMode:    beginnerMode,
-		appsViewCompact: false,
-		overviewCompact: true,
+		appsViewCompact:   false,
+		overviewCompact:   true,
+		containerResolver: collector.NewContainerResolver(),
 	}
 }
 
@@ -458,6 +469,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return m, nil
+		}
+		// Page picker: intercept all keys
+		if m.pagePickerActive {
+			return m.handlePagePicker(msg.String()), nil
 		}
 		// Explain panel focused: capture scroll keys
 		if m.explainPanelOpen && m.explainFocused {
@@ -1062,6 +1077,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.page = PageProfiler
 			m.scroll = 0
 			m.explainScroll = 0
+		case "u", "U":
+			// Navigate to GPU page
+			m.page = PageGPU
+			m.scroll = 0
+			m.explainScroll = 0
+		case "H":
+			// Export HTML incident report
+			path, err := exportHTMLReport(m.snap, m.rates, m.result)
+			if err != nil {
+				m.saveMsg = fmt.Sprintf("Export failed: %v", err)
+			} else {
+				m.saveMsg = fmt.Sprintf("HTML report: %s", path)
+			}
+			m.saveMsgTime = time.Now()
+		case "/":
+			// Open page picker
+			m.pagePickerActive = true
+			m.pagePickerQuery = ""
+			m.pagePickerCursor = 0
 		case "f", "F":
 			// Network page: toggle focus mode
 			if m.page == PageNetwork {
@@ -1144,6 +1178,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.snap = msg.snap
 			m.rates = msg.rates
 			m.result = msg.result
+			// Resolve container names in owners
+			if m.containerResolver != nil && m.result != nil {
+				for i := range m.result.CPUOwners {
+					m.result.CPUOwners[i].Name = m.containerResolver.Resolve(m.result.CPUOwners[i].Name)
+				}
+				for i := range m.result.MemOwners {
+					m.result.MemOwners[i].Name = m.containerResolver.Resolve(m.result.MemOwners[i].Name)
+				}
+				for i := range m.result.IOOwners {
+					m.result.IOOwners[i].Name = m.containerResolver.Resolve(m.result.IOOwners[i].Name)
+				}
+				for i := range m.result.NetOwners {
+					m.result.NetOwners[i].Name = m.containerResolver.Resolve(m.result.NetOwners[i].Name)
+				}
+			}
 			// Feed event detector
 			m.eventDetector.Process(msg.snap, msg.rates, msg.result)
 			// Check probe state transitions
@@ -1291,6 +1340,8 @@ func (m Model) View() string {
 				renderW, m.height)
 		case PageProfiler:
 			content = renderProfilerPage(m.snap, m.profSectionCursor, m.profSectionExpanded, renderW, m.height)
+		case PageGPU:
+			content = renderGPUPage(m.snap, renderW, m.height)
 		}
 	}
 
@@ -1351,7 +1402,14 @@ func (m Model) View() string {
 		scrollInfo = fmt.Sprintf("%d/%d", bottomLine, totalLines)
 	}
 
-	return content + "\n" + m.renderStatusBar(scrollInfo)
+	final := content + "\n" + m.renderStatusBar(scrollInfo)
+
+	// Page picker overlay
+	if m.pagePickerActive {
+		final = renderPagePickerOverlay(&m, final, m.width, m.height)
+	}
+
+	return final
 }
 
 func (m Model) renderStatusBar(scrollInfo string) string {
@@ -1372,6 +1430,8 @@ func (m Model) renderStatusBar(scrollInfo string) string {
 			return "Y"
 		case PageProfiler:
 			return "O"
+		case PageGPU:
+			return "U"
 		default:
 			return fmt.Sprintf("%d", i)
 		}
@@ -1792,6 +1852,9 @@ func (m Model) renderHelp() string {
 	sb.WriteString("  e         Toggle explain verdict panel (evidence detail)\n")
 	sb.WriteString("  N         Toggle verdict mode (adds ● OK / ▲ HIGH badges + abbreviation expansions)\n")
 	sb.WriteString("  P         Export incident report as markdown\n")
+	sb.WriteString("  H         Export HTML incident report (shareable)\n")
+	sb.WriteString("  /         Page picker with search\n")
+	sb.WriteString("  U         GPU monitoring page\n")
 	sb.WriteString("  A         Switch to advanced mode\n")
 	sb.WriteString("  B         Switch to simple/beginner mode\n")
 	sb.WriteString("  Enter     Jump to bottleneck detail page\n")

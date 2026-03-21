@@ -887,6 +887,7 @@ type GlobalMetrics struct {
 	AppIdentities  map[int]AppIdentity // PID → resolved identity
 	Proxmox        *ProxmoxMetrics     // non-nil only on Proxmox hosts
 	Profile        *ServerProfile      // system profiler (optimization audit)
+	GPU            GPUSnapshot         // NVIDIA GPU metrics (empty if no GPU)
 }
 
 // CgroupMetrics holds metrics for a single cgroup.

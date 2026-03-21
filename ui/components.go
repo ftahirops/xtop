@@ -388,7 +388,7 @@ func pageInnerW(termWidth int) int {
 // pageFooter renders a consistent key-hint footer line.
 // pageKeys: page-specific bindings (can be ""). Universal keys always appended.
 func pageFooter(pageKeys string) string {
-	universal := "N:verdicts  E:explain  j/k:scroll  ?:help  Esc:back  q:quit"
+	universal := "/:pages  H:export  N:verdicts  E:explain  j/k:scroll  ?:help  q:quit"
 	if pageKeys == "" {
 		return "\n" + dimStyle.Render("  "+universal) + "\n"
 	}
