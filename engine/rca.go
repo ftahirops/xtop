@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/ftahirops/xtop/model"
+	"github.com/ftahirops/xtop/util"
 )
 
 const (
@@ -1030,13 +1031,7 @@ func isPrivateIPStr(ip string) bool {
 // Evidence groups: Drops, Retransmits, Conntrack, SoftIRQ, TCP state issues
 // isBenignDropReasonStr returns true for drop reasons that are normal TCP lifecycle.
 func isBenignDropReasonStr(reason string) bool {
-	switch reason {
-	case "NOT_SPECIFIED", "NO_SOCKET", "SOCKET_FILTER", "OTHERHOST",
-		"TCP_FLAGS", "TCP_ZEROWINDOW", "TCP_OLD_DATA", "TCP_OVERWINDOW",
-		"TCP_OFOMERGE", "TCP_OLD_SEQUENCE", "SKB_CONSUMED":
-		return true
-	}
-	return false
+	return util.IsBenignDropReason(reason)
 }
 
 // dropReasonImpact returns a human-readable impact description for a BPF drop reason.

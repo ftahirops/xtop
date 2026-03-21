@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ftahirops/xtop/model"
+	"github.com/ftahirops/xtop/util"
 )
 
 // defaultEphemeralRange is the Linux default ephemeral port range (32768-60999 = 28232 ports).
@@ -1783,13 +1784,8 @@ func fmtETADuration(sec float64) string {
 // ──────────────────────────────────────────────────────────────────────────────
 
 // noiseBPFDropReasons are kfree_skb reasons that do not indicate real packet loss.
-var noiseBPFDropReasons = map[string]bool{
-	"NO_SOCKET":            true,
-	"NOT_SPECIFIED":        true,
-	"TCP_OLD_DATA":         true,
-	"SKB_CONSUMED":         true,
-	"TCP_OFO_QUEUE_PRUNE":  true,
-}
+// Uses canonical list from util.BenignDropReasons.
+var noiseBPFDropReasons = util.BenignDropReasons
 
 // sigContrib scores a metric against warn/crit bands, returning 0..weight.
 // Returns (score, true) if the signal fired (at WARN or above).

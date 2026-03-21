@@ -5,6 +5,7 @@ import (
 	"sort"
 
 	"github.com/ftahirops/xtop/model"
+	"github.com/ftahirops/xtop/util"
 )
 
 // ComputeBlame identifies top offending processes/cgroups for the primary bottleneck.
@@ -177,10 +178,10 @@ func blameMemory(rates *model.RateSnapshot) []model.BlameEntry {
 		p := procs[i]
 		metrics := map[string]string{
 			"mem": fmt.Sprintf("%.1f%%", p.memPct),
-			"rss": fmtBytes(p.rss),
+			"rss": util.FmtBytes(p.rss),
 		}
 		if p.swap > 0 {
-			metrics["swap"] = fmtBytes(p.swap)
+			metrics["swap"] = util.FmtBytes(p.swap)
 		}
 		entries = append(entries, model.BlameEntry{
 			Comm:       p.comm,
@@ -441,21 +442,3 @@ func blameNetwork(result *model.AnalysisResult, rates *model.RateSnapshot, curr 
 	return entries
 }
 
-// fmtBytes formats bytes to human-readable string.
-func fmtBytes(b uint64) string {
-	const (
-		kb = 1024
-		mb = 1024 * kb
-		gb = 1024 * mb
-	)
-	switch {
-	case b >= gb:
-		return fmt.Sprintf("%.1f GB", float64(b)/float64(gb))
-	case b >= mb:
-		return fmt.Sprintf("%.1f MB", float64(b)/float64(mb))
-	case b >= kb:
-		return fmt.Sprintf("%.0f KB", float64(b)/float64(kb))
-	default:
-		return fmt.Sprintf("%d B", b)
-	}
-}

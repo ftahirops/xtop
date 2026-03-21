@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ftahirops/xtop/engine"
 	"github.com/ftahirops/xtop/model"
+	"github.com/ftahirops/xtop/util"
 )
 
 // LayoutMode selects which overview layout to render.
@@ -354,24 +355,23 @@ func extractSubsystems(snap *model.Snapshot, rates *model.RateSnapshot, result *
 		stealStr += " — noisy neighbor"
 	}
 
+	usageVal := fmt.Sprintf("%.1f%% busy", busyPct)
+	loadVal := loadStr
+	ctxVal := fmt.Sprintf("%.0f/s", ctxRate)
+	sysVal := fmt.Sprintf("%.1f%%", sysPct)
+	if intermediate {
+		usageVal += " " + metricVerdict(busyPct, 70, 90)
+		loadVal += " " + metricVerdict(loadPct, 100, 200)
+		sysVal += " " + metricVerdict(sysPct, 20, 40)
+		stealStr += " " + metricVerdict(stealPct, 3, 10)
+	}
 	cpu.Details = []kv{
-		{"Usage", fmt.Sprintf("%.1f%% busy", busyPct)},
-		{"Load avg", loadStr},
+		{"Usage", usageVal},
+		{"Load avg", loadVal},
 		{"Run queue", rqStr},
-	}
-	if intermediate {
-		cpu.Details[0].Val += " " + metricVerdict(busyPct, 70, 90)
-		cpu.Details[1].Val += " " + metricVerdict(loadPct, 100, 200)
-	}
-	if !intermediate {
-		cpu.Details = append(cpu.Details, kv{abbr("Ctx switch", "Context switches", intermediate), fmt.Sprintf("%.0f/s", ctxRate)})
-	}
-	cpu.Details = append(cpu.Details, kv{"System CPU", fmt.Sprintf("%.1f%%", sysPct)})
-	if intermediate {
-		cpu.Details[len(cpu.Details)-1].Val += " " + metricVerdict(sysPct, 20, 40)
-	}
-	if !intermediate {
-		cpu.Details = append(cpu.Details, kv{"Steal", stealStr})
+		{"Ctx switch", ctxVal},
+		{"System CPU", sysVal},
+		{"Steal", stealStr},
 	}
 	// Throttling from cgroups
 	throttled := "none"
@@ -440,25 +440,19 @@ func extractSubsystems(snap *model.Snapshot, rates *model.RateSnapshot, result *
 	if dirtyPct > 0.1 {
 		dirtyStr = fmt.Sprintf("%s (%.1f%%)", fmtBytes(snap.Global.Memory.Dirty), dirtyPct)
 	}
-	if !intermediate {
-		mem.Details = append(mem.Details, kv{"Dirty pages", dirtyStr})
-	}
+	mem.Details = append(mem.Details, kv{"Dirty pages", dirtyStr})
 
 	reclaimStr := "none"
 	if rates != nil && rates.DirectReclaimRate > 0 {
 		reclaimStr = fmt.Sprintf("%.0f pages/s", rates.DirectReclaimRate)
 	}
-	if !intermediate || reclaimStr != "none" {
-		mem.Details = append(mem.Details, kv{abbr("Reclaim", "Memory reclaim (kernel recovering pages)", intermediate), reclaimStr})
-	}
+	mem.Details = append(mem.Details, kv{"Reclaim", reclaimStr})
 
 	faultStr := "normal"
 	if rates != nil && rates.MajFaultRate > 10 {
 		faultStr = fmt.Sprintf("%.0f major/s", rates.MajFaultRate)
 	}
-	if !intermediate || faultStr != "normal" {
-		mem.Details = append(mem.Details, kv{"Page faults", faultStr})
-	}
+	mem.Details = append(mem.Details, kv{"Page faults", faultStr})
 
 	if result != nil && len(result.MemOwners) > 0 {
 		mem.TopOwner = result.MemOwners[0].Name
@@ -514,7 +508,7 @@ func extractSubsystems(snap *model.Snapshot, rates *model.RateSnapshot, result *
 	io.Details = []kv{
 		{"Utilization", utilValStr},
 		{"Latency", latencyVal},
-		{abbr("Queue depth", "Queue depth (pending IO requests)", intermediate), qdVal},
+		{"Queue depth", qdVal},
 	}
 
 	// Read/write throughput
@@ -537,7 +531,7 @@ func extractSubsystems(snap *model.Snapshot, rates *model.RateSnapshot, result *
 			writeIOPS += d.WriteIOPS
 		}
 	}
-	io.Details = append(io.Details, kv{abbr("IOPS", "IOPS (IO operations/sec)", intermediate), fmt.Sprintf("R:%.0f W:%.0f", readIOPS, writeIOPS)})
+	io.Details = append(io.Details, kv{"IOPS", fmt.Sprintf("R:%.0f W:%.0f", readIOPS, writeIOPS)})
 
 	if result != nil && len(result.IOOwners) > 0 {
 		io.TopOwner = result.IOOwners[0].Name
@@ -643,29 +637,29 @@ func extractSubsystems(snap *model.Snapshot, rates *model.RateSnapshot, result *
 		{"Retransmits", retransVal},
 	}
 
-	// Ephemeral ports: when intermediate, hide if usage < 50%
-	ephPctVal := float64(0)
-	if eph.RangeHi > 0 {
-		ephRange := eph.RangeHi - eph.RangeLo + 1
-		ephPctVal = float64(eph.InUse) / float64(ephRange) * 100
+	ephVal := ephStr
+	if intermediate {
+		ephPctVal := float64(0)
+		if eph.RangeHi > 0 {
+			ephRange := eph.RangeHi - eph.RangeLo + 1
+			ephPctVal = float64(eph.InUse) / float64(ephRange) * 100
+		}
+		ephVal += " " + metricVerdict(ephPctVal, 50, 80)
 	}
-	if !intermediate || ephPctVal >= 50 {
-		net.Details = append(net.Details, kv{abbr("Ephemeral", "Ephemeral ports (outbound connections)", intermediate), ephStr})
-	}
+	net.Details = append(net.Details, kv{"Ephemeral", ephVal})
 
-	// Conntrack: when intermediate, hide if count < 80% of max
-	ctPctVal := float64(0)
-	if ct.Max > 0 {
-		ctPctVal = float64(ct.Count) / float64(ct.Max) * 100
+	ctVal := ctStr
+	if intermediate && ct.Max > 0 {
+		ctPctVal := float64(ct.Count) / float64(ct.Max) * 100
+		ctVal += " " + metricVerdict(ctPctVal, 80, 95)
 	}
-	if !intermediate || ctPctVal >= 80 {
-		net.Details = append(net.Details, kv{abbr("Conntrack", "Conntrack (connection tracking table)", intermediate), ctStr})
-	}
+	net.Details = append(net.Details, kv{"Conntrack", ctVal})
 
-	// SoftIRQ load: when intermediate, hide if < 5%
-	if !intermediate || softIRQ >= 5 {
-		net.Details = append(net.Details, kv{abbr("SoftIRQ load", "SoftIRQ (kernel network processing overhead)", intermediate), fmt.Sprintf("%.1f%%", softIRQ)})
+	softIRQVal := fmt.Sprintf("%.1f%%", softIRQ)
+	if intermediate {
+		softIRQVal += " " + metricVerdict(softIRQ, 5, 15)
 	}
+	net.Details = append(net.Details, kv{"SoftIRQ load", softIRQVal})
 
 	if result != nil && len(result.NetOwners) > 0 {
 		net.TopOwner = result.NetOwners[0].Name
@@ -739,7 +733,7 @@ func extractSubsystems(snap *model.Snapshot, rates *model.RateSnapshot, result *
 			{"Worst mount", worstMountVal},
 			{"Free", fmt.Sprintf("%.0f%%", worstFreePct)},
 			{"Fill rate", etaStr},
-			{abbr("Inode usage", "Inode usage (file count capacity)", intermediate), inodeVal},
+			{"Inode usage", inodeVal},
 		}
 
 		if result != nil && result.DiskGuardWorst != "" {
@@ -1510,13 +1504,7 @@ func renderRCAInline(result *model.AnalysisResult) string {
 // isBenignSentinelDrop returns true for drop reasons that are normal TCP lifecycle,
 // not actual problems. These are excluded from the overview headline.
 func isBenignSentinelDrop(reason string) bool {
-	switch reason {
-	case "NOT_SPECIFIED", "NO_SOCKET", "SOCKET_FILTER", "TCP_FLAGS",
-		"TCP_ZEROWINDOW", "TCP_OLD_DATA", "TCP_OVERWINDOW",
-		"TCP_OFOMERGE", "SKB_CONSUMED":
-		return true
-	}
-	return false
+	return util.IsBenignDropReason(reason)
 }
 
 // renderProbeStatusLine renders the sentinel + probe status. Always produces exactly 1 line.
@@ -1530,66 +1518,79 @@ func renderProbeStatusLine(pm probeQuerier, snap *model.Snapshot, intermediate b
 		sb.WriteString(titleStyle.Render("Sentinel:"))
 		sb.WriteString(" ")
 		sent := snap.Global.Sentinel
+
+		// Calculate real (non-benign) drop rate for severity
+		realDropRate := float64(0)
+		for _, d := range sent.PktDrops {
+			if !d.Benign {
+				realDropRate += d.Rate
+			}
+		}
+
 		// Show key rates with reason breakdown and severity coloring
 		var parts []string
+		var benignParts []string // shown dim, not alarming
 		if sent.PktDropRate > 0 {
-			// Build drop string with top non-benign reason
-			var dropLabel string
-			if intermediate {
-				dropLabel = fmt.Sprintf("Packet drops: %.0f/s", sent.PktDropRate)
-			} else {
-				dropLabel = fmt.Sprintf("Drops:%.0f/s", sent.PktDropRate)
-			}
+			// Find top reason for display
+			topReason := ""
+			topRate := float64(0)
+			allBenign := true
 			for _, d := range sent.PktDrops {
-				if d.Rate >= 1 && !d.Benign {
-					if intermediate {
-						dropLabel += fmt.Sprintf(" [%s: %.0f/s — %s]", d.ReasonStr, d.Rate, dropReasonHint(d.ReasonStr))
-					} else {
-						dropLabel += fmt.Sprintf(" [%s:%.0f/s]", d.ReasonStr, d.Rate)
+				if d.Rate >= 1 {
+					if !d.Benign {
+						allBenign = false
+						if topReason == "" {
+							topReason = d.ReasonStr
+							topRate = d.Rate
+						}
+					} else if topReason == "" {
+						topReason = d.ReasonStr
+						topRate = d.Rate
 					}
-					break
 				}
 			}
-			parts = append(parts, dropLabel)
+			dropLabel := fmt.Sprintf("Drops:%.0f/s", sent.PktDropRate)
+			if topReason != "" {
+				dropLabel += fmt.Sprintf(" [%s:%.0f/s — %s]", topReason, topRate, dropReasonHint(topReason))
+			}
+			if allBenign {
+				benignParts = append(benignParts, dropLabel)
+			} else {
+				parts = append(parts, dropLabel)
+			}
 		}
 		if sent.TCPResetRate > 0 {
-			if intermediate {
-				parts = append(parts, fmt.Sprintf("TCP resets: %.0f/s", sent.TCPResetRate))
-			} else {
-				parts = append(parts, fmt.Sprintf("RSTs:%.0f/s", sent.TCPResetRate))
-			}
+			parts = append(parts, fmt.Sprintf("RSTs:%.0f/s", sent.TCPResetRate))
 		}
 		if sent.RetransRate > 0 {
-			if intermediate {
-				parts = append(parts, fmt.Sprintf("TCP retransmissions: %.0f/s", sent.RetransRate))
-			} else {
-				parts = append(parts, fmt.Sprintf("Retrans:%.0f/s", sent.RetransRate))
-			}
+			parts = append(parts, fmt.Sprintf("Retrans:%.0f/s", sent.RetransRate))
 		}
 		if sent.ThrottleRate > 0 {
-			if intermediate {
-				parts = append(parts, fmt.Sprintf("CPU throttling: %.0f/s", sent.ThrottleRate))
-			} else {
-				parts = append(parts, fmt.Sprintf("Throttle:%.0f/s", sent.ThrottleRate))
-			}
+			parts = append(parts, fmt.Sprintf("Throttle:%.0f/s", sent.ThrottleRate))
 		}
 		if len(sent.OOMKills) > 0 {
-			if intermediate {
-				parts = append(parts, fmt.Sprintf("Out-of-memory kills: %d", len(sent.OOMKills)))
-			} else {
-				parts = append(parts, fmt.Sprintf("OOM:%d", len(sent.OOMKills)))
-			}
+			parts = append(parts, fmt.Sprintf("OOM:%d", len(sent.OOMKills)))
 		}
-		if len(parts) == 0 {
+
+		if len(parts) == 0 && len(benignParts) == 0 {
 			sb.WriteString(okStyle.Render("ok"))
 		} else {
-			// Color by severity: >100/s drops or any OOM = crit, else warn
-			isCrit := sent.PktDropRate > 100 || len(sent.OOMKills) > 0
-			text := strings.Join(parts, " | ")
-			if isCrit {
-				sb.WriteString(critStyle.Render(text))
-			} else {
-				sb.WriteString(warnStyle.Render(text))
+			// Real problems: color by severity
+			if len(parts) > 0 {
+				isCrit := realDropRate > 100 || len(sent.OOMKills) > 0
+				text := strings.Join(parts, " | ")
+				if isCrit {
+					sb.WriteString(critStyle.Render(text))
+				} else {
+					sb.WriteString(warnStyle.Render(text))
+				}
+			}
+			// Benign-only drops: show dim (not alarming)
+			if len(benignParts) > 0 {
+				if len(parts) > 0 {
+					sb.WriteString(dimStyle.Render(" | "))
+				}
+				sb.WriteString(dimStyle.Render(strings.Join(benignParts, " | ")))
 			}
 		}
 		sb.WriteString(dimStyle.Render(" | "))
