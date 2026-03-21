@@ -108,9 +108,9 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEn
 	}
 
 	// Retrans confidence: dampen when absolute rate is very low (< 5/s is normal background)
-	retransConf := 0.8
-	if retransRate < 5 {
-		retransConf = 0.4
+	retransConf := netRetransBaseConf
+	if retransRate < netRetransLowRate {
+		retransConf = netRetransLowConf
 	}
 
 	// Split RX/TX drops for directional attribution
@@ -144,14 +144,14 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEn
 	)
 
 	// Split RX/TX drop evidence for directional diagnosis
-	if totalRxDrops > 0.5 {
+	if totalRxDrops > netDropSplitMinRate {
 		wRx, cRx := threshold("net.drops.rx", 1, 100)
 		r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("net.drops.rx", model.DomainNetwork,
 			totalRxDrops, wRx, cRx, true, 0.85,
 			fmt.Sprintf("RX drops=%.0f/s (inbound buffer overflow)", totalRxDrops), "1s",
 			nil, nil))
 	}
-	if totalTxDrops > 0.5 {
+	if totalTxDrops > netDropSplitMinRate {
 		wTx, cTx := threshold("net.drops.tx", 1, 50)
 		r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("net.drops.tx", model.DomainNetwork,
 			totalTxDrops, wTx, cTx, true, 0.7,
@@ -160,14 +160,14 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEn
 	}
 
 	// Split TIME_WAIT and SYN_SENT into separate evidence (different root causes)
-	if st.TimeWait > 500 {
+	if st.TimeWait > netTimeWaitEvidenceMin {
 		wTw, cTw := threshold("net.tcp.timewait", 3000, 15000)
 		r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("net.tcp.timewait", model.DomainNetwork,
 			float64(st.TimeWait), wTw, cTw, true, 0.6,
 			fmt.Sprintf("TIME_WAIT=%d (connection churn)", st.TimeWait), "1s",
 			nil, nil))
 	}
-	if st.SynSent > 5 {
+	if st.SynSent > netSynSentEvidenceMin {
 		wSs, cSs := threshold("net.tcp.synsent", 10, 100)
 		r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("net.tcp.synsent", model.DomainNetwork,
 			float64(st.SynSent), wSs, cSs, true, 0.85,
@@ -176,7 +176,7 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEn
 	}
 
 	// Ephemeral port exhaustion (Gregg USE: Saturation for network stack)
-	if ephPct > 30 {
+	if ephPct > netEphemeralEvidenceMinPct {
 		wEph, cEph := threshold("net.ephemeral", 50, 85)
 		r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("net.ephemeral", model.DomainNetwork,
 			ephPct, wEph, cEph, true, 0.9,
@@ -185,7 +185,7 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEn
 	}
 
 	// UDP errors (USE: Errors for UDP)
-	if rates.UDPErrRate > 0.5 {
+	if rates.UDPErrRate > netUDPErrMinRate {
 		wUdp, cUdp := threshold("net.udp.errors", 1, 50)
 		r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("net.udp.errors", model.DomainNetwork,
 			rates.UDPErrRate, wUdp, cUdp, true, 0.7,
@@ -194,7 +194,7 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEn
 	}
 
 	// TCP resets (connection rejections / aborts — Google SRE: Error signal)
-	if rates.TCPResetRate > 1 {
+	if rates.TCPResetRate > netTCPResetMinRate {
 		wRst, cRst := threshold("net.tcp.resets", 5, 100)
 		r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("net.tcp.resets", model.DomainNetwork,
 			rates.TCPResetRate, wRst, cRst, true, 0.75,
@@ -203,7 +203,7 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEn
 	}
 
 	// TCP connection attempt failures (Google SRE: Error signal)
-	if rates.TCPAttemptFailRate > 1 {
+	if rates.TCPAttemptFailRate > netTCPAttemptFailMinRate {
 		wAf, cAf := threshold("net.tcp.attemptfails", 5, 100)
 		r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("net.tcp.attemptfails", model.DomainNetwork,
 			rates.TCPAttemptFailRate, wAf, cAf, true, 0.8,
@@ -219,7 +219,7 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEn
 			var topReasons []string
 			var topReason string
 			for _, d := range sent.PktDrops {
-				if d.Rate < 1 {
+				if d.Rate < netBPFDropMinRate {
 					continue
 				}
 				if isBenignDropReasonStr(d.ReasonStr) {
@@ -348,7 +348,7 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEn
 				maxPortBuckets = ps.UniquePortBuckets
 			}
 		}
-		if maxPortBuckets >= 10 {
+		if maxPortBuckets >= netPortScanMinBuckets {
 			ws, cs := threshold("sec.portscan", 15, 40)
 			r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("sec.portscan", model.DomainNetwork,
 				float64(maxPortBuckets), ws, cs, true, 0.85,
@@ -378,7 +378,7 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEn
 				maxDests = fr.UniqueDestCount
 			}
 		}
-		if maxDests >= 200 {
+		if maxDests >= netLateralMinDests {
 			ws, cs := threshold("sec.lateral", 200, 500)
 			r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("sec.lateral", model.DomainNetwork,
 				float64(maxDests), ws, cs, true, 0.75,
@@ -397,7 +397,7 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEn
 				maxEgressMBHr = mbhr
 			}
 		}
-		if maxEgressMBHr > 100 {
+		if maxEgressMBHr > netExfilMinMBHr {
 			ws, cs := threshold("sec.outbound.exfil", 500, 5000)
 			r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("sec.outbound.exfil", model.DomainNetwork,
 				maxEgressMBHr, ws, cs, true, 0.8,
@@ -425,7 +425,7 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEn
 	// C2 beacon detection (from beacondetect watchdog)
 	minJitter := float64(1.0)
 	for _, bi := range curr.Global.Security.BeaconIndicators {
-		if bi.Jitter < minJitter && bi.SampleCount >= 5 {
+		if bi.Jitter < minJitter && bi.SampleCount >= netBeaconMinSamples {
 			minJitter = bi.Jitter
 		}
 	}
@@ -460,43 +460,43 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEn
 	r.Score = int(v2Score)
 	hasSecEvidence := false
 	for _, e := range r.EvidenceV2 {
-		if strings.HasPrefix(e.ID, "sec.") && e.Strength >= 0.35 {
+		if strings.HasPrefix(e.ID, "sec.") && e.Strength >= evidenceStrengthMin {
 			hasSecEvidence = true
 			break
 		}
 	}
-	if !hasSecEvidence && totalDrops < 1 && retransRate < 5 {
-		if r.Score > 25 {
-			r.Score = 25
+	if !hasSecEvidence && totalDrops < netEvDropsMin && retransRate < netRetransLowRate {
+		if r.Score > netNoSecMaxScore {
+			r.Score = netNoSecMaxScore
 		}
 	}
-	if totalDrops > 1 && rates.CPUSoftIRQPct > 5 && v2TrustGate(r.EvidenceV2) {
-		r.Score += 10
+	if totalDrops > netEvDropsMin && rates.CPUSoftIRQPct > netEvSoftIRQMin && v2TrustGate(r.EvidenceV2) {
+		r.Score += netDropsSoftIRQBonus
 	}
-	if r.Score < 20 && !hasSecEvidence {
+	if r.Score < rcaScoreFloor && !hasSecEvidence {
 		r.Score = 0
 	}
 	cap100(&r.Score)
-	r.EvidenceGroups = evidenceGroupsFired(r.EvidenceV2, 0.35)
+	r.EvidenceGroups = evidenceGroupsFired(r.EvidenceV2, evidenceStrengthMin)
 	r.Checks = evidenceToChecks(r.EvidenceV2)
 
 	// Evidence strings
-	if totalDrops > 1 {
+	if totalDrops > netEvDropsMin {
 		r.Evidence = append(r.Evidence, fmt.Sprintf("Network drops=%.0f/s", totalDrops))
 	}
-	if retransRate > 5 {
+	if retransRate > netEvRetransMin {
 		r.Evidence = append(r.Evidence, fmt.Sprintf("TCP retransmits=%.0f/s", retransRate))
 	}
-	if conntrackPct > 0.7 {
+	if conntrackPct > netEvConntrackPctMin {
 		r.Evidence = append(r.Evidence, fmt.Sprintf("Conntrack=%.0f%% (%d/%d)", conntrackPct*100, ct.Count, ct.Max))
 	}
-	if rates.CPUSoftIRQPct > 5 {
+	if rates.CPUSoftIRQPct > netEvSoftIRQMin {
 		r.Evidence = append(r.Evidence, fmt.Sprintf("SoftIRQ CPU=%.1f%%", rates.CPUSoftIRQPct))
 	}
-	if st.TimeWait > 5000 {
+	if st.TimeWait > netEvTimeWaitMin {
 		r.Evidence = append(r.Evidence, fmt.Sprintf("TIME_WAIT=%d (port exhaustion risk)", st.TimeWait))
 	}
-	if st.CloseWait > 20 {
+	if st.CloseWait > netEvCloseWaitMin {
 		cwEvStr := fmt.Sprintf("CLOSE_WAIT=%d (app not closing)", st.CloseWait)
 		if len(curr.Global.CloseWaitLeakers) > 0 {
 			top := curr.Global.CloseWaitLeakers[0]
@@ -505,25 +505,25 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEn
 		}
 		r.Evidence = append(r.Evidence, cwEvStr)
 	}
-	if totalErrors > 1 {
+	if totalErrors > netEvErrorsMin {
 		r.Evidence = append(r.Evidence, fmt.Sprintf("Network errors=%.0f/s", totalErrors))
 	}
-	if ephPct > 50 {
+	if ephPct > netEvEphemeralMin {
 		r.Evidence = append(r.Evidence, fmt.Sprintf("Ephemeral ports=%.0f%% (%d/%d)", ephPct, eph.InUse, ephRange))
 	}
-	if maxSynRate > 100 {
+	if maxSynRate > netEvSynFloodMin {
 		r.Evidence = append(r.Evidence, fmt.Sprintf("SYN flood: %.0f/s", maxSynRate))
 	}
-	if maxPortBuckets > 10 {
+	if maxPortBuckets > netEvPortScanMin {
 		r.Evidence = append(r.Evidence, fmt.Sprintf("Port scan: %d port groups", maxPortBuckets))
 	}
 
 	// Chain
 	if r.Score > 0 && r.EvidenceGroups >= minEvidenceGroups {
-		if retransRate > 5 {
+		if retransRate > netEvRetransMin {
 			r.Chain = append(r.Chain, fmt.Sprintf("retrans=%.0f/s", retransRate))
 		}
-		if totalDrops > 1 {
+		if totalDrops > netEvDropsMin {
 			r.Chain = append(r.Chain, fmt.Sprintf("drops=%.0f/s", totalDrops))
 		}
 		r.Chain = append(r.Chain, "connection quality risk")

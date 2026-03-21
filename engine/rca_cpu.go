@@ -237,7 +237,7 @@ func analyzeCPU(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEntry 
 	// Chain
 	if r.Score > 0 && r.EvidenceGroups >= minEvidenceGroups {
 		r.Chain = append(r.Chain, "CPU contention detected")
-		if rqRatio > 1.5 {
+		if rqRatio > cpuEvRunQueueMin {
 			r.Chain = append(r.Chain, fmt.Sprintf("More runnable threads (%d) than CPUs (%d)", int(running), nCPUs))
 		}
 		r.Chain = append(r.Chain, "Scheduling latency risk")
