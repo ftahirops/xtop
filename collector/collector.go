@@ -1,6 +1,7 @@
 package collector
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/ftahirops/xtop/model"
@@ -68,14 +69,26 @@ func (r *Registry) Add(c Collector) {
 }
 
 // CollectAll runs all collectors, populating the snapshot.
+// Each collector is wrapped in a panic recovery to prevent one
+// failing collector from crashing the entire collection cycle.
 func (r *Registry) CollectAll(snap *model.Snapshot) []error {
 	var errs []error
 	for _, c := range r.collectors {
-		if err := c.Collect(snap); err != nil {
+		if err := r.safeCollect(c, snap); err != nil {
 			errs = append(errs, err)
 		}
 	}
 	return errs
+}
+
+// safeCollect runs a single collector with panic recovery.
+func (r *Registry) safeCollect(c Collector, snap *model.Snapshot) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("collector %s panicked: %v", c.Name(), r)
+		}
+	}()
+	return c.Collect(snap)
 }
 
 // Closeable is an optional interface for collectors that hold resources.
