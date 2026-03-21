@@ -1,10 +1,16 @@
 # Binaries
 xtop
+stresslab
 *.exe
 *.deb
+*.rpm
+*.tar.gz
 
 # Packaging binaries (keep structure, exclude binary + deb)
 packaging/*/usr/local/bin/xtop
+
+# Old packaging (keep only current version dir)
+# packaging/xtop_OLD-1_amd64/
 
 # IDE
 .idea/
