@@ -45,16 +45,17 @@ func EnrichNarrativeWithApps(narr *model.Narrative, result *model.AnalysisResult
 		}
 	}
 
-	// Flag unhealthy apps as evidence
+	// Flag unhealthy apps as evidence — only if actually degraded
 	for _, app := range apps {
 		if app.HealthScore > 0 && app.HealthScore < 70 {
 			narr.Evidence = append(narr.Evidence,
 				fmt.Sprintf("[%s] health degraded (score: %d/100)", app.DisplayName, app.HealthScore))
-		}
-		for _, issue := range app.HealthIssues {
-			if len(narr.Evidence) < 8 {
-				narr.Evidence = append(narr.Evidence,
-					fmt.Sprintf("[%s] %s", app.DisplayName, issue))
+			// Only show issues for degraded apps
+			for _, issue := range app.HealthIssues {
+				if len(narr.Evidence) < 8 {
+					narr.Evidence = append(narr.Evidence,
+						fmt.Sprintf("[%s] %s", app.DisplayName, issue))
+				}
 			}
 		}
 	}

@@ -304,33 +304,40 @@ func computeProcessRates(prev, curr *model.Snapshot, dt time.Duration, r *model.
 
 	for _, p := range curr.Processes {
 		pp, ok := prevMap[p.PID]
+		var cpuDelta uint64
 		if !ok {
-			continue
+			// New process: estimate CPU from total time / uptime
+			// This ensures newly spawned workers (stress-ng, etc) are visible
+			cpuDelta = p.UTime + p.STime
+		} else {
+			cpuDelta = util.Delta(pp.UTime+pp.STime, p.UTime+p.STime)
 		}
-		cpuDelta := util.Delta(pp.UTime+pp.STime, p.UTime+p.STime)
 		var fdPct float64
 		if p.FDSoftLimit > 0 {
 			fdPct = float64(p.FDCount) / float64(p.FDSoftLimit) * 100
 		}
 		pr := model.ProcessRate{
-			PID:           p.PID,
-			Comm:          p.Comm,
-			State:         p.State,
-			CgroupPath:    p.CgroupPath,
-			ServiceName:   resolveServiceName(p.CgroupPath),
-			CPUPct:        float64(cpuDelta) / float64(cpuDtotal) * 100 * float64(curr.Global.CPU.NumCPUs),
-			MemPct:        float64(p.RSS) / float64(totalMem) * 100,
-			ReadMBs:       util.Rate(pp.ReadBytes, p.ReadBytes, dt) / (1024 * 1024),
-			WriteMBs:      util.Rate(pp.WriteBytes, p.WriteBytes, dt) / (1024 * 1024),
-			FaultRate:     util.Rate(pp.MinFault, p.MinFault, dt),
-			MajFaultRate:  util.Rate(pp.MajFault, p.MajFault, dt),
-			CtxSwitchRate: util.Rate(pp.VoluntaryCtxSwitches+pp.NonVoluntaryCtxSwitches, p.VoluntaryCtxSwitches+p.NonVoluntaryCtxSwitches, dt),
-			RSS:           p.RSS,
-			VmSwap:        p.VmSwap,
-			NumThreads:    p.NumThreads,
-			FDCount:       p.FDCount,
-			FDSoftLimit:   p.FDSoftLimit,
-			FDPct:         fdPct,
+			PID:         p.PID,
+			Comm:        p.Comm,
+			State:       p.State,
+			CgroupPath:  p.CgroupPath,
+			ServiceName: resolveServiceName(p.CgroupPath),
+			CPUPct:      float64(cpuDelta) / float64(cpuDtotal) * 100 * float64(curr.Global.CPU.NumCPUs),
+			MemPct:      float64(p.RSS) / float64(totalMem) * 100,
+			RSS:         p.RSS,
+			VmSwap:      p.VmSwap,
+			NumThreads:  p.NumThreads,
+			FDCount:     p.FDCount,
+			FDSoftLimit: p.FDSoftLimit,
+			FDPct:       fdPct,
+		}
+		// Delta-based rates only available for processes seen in previous tick
+		if ok {
+			pr.ReadMBs = util.Rate(pp.ReadBytes, p.ReadBytes, dt) / (1024 * 1024)
+			pr.WriteMBs = util.Rate(pp.WriteBytes, p.WriteBytes, dt) / (1024 * 1024)
+			pr.FaultRate = util.Rate(pp.MinFault, p.MinFault, dt)
+			pr.MajFaultRate = util.Rate(pp.MajFault, p.MajFault, dt)
+			pr.CtxSwitchRate = util.Rate(pp.VoluntaryCtxSwitches+pp.NonVoluntaryCtxSwitches, p.VoluntaryCtxSwitches+p.NonVoluntaryCtxSwitches, dt)
 		}
 		r.ProcessRates = append(r.ProcessRates, pr)
 	}
