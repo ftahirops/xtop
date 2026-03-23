@@ -480,6 +480,9 @@ func suggestNextSteps(result *model.AnalysisResult) []string {
 
 	case strings.Contains(domain, "cpu") || strings.Contains(domain, "throttl"):
 		steps = append(steps, "Press 1 for CPU detail page")
+		if result.PrimaryPID > 0 {
+			steps = append(steps, fmt.Sprintf("Investigate: top -p %d; strace -p %d", result.PrimaryPID, result.PrimaryPID))
+		}
 		steps = append(steps, "Press I for eBPF off-CPU analysis")
 
 	case strings.Contains(domain, "net") || strings.Contains(domain, "retrans") || strings.Contains(domain, "conntrack"):

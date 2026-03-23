@@ -15,8 +15,23 @@ func EnrichNarrativeWithApps(narr *model.Narrative, result *model.AnalysisResult
 
 	domain := strings.ToLower(result.PrimaryBottleneck)
 
+	// Only enrich with app context if the app is actually the culprit
+	// or is unhealthy. Don't blindly add "MySQL likely..." just because
+	// MySQL exists on the system.
+	culprit := strings.ToLower(result.PrimaryAppName)
+	if culprit == "" {
+		culprit = strings.ToLower(result.PrimaryProcess)
+	}
+
 	for _, app := range apps {
 		appType := strings.ToLower(app.AppType)
+		// Only enrich if this app IS the culprit or is degraded
+		isCulprit := strings.Contains(culprit, appType) || strings.Contains(culprit, strings.ToLower(app.DisplayName))
+		isDegraded := app.HealthScore > 0 && app.HealthScore < 70
+
+		if !isCulprit && !isDegraded {
+			continue
+		}
 
 		switch {
 		case strings.Contains(domain, "io") && isDBApp(appType):
