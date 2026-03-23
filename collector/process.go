@@ -56,22 +56,49 @@ func (p *ProcessCollector) Collect(snap *model.Snapshot) error {
 		return nil
 	}
 
-	// Keep top N/2 by CPU time AND top N/2 by IO writes, merged and deduped.
-	// This ensures IO-heavy processes (disk writers) are always tracked.
-	half := maxProcs / 2
+	// Keep top processes by 3 criteria, merged and deduped:
+	// 1. Top by CPU intensity (CPU ticks / age) — catches NEW hot processes
+	// 2. Top by cumulative CPU — catches long-running heavy processes
+	// 3. Top by IO writes — catches disk-heavy processes
+	third := maxProcs / 3
+	if third < 5 {
+		third = 5
+	}
 
-	// Top by CPU time
-	sort.Slice(procs, func(i, j int) bool {
-		return (procs[i].UTime + procs[i].STime) > (procs[j].UTime + procs[j].STime)
-	})
 	seen := make(map[int]bool)
 	var merged []model.ProcessMetrics
-	for i := 0; i < len(procs) && len(merged) < half; i++ {
+
+	// 1. Top by running state + recent CPU — critical for finding newly spawned
+	// workers like stress-ng that dominate current CPU but have low cumulative
+	// ticks compared to long-running daemons. Running (R) processes are
+	// actively on-CPU RIGHT NOW and should always be collected.
+	sort.Slice(procs, func(i, j int) bool {
+		// Running processes first
+		ri := procs[i].State == "R"
+		rj := procs[j].State == "R"
+		if ri != rj {
+			return ri // R state sorts before non-R
+		}
+		// Then by cumulative CPU
+		return (procs[i].UTime + procs[i].STime) > (procs[j].UTime + procs[j].STime)
+	})
+	for i := 0; i < len(procs) && len(merged) < third; i++ {
 		merged = append(merged, procs[i])
 		seen[procs[i].PID] = true
 	}
 
-	// Top by IO writes
+	// 2. Top by cumulative CPU time
+	sort.Slice(procs, func(i, j int) bool {
+		return (procs[i].UTime + procs[i].STime) > (procs[j].UTime + procs[j].STime)
+	})
+	for i := 0; i < len(procs) && len(merged) < third*2; i++ {
+		if !seen[procs[i].PID] {
+			merged = append(merged, procs[i])
+			seen[procs[i].PID] = true
+		}
+	}
+
+	// 3. Top by IO writes
 	sort.Slice(procs, func(i, j int) bool {
 		return procs[i].WriteBytes > procs[j].WriteBytes
 	})
@@ -92,10 +119,7 @@ func (p *ProcessCollector) Collect(snap *model.Snapshot) error {
 		}
 	}
 
-	// Fill remaining slots with top CPU if space left
-	sort.Slice(procs, func(i, j int) bool {
-		return (procs[i].UTime + procs[i].STime) > (procs[j].UTime + procs[j].STime)
-	})
+	// Fill remaining slots
 	for i := 0; i < len(procs) && len(merged) < maxProcs; i++ {
 		if !seen[procs[i].PID] {
 			merged = append(merged, procs[i])
