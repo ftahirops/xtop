@@ -466,36 +466,30 @@ func suggestNextSteps(result *model.AnalysisResult) []string {
 	domain := result.PrimaryBottleneck
 	appName := strings.ToLower(result.PrimaryAppName)
 
+	_ = appName
 	switch domain {
 	case "IO Starvation":
-		steps = append(steps, "Press 3 for IO detail page")
-		if strings.Contains(appName, "mysql") || strings.Contains(appName, "mariadb") {
-			steps = append(steps, "MySQL: SHOW PROCESSLIST; SHOW ENGINE INNODB STATUS")
-		} else if strings.Contains(appName, "postgres") {
-			steps = append(steps, "Postgres: SELECT * FROM pg_stat_activity WHERE wait_event_type='IO'")
-		}
-		steps = append(steps, "Press I for eBPF IO latency analysis")
+		steps = append(steps, "Press 3 → IO detail (per-device latency, IOPS, queue)")
+		steps = append(steps, "Press 8 → Probe results (IO latency histograms)")
+		steps = append(steps, "Press I → Run eBPF IO latency deep dive (10s)")
 
 	case "Memory Pressure":
-		steps = append(steps, "Press 2 for Memory detail page")
-		if result.PrimaryPID > 0 {
-			steps = append(steps, fmt.Sprintf("Investigate: ps -p %d -o pid,rss,vsz,comm", result.PrimaryPID))
-		}
-		steps = append(steps, "Press I for eBPF off-CPU analysis")
+		steps = append(steps, "Press 2 → Memory detail (swap, reclaim, page faults)")
+		steps = append(steps, "Press 5 → CGroups (which group is consuming memory)")
+		steps = append(steps, "Press I → Run eBPF off-CPU analysis (10s)")
 
 	case "CPU Contention":
-		steps = append(steps, "Press 1 for CPU detail page")
-		if result.PrimaryPID > 0 {
-			steps = append(steps, fmt.Sprintf("Investigate: top -p %d; strace -p %d", result.PrimaryPID, result.PrimaryPID))
-		}
-		steps = append(steps, "Press I for eBPF off-CPU analysis")
+		steps = append(steps, "Press 1 → CPU detail (per-process breakdown, throttle)")
+		steps = append(steps, "Press 5 → CGroups (which group is throttled)")
+		steps = append(steps, "Press I → Run eBPF off-CPU analysis (10s)")
 
 	case "Network Overload":
-		steps = append(steps, "Press 4 for Network detail page")
-		steps = append(steps, "Check: ss -s; nstat")
+		steps = append(steps, "Press 4 → Network detail (drops, retransmits, conntrack)")
+		steps = append(steps, "Press L → Security (attack detection, port scans)")
+		steps = append(steps, "Press I → Run eBPF deep dive (10s)")
 
 	default:
-		steps = append(steps, "Press I to run 10s eBPF deep dive")
+		steps = append(steps, "Press I → Run eBPF deep dive (10s)")
 	}
 
 	// Always ensure probe suggestion is present
