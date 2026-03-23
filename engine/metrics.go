@@ -184,6 +184,178 @@ func writePrometheus(w io.Writer, snap *model.Snapshot, rates *model.RateSnapsho
 	}
 }
 
+// ── Multi-Resolution Time Series ─────────────────────────────────────────────
+
+// TimeSeries1s holds a single high-resolution (per-sample) data point.
+type TimeSeries1s struct {
+	Timestamp time.Time
+	Health    int
+	Score     int
+	CPUBusy   float64
+	MemPct    float64
+	IOPSI     float64
+	TopPID    int
+	TopComm   string
+	IOAwait   float64
+	NetDrops  float64
+}
+
+// TimeSeries1m holds a 1-minute aggregated data point.
+type TimeSeries1m struct {
+	Timestamp time.Time
+	CPUBusy   float64
+	MemPct    float64
+	IOAwait   float64
+	NetDrops  float64
+	Health    int
+	Count     int // samples in this minute
+}
+
+// TimeSeries1h holds a 1-hour aggregated data point.
+type TimeSeries1h struct {
+	Timestamp time.Time
+	CPUBusy   float64
+	MemPct    float64
+	IOAwait   float64
+	NetDrops  float64
+	Health    int
+	Count     int // samples in this hour
+}
+
+// MultiResBuffer maintains metrics at 3 resolutions for trend analysis.
+type MultiResBuffer struct {
+	mu     sync.Mutex
+	HiRes  []TimeSeries1s  // 1-sample resolution, last 5 min (300 samples at 1s)
+	MidRes []TimeSeries1m  // 1-minute averages, last 1 hour
+	LowRes []TimeSeries1h  // 1-hour averages, last 24 hours
+
+	// Aggregation accumulators
+	midAcc   TimeSeries1m
+	lowAcc   TimeSeries1h
+	lastMid  time.Time
+	lastLow  time.Time
+}
+
+// NewMultiResBuffer creates a new multi-resolution buffer.
+func NewMultiResBuffer() *MultiResBuffer {
+	return &MultiResBuffer{}
+}
+
+// PushHiRes adds a high-resolution sample and triggers aggregation.
+func (b *MultiResBuffer) PushHiRes(ts TimeSeries1s) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	b.HiRes = append(b.HiRes, ts)
+	// Trim to 5 minutes (300 samples at 1s, 100 at 3s)
+	if len(b.HiRes) > 300 {
+		b.HiRes = b.HiRes[len(b.HiRes)-300:]
+	}
+
+	b.aggregateToMidRes(ts)
+	b.aggregateToLowRes(ts)
+}
+
+// aggregateToMidRes accumulates samples into 1-minute buckets.
+func (b *MultiResBuffer) aggregateToMidRes(ts TimeSeries1s) {
+	now := ts.Timestamp
+	// Start a new minute bucket if needed
+	if b.lastMid.IsZero() || now.Sub(b.lastMid) >= time.Minute {
+		if b.midAcc.Count > 0 {
+			b.midAcc.CPUBusy /= float64(b.midAcc.Count)
+			b.midAcc.MemPct /= float64(b.midAcc.Count)
+			b.midAcc.IOAwait /= float64(b.midAcc.Count)
+			b.midAcc.NetDrops /= float64(b.midAcc.Count)
+			b.midAcc.Health = b.midAcc.Health / b.midAcc.Count
+			b.MidRes = append(b.MidRes, b.midAcc)
+			// Trim to 1 hour
+			if len(b.MidRes) > 60 {
+				b.MidRes = b.MidRes[len(b.MidRes)-60:]
+			}
+		}
+		b.midAcc = TimeSeries1m{Timestamp: now}
+		b.lastMid = now
+	}
+	b.midAcc.CPUBusy += ts.CPUBusy
+	b.midAcc.MemPct += ts.MemPct
+	b.midAcc.IOAwait += ts.IOAwait
+	b.midAcc.NetDrops += ts.NetDrops
+	b.midAcc.Health += ts.Health
+	b.midAcc.Count++
+}
+
+// aggregateToLowRes accumulates samples into 1-hour buckets.
+func (b *MultiResBuffer) aggregateToLowRes(ts TimeSeries1s) {
+	now := ts.Timestamp
+	if b.lastLow.IsZero() || now.Sub(b.lastLow) >= time.Hour {
+		if b.lowAcc.Count > 0 {
+			b.lowAcc.CPUBusy /= float64(b.lowAcc.Count)
+			b.lowAcc.MemPct /= float64(b.lowAcc.Count)
+			b.lowAcc.IOAwait /= float64(b.lowAcc.Count)
+			b.lowAcc.NetDrops /= float64(b.lowAcc.Count)
+			b.lowAcc.Health = b.lowAcc.Health / b.lowAcc.Count
+			b.LowRes = append(b.LowRes, b.lowAcc)
+			// Trim to 24 hours
+			if len(b.LowRes) > 24 {
+				b.LowRes = b.LowRes[len(b.LowRes)-24:]
+			}
+		}
+		b.lowAcc = TimeSeries1h{Timestamp: now}
+		b.lastLow = now
+	}
+	b.lowAcc.CPUBusy += ts.CPUBusy
+	b.lowAcc.MemPct += ts.MemPct
+	b.lowAcc.IOAwait += ts.IOAwait
+	b.lowAcc.NetDrops += ts.NetDrops
+	b.lowAcc.Health += ts.Health
+	b.lowAcc.Count++
+}
+
+// HiResWindow returns the most recent n high-resolution samples.
+func (b *MultiResBuffer) HiResWindow(n int) []TimeSeries1s {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if n > len(b.HiRes) {
+		n = len(b.HiRes)
+	}
+	if n == 0 {
+		return nil
+	}
+	out := make([]TimeSeries1s, n)
+	copy(out, b.HiRes[len(b.HiRes)-n:])
+	return out
+}
+
+// MidResWindow returns the most recent n 1-minute samples.
+func (b *MultiResBuffer) MidResWindow(n int) []TimeSeries1m {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if n > len(b.MidRes) {
+		n = len(b.MidRes)
+	}
+	if n == 0 {
+		return nil
+	}
+	out := make([]TimeSeries1m, n)
+	copy(out, b.MidRes[len(b.MidRes)-n:])
+	return out
+}
+
+// LowResWindow returns the most recent n 1-hour samples.
+func (b *MultiResBuffer) LowResWindow(n int) []TimeSeries1h {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if n > len(b.LowRes) {
+		n = len(b.LowRes)
+	}
+	if n == 0 {
+		return nil
+	}
+	out := make([]TimeSeries1h, n)
+	copy(out, b.LowRes[len(b.LowRes)-n:])
+	return out
+}
+
 func writeCgroupMetrics(w io.Writer, cgs []model.CgroupRate) {
 	if len(cgs) == 0 {
 		return

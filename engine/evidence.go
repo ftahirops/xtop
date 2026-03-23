@@ -19,7 +19,7 @@ var evidenceWeightCategory = map[string]string{
 	"mem.reclaim.direct":   "queue",
 	"mem.swap.activity":    "latency",
 	"mem.major.faults":     "secondary",
-	"mem.oom.kills":        "psi", // OOM is highest priority
+	"mem.oom.kills":        "queue", // OOM is a capacity/queue event, not PSI
 
 	// Memory — runtime & kernel
 	"mem.psi.acceleration":  "psi",
@@ -43,7 +43,7 @@ var evidenceWeightCategory = map[string]string{
 	"net.drops":            "latency",
 	"net.drops.rx":         "latency",
 	"net.drops.tx":         "secondary",
-	"net.tcp.retrans":      "psi",
+	"net.tcp.retrans":      "latency", // retransmits are a latency signal, not PSI
 	"net.conntrack":        "queue",
 	"net.softirq":          "secondary",
 	"net.tcp.timewait":     "secondary",

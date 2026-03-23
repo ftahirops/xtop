@@ -9,7 +9,7 @@ import (
 
 // ---------- IO Score ----------
 // Evidence groups: PSI, D-state, Disk latency, Dirty pages
-func analyzeIO(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEntry {
+func analyzeIO(curr *model.Snapshot, rates *model.RateSnapshot, sp systemProfile) model.RCAEntry {
 	r := model.RCAEntry{Bottleneck: BottleneckIO}
 
 	ioSome := curr.Global.PSI.IO.Some.Avg10 / 100

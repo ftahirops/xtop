@@ -15,13 +15,29 @@ var slotWeights = map[string]float64{
 }
 
 // v2TrustGate returns true if evidence meets the v2 trust requirements:
-// 2+ groups with strength >= 0.35 AND at least 1 measured with confidence >= 0.8.
+// 2+ groups with strength >= 0.35 AND at least 1 measured with confidence >= 0.8
+// AND evidence comes from at least 2 different weight categories (diversity check).
 func v2TrustGate(evs []model.Evidence) bool {
 	groups := evidenceGroupsFired(evs, 0.35)
 	if groups < 2 {
 		return false
 	}
-	return hasMeasuredHighConf(evs, 0.35, 0.8)
+	if !hasMeasuredHighConf(evs, 0.35, 0.8) {
+		return false
+	}
+	// Diversity check: evidence must span at least 2 weight categories
+	// to avoid false positives from a single data source.
+	categories := make(map[string]bool)
+	for _, e := range evs {
+		if e.Strength >= evidenceStrengthMin {
+			cat := e.Tags["weight"]
+			if cat == "" {
+				cat = "secondary"
+			}
+			categories[cat] = true
+		}
+	}
+	return len(categories) >= 2
 }
 
 // weightedDomainScore computes a weighted sum across weight-category slots.
@@ -89,6 +105,54 @@ func domainConfidence(evs []model.Evidence) float64 {
 		conf = 0.98
 	}
 	return conf
+}
+
+// EnrichSaturationBreakdown populates the SaturationBreakdown field of a
+// GoldenSignalSummary with per-component detail from raw snapshot data.
+// This preserves all individual saturation signals that SaturationPct max() loses.
+func EnrichSaturationBreakdown(gs *model.GoldenSignalSummary, curr *model.Snapshot, rates *model.RateSnapshot) {
+	if gs == nil || curr == nil {
+		return
+	}
+
+	// Conntrack saturation
+	if curr.Global.Conntrack.Max > 0 {
+		gs.SaturationBreakdown.ConntrackPct = float64(curr.Global.Conntrack.Count) / float64(curr.Global.Conntrack.Max) * 100
+	}
+
+	// Ephemeral port saturation
+	ep := curr.Global.EphemeralPorts
+	ephRange := ep.RangeHi - ep.RangeLo
+	if ephRange <= 0 {
+		ephRange = 28232 // default range (32768-60999)
+	}
+	if ep.InUse > 0 {
+		gs.SaturationBreakdown.EphemeralPct = float64(ep.InUse) / float64(ephRange) * 100
+		if gs.SaturationBreakdown.EphemeralPct > 100 {
+			gs.SaturationBreakdown.EphemeralPct = 100
+		}
+	}
+
+	// Run queue saturation
+	nCPUs := curr.Global.CPU.NumCPUs
+	if nCPUs == 0 {
+		nCPUs = 1
+	}
+	rqRatio := curr.Global.CPU.LoadAvg.Load1 / float64(nCPUs)
+	if rqRatio > 1 {
+		rqRatio = 1
+	}
+	gs.SaturationBreakdown.RunqueueRatio = rqRatio
+
+	// PSI max (normalized to 0-1)
+	psiMax := curr.Global.PSI.CPU.Some.Avg10
+	if curr.Global.PSI.Memory.Some.Avg10 > psiMax {
+		psiMax = curr.Global.PSI.Memory.Some.Avg10
+	}
+	if curr.Global.PSI.IO.Full.Avg10 > psiMax {
+		psiMax = curr.Global.PSI.IO.Full.Avg10
+	}
+	gs.SaturationBreakdown.PSIMax = psiMax / 100
 }
 
 // evidenceToChecks converts v2 Evidence objects to legacy EvidenceCheck

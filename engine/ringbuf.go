@@ -76,19 +76,7 @@ func (r *RingBuf[T]) Slice() []T {
 	return out
 }
 
-// TimeSeries1s is a 1-second resolution metric sample.
-type TimeSeries1s struct {
-	Timestamp time.Time
-	Health    int     // HealthLevel as int
-	Score     int
-	CPUBusy   float64
-	MemPct    float64
-	IOPSI     float64
-	TopPID    int
-	TopComm   string
-}
-
-// TimeSeries10s is a 10-second resolution aggregate sample.
+// TimeSeries10s is a 10-second resolution aggregate sample (used by RingBuf-based pipeline).
 type TimeSeries10s struct {
 	Timestamp time.Time
 	HealthMax int     // worst health in window
@@ -102,40 +90,7 @@ type TimeSeries10s struct {
 	IOPSIMax  float64
 }
 
-// MultiResBuffer holds multi-resolution time series data.
-type MultiResBuffer struct {
-	HiRes  *RingBuf[TimeSeries1s]  // cap=120, last 2 min
-	MedRes *RingBuf[TimeSeries10s] // cap=2160, last 6h
-
-	// Accumulator for downsampling
-	accum    []TimeSeries1s
-	accumMu  sync.Mutex
-}
-
-// NewMultiResBuffer creates a new multi-resolution buffer.
-func NewMultiResBuffer() *MultiResBuffer {
-	return &MultiResBuffer{
-		HiRes:  NewRingBuf[TimeSeries1s](120),
-		MedRes: NewRingBuf[TimeSeries10s](2160),
-		accum:  make([]TimeSeries1s, 0, 10),
-	}
-}
-
-// PushHiRes adds a 1-second sample and handles downsampling to 10s.
-func (m *MultiResBuffer) PushHiRes(sample TimeSeries1s) {
-	m.HiRes.Push(sample)
-
-	m.accumMu.Lock()
-	defer m.accumMu.Unlock()
-
-	m.accum = append(m.accum, sample)
-	if len(m.accum) >= 10 {
-		m.MedRes.Push(downsample(m.accum))
-		m.accum = m.accum[:0]
-	}
-}
-
-// downsample computes a 10-second aggregate from 10 hi-res samples.
+// downsample computes a 10-second aggregate from hi-res samples.
 func downsample(samples []TimeSeries1s) TimeSeries10s {
 	if len(samples) == 0 {
 		return TimeSeries10s{}

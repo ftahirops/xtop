@@ -8,7 +8,7 @@ import (
 
 // ---------- CPU Score ----------
 // Evidence groups: PSI, Run queue, Context switches, Throttling, Steal
-func analyzeCPU(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEntry {
+func analyzeCPU(curr *model.Snapshot, rates *model.RateSnapshot, sp systemProfile) model.RCAEntry {
 	r := model.RCAEntry{Bottleneck: BottleneckCPU}
 
 	cpuSome := curr.Global.PSI.CPU.Some.Avg10 / 100
@@ -195,7 +195,15 @@ func analyzeCPU(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEntry 
 		v2Score = 0
 	}
 	r.Score = int(v2Score)
-	if busyPct < cpuSafeBusyPct && cpuSome < cpuSafePSISome && cpuFull < cpuSafePSIFull {
+	// System-profile-based CPU safe gate: on many-core systems, higher busy% is expected.
+	// Order matters: check >32 first since it's a superset of >16.
+	cpuSafeGate := cpuSafeBusyPct // default 50%
+	if sp.NumCPUs > 32 {
+		cpuSafeGate = 75.0 // 32+ cores: 75% busy is still safe
+	} else if sp.NumCPUs > 16 {
+		cpuSafeGate = 65.0 // 16+ cores: 65% busy is still safe
+	}
+	if busyPct < cpuSafeGate && cpuSome < cpuSafePSISome && cpuFull < cpuSafePSIFull {
 		if r.Score > cpuSafeMaxScore {
 			r.Score = cpuSafeMaxScore
 		}

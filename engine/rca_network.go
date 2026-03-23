@@ -71,7 +71,7 @@ func dropReasonImpact(reason string) string {
 	}
 }
 
-func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEntry {
+func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot, sp systemProfile) model.RCAEntry {
 	r := model.RCAEntry{Bottleneck: BottleneckNetwork}
 	if rates == nil {
 		return r

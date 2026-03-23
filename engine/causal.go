@@ -109,7 +109,8 @@ var causalRules = []causalRule{
 
 // buildCausalDAG constructs a causal DAG from fired evidence across all domains.
 // Returns nil if insufficient evidence to build a meaningful DAG.
-func buildCausalDAG(result *model.AnalysisResult) *model.CausalDAG {
+// If learner is non-nil, hardcoded rule weights are blended with learned weights.
+func buildCausalDAG(result *model.AnalysisResult, learner ...*CausalLearner) *model.CausalDAG {
 	// 1. Collect all fired evidence (strength >= 0.35) across all RCA entries
 	firedMap := make(map[string]model.Evidence) // id → evidence
 	for _, rca := range result.RCA {
@@ -142,16 +143,25 @@ func buildCausalDAG(result *model.AnalysisResult) *model.CausalDAG {
 	}
 
 	// 3. Apply rules to create edges where both from+to fired
+	var cl *CausalLearner
+	if len(learner) > 0 && learner[0] != nil {
+		cl = learner[0]
+	}
+
 	var edges []model.CausalEdge
 	hasIncoming := make(map[string]bool)
 	hasOutgoing := make(map[string]bool)
 	for _, rule := range causalRules {
 		if nodeSet[rule.from] && nodeSet[rule.to] {
+			w := rule.weight
+			if cl != nil {
+				w = cl.LearnedWeight(rule.rule, rule.weight, rule.from, rule.to)
+			}
 			edges = append(edges, model.CausalEdge{
 				From:   rule.from,
 				To:     rule.to,
 				Rule:   rule.rule,
-				Weight: rule.weight,
+				Weight: w,
 			})
 			hasOutgoing[rule.from] = true
 			hasIncoming[rule.to] = true
@@ -283,11 +293,15 @@ func linearize(dag *model.CausalDAG, firedMap map[string]model.Evidence) string 
 	return strings.Join(parts, " → ")
 }
 
-// CausalLearner tracks how often causal rules' predictions hold true.
-// For each rule, it counts: times both fired, times cause preceded effect.
+// CausalLearner tracks how often causal rules' predictions hold true
+// and learns co-occurrence patterns from observed evidence.
 type CausalLearner struct {
 	mu    sync.RWMutex
 	stats map[string]*causalRuleStats
+
+	// Co-occurrence learning: from → to → count
+	coOccurrence map[string]map[string]int
+	totalSamples int
 }
 
 type causalRuleStats struct {
@@ -299,7 +313,8 @@ type causalRuleStats struct {
 // NewCausalLearner creates a causal learning tracker.
 func NewCausalLearner() *CausalLearner {
 	return &CausalLearner{
-		stats: make(map[string]*causalRuleStats),
+		stats:        make(map[string]*causalRuleStats),
+		coOccurrence: make(map[string]map[string]int),
 	}
 }
 
@@ -322,15 +337,64 @@ func (cl *CausalLearner) Observe(rule string, causeFired, effectFired bool, caus
 	}
 }
 
-// LearnedWeight returns a blended weight: 70% hardcoded + 30% observed.
-// Returns the hardcoded weight if insufficient observations (<20).
-func (cl *CausalLearner) LearnedWeight(rule string, hardcodedWeight float64) float64 {
+// ObserveCoOccurrence records which evidence IDs fired together in a single tick.
+// This builds a co-occurrence matrix used to supplement hardcoded causal weights.
+func (cl *CausalLearner) ObserveCoOccurrence(firedEvidence []string) {
+	cl.mu.Lock()
+	defer cl.mu.Unlock()
+	cl.totalSamples++
+	for i, a := range firedEvidence {
+		for j, b := range firedEvidence {
+			if i != j {
+				if cl.coOccurrence[a] == nil {
+					cl.coOccurrence[a] = make(map[string]int)
+				}
+				cl.coOccurrence[a][b]++
+			}
+		}
+	}
+}
+
+// CoOccurrenceWeight returns the learned co-occurrence weight between two evidence IDs.
+// Returns 0 if insufficient data.
+func (cl *CausalLearner) CoOccurrenceWeight(from, to string) float64 {
 	cl.mu.RLock()
 	defer cl.mu.RUnlock()
-	s, ok := cl.stats[rule]
-	if !ok || s.BothFired < 20 {
+	if cl.totalSamples < 20 {
+		return 0
+	}
+	return float64(cl.coOccurrence[from][to]) / float64(cl.totalSamples)
+}
+
+// LearnedWeight returns a blended weight: 70% hardcoded + 30% observed.
+// The observed component blends rule-level causal ordering with co-occurrence data.
+// Returns the hardcoded weight if insufficient observations (<20).
+func (cl *CausalLearner) LearnedWeight(rule string, hardcodedWeight float64, from, to string) float64 {
+	cl.mu.RLock()
+	defer cl.mu.RUnlock()
+
+	// Rule-level directional observation
+	s, ruleOK := cl.stats[rule]
+	hasRule := ruleOK && s.BothFired >= 20
+
+	// Co-occurrence observation
+	hasCoOcc := cl.totalSamples >= 20
+
+	if !hasRule && !hasCoOcc {
 		return hardcodedWeight
 	}
-	observedWeight := float64(s.CauseFirst) / float64(s.BothFired)
+
+	var observedWeight float64
+	if hasRule && hasCoOcc {
+		ruleWeight := float64(s.CauseFirst) / float64(s.BothFired)
+		coOccWeight := float64(cl.coOccurrence[from][to]) / float64(cl.totalSamples)
+		// Blend rule direction (60%) with co-occurrence frequency (40%)
+		observedWeight = 0.6*ruleWeight + 0.4*coOccWeight
+	} else if hasRule {
+		observedWeight = float64(s.CauseFirst) / float64(s.BothFired)
+	} else {
+		observedWeight = float64(cl.coOccurrence[from][to]) / float64(cl.totalSamples)
+	}
+
 	return 0.7*hardcodedWeight + 0.3*observedWeight
 }

@@ -2,12 +2,14 @@ package engine
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"sort"
 	"sync"
 	"time"
 
 	bpf "github.com/ftahirops/xtop/collector/ebpf"
+	"github.com/ftahirops/xtop/model"
 )
 
 // ProbeState represents the lifecycle of a probe session.
@@ -787,4 +789,138 @@ func (pm *ProbeManager) ProbeSummary() string {
 		return pm.findings.Summary
 	}
 	return ""
+}
+
+// ProbeToEvidence converts probe findings into synthetic RCA evidence objects.
+// These can be injected into the RCA pipeline alongside /proc-derived evidence.
+func ProbeToEvidence(findings *ProbeFindings) []model.Evidence {
+	if findings == nil {
+		return nil
+	}
+	var evidence []model.Evidence
+
+	// Off-CPU findings → CPU domain evidence
+	for _, w := range findings.OffCPUWaiters {
+		if w.WaitPct > 20 {
+			evidence = append(evidence, model.Evidence{
+				ID:         "probe.offcpu",
+				Message:    fmt.Sprintf("%s off-CPU %.0f%% (%s)", w.Comm, w.WaitPct, w.Reason),
+				Domain:     model.DomainCPU,
+				Severity:   probeSeverity(w.WaitPct, 30, 60),
+				Strength:   math.Min(w.WaitPct/100.0, 1.0),
+				Confidence: 0.95, // eBPF is high-confidence
+				Measured:   true,
+				Value:      w.WaitPct,
+				Tags:       map[string]string{"weight": "secondary", "source": "ebpf"},
+			})
+			break // top offender only
+		}
+	}
+
+	// IO latency findings → IO domain evidence
+	for _, d := range findings.IOLatency {
+		if d.P95Ms > 20 {
+			evidence = append(evidence, model.Evidence{
+				ID:         "probe.iolatency",
+				Message:    fmt.Sprintf("%s p95=%dms util=%.0f%%", d.Device, int(d.P95Ms), d.UtilPct),
+				Domain:     model.DomainIO,
+				Severity:   probeSeverity(d.P95Ms, 50, 150),
+				Strength:   math.Min(d.P95Ms/200.0, 1.0), // 200ms = strength 1.0
+				Confidence: 0.95,
+				Measured:   true,
+				Value:      d.P95Ms,
+				Tags:       map[string]string{"weight": "latency", "source": "ebpf", "device": d.Device},
+			})
+			break
+		}
+	}
+
+	// Lock contention → CPU domain evidence
+	for _, l := range findings.LockWaiters {
+		if l.WaitPct > 10 {
+			evidence = append(evidence, model.Evidence{
+				ID:         "probe.lockwait",
+				Message:    fmt.Sprintf("%s lock contention %.0f%% (%s)", l.Comm, l.WaitPct, l.LockType),
+				Domain:     model.DomainCPU,
+				Severity:   probeSeverity(l.WaitPct, 20, 50),
+				Strength:   math.Min(l.WaitPct/80.0, 1.0),
+				Confidence: 0.90,
+				Measured:   true,
+				Value:      l.WaitPct,
+				Tags:       map[string]string{"weight": "secondary", "source": "ebpf"},
+			})
+			break
+		}
+	}
+
+	// TCP retransmits → Network domain evidence
+	for _, r := range findings.TCPRetrans {
+		if r.Retrans > 5 {
+			evidence = append(evidence, model.Evidence{
+				ID:         "probe.tcpretrans",
+				Message:    fmt.Sprintf("%s retransmits=%d/s", r.Comm, r.Retrans),
+				Domain:     model.DomainNetwork,
+				Severity:   probeSeverity(float64(r.Retrans), 20, 100),
+				Strength:   math.Min(float64(r.Retrans)/50.0, 1.0),
+				Confidence: 0.90,
+				Measured:   true,
+				Value:      float64(r.Retrans),
+				Tags:       map[string]string{"weight": "secondary", "source": "ebpf"},
+			})
+			break
+		}
+	}
+
+	// Run queue latency → CPU domain evidence (watchdog)
+	for _, rq := range findings.RunQLat {
+		if rq.AvgUs > 100 { // >100us average is notable
+			evidence = append(evidence, model.Evidence{
+				ID:         "probe.runqlat",
+				Message:    fmt.Sprintf("%s runq avg=%.0fus max=%.0fus", rq.Comm, rq.AvgUs, rq.MaxUs),
+				Domain:     model.DomainCPU,
+				Severity:   probeSeverity(rq.AvgUs, 500, 2000),
+				Strength:   math.Min(rq.AvgUs/5000.0, 1.0),
+				Confidence: 0.95,
+				Measured:   true,
+				Value:      rq.AvgUs,
+				Tags:       map[string]string{"weight": "queue", "source": "ebpf"},
+			})
+			break
+		}
+	}
+
+	// Socket IO wait → Network domain evidence (watchdog)
+	for _, sio := range findings.SockIO {
+		if sio.AvgWaitMs > 10 {
+			svc := sio.DstAddr
+			if sio.Service != "" {
+				svc = sio.Service
+			}
+			evidence = append(evidence, model.Evidence{
+				ID:         "probe.sockio",
+				Message:    fmt.Sprintf("%s->%s avg=%.0fms", sio.Comm, svc, sio.AvgWaitMs),
+				Domain:     model.DomainNetwork,
+				Severity:   probeSeverity(sio.AvgWaitMs, 50, 200),
+				Strength:   math.Min(sio.AvgWaitMs/200.0, 1.0),
+				Confidence: 0.90,
+				Measured:   true,
+				Value:      sio.AvgWaitMs,
+				Tags:       map[string]string{"weight": "latency", "source": "ebpf"},
+			})
+			break
+		}
+	}
+
+	return evidence
+}
+
+// probeSeverity maps a value to a severity level based on warn/crit thresholds.
+func probeSeverity(value, warn, crit float64) model.Severity {
+	if value >= crit {
+		return model.SeverityCrit
+	}
+	if value >= warn {
+		return model.SeverityWarn
+	}
+	return model.SeverityInfo
 }

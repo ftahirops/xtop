@@ -242,6 +242,10 @@ type AnalysisResult struct {
 	PrimaryProcess    string
 	PrimaryAppName    string // resolved app name for primary culprit
 
+	// Sustained pressure tracking
+	Sustained      bool // true if pressure persisted >10 ticks
+	SustainedTicks int  // number of recent ticks with elevated pressure
+
 	// Next risk (early warning)
 	NextRisk string
 
@@ -506,6 +510,8 @@ type CrossCorrelation struct {
 	LeadTimeSec float64 `json:"lead_time_sec"` // seconds the cause preceded the effect
 	Confidence  float64 `json:"confidence"`   // 0-1 confidence in the correlation
 	Explanation string  `json:"explanation"`  // human-readable description
+	LeadSamples int     `json:"lead_samples,omitempty"` // lag in samples where cross-correlation peaks (positive = cause leads)
+	LaggedR     float64 `json:"lagged_r,omitempty"`     // Pearson R at the best lag
 }
 
 // BlameEntry identifies a top offending process or cgroup for the current bottleneck.
@@ -557,6 +563,14 @@ type ProcessAnomaly struct {
 	Sigma    float64
 }
 
+// SaturationDetail breaks down saturation into individual components.
+type SaturationDetail struct {
+	ConntrackPct  float64 // conntrack table usage % (0-100)
+	EphemeralPct  float64 // ephemeral port usage % (0-100)
+	RunqueueRatio float64 // load1 / nCPUs (0-1, clamped)
+	PSIMax        float64 // max PSI stall across domains (0-1, normalized from %)
+}
+
 // GoldenSignalSummary approximates Google SRE Golden Signals from /proc data.
 type GoldenSignalSummary struct {
 	// Latency proxies
@@ -570,5 +584,6 @@ type GoldenSignalSummary struct {
 	// Error proxies
 	ErrorRate float64 // drops + retrans + resets + OOM combined rate
 	// Saturation proxies
-	SaturationPct float64 // max of: conntrack%, ephemeral%, runqueue ratio, PSI
+	SaturationPct       float64          // max of: conntrack%, ephemeral%, runqueue ratio, PSI
+	SaturationBreakdown SaturationDetail // per-component saturation detail
 }

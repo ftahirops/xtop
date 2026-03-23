@@ -145,15 +145,42 @@ const (
 	netEvPortScanMin      = 10      // port scan buckets for evidence string
 )
 
+// systemProfile holds characteristics that affect threshold scaling.
+type systemProfile struct {
+	TotalMemGB float64
+	NumCPUs    int
+	NumDisks   int
+	IsVM       bool
+}
+
+func buildSystemProfile(snap *model.Snapshot) systemProfile {
+	sp := systemProfile{}
+	if snap.Global.Memory.Total > 0 {
+		sp.TotalMemGB = float64(snap.Global.Memory.Total) / (1024 * 1024 * 1024)
+	}
+	sp.NumCPUs = snap.Global.CPU.NumCPUs
+	if sp.NumCPUs == 0 {
+		sp.NumCPUs = 1
+	}
+	if snap.SysInfo != nil && snap.SysInfo.Virtualization != "" {
+		sp.IsVM = true
+	}
+	if rates := snap.Global.Disks; len(rates) > 0 {
+		sp.NumDisks = len(rates)
+	}
+	return sp
+}
+
 // AnalyzeRCA runs all bottleneck detectors and builds the full analysis result.
 func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History) *model.AnalysisResult {
 	result := &model.AnalysisResult{}
 
+	sp := buildSystemProfile(curr)
 	result.RCA = []model.RCAEntry{
-		analyzeIO(curr, rates),
-		analyzeMemory(curr, rates),
-		analyzeCPU(curr, rates),
-		analyzeNetwork(curr, rates),
+		analyzeIO(curr, rates, sp),
+		analyzeMemory(curr, rates, sp),
+		analyzeCPU(curr, rates, sp),
+		analyzeNetwork(curr, rates, sp),
 	}
 
 	// Compute v2 domain confidence for each entry
@@ -176,6 +203,21 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History) 
 		}
 	}
 
+	// Resolve multi-domain conflict: when top two domains score within 10 points,
+	// use cascading-pattern analysis to break the tie.
+	if len(result.RCA) >= 2 {
+		top := result.RCA[0]
+		second := result.RCA[1]
+		if top.Score > 0 && second.Score > 0 && top.Score-second.Score < 10 {
+			if resolved := resolveDomainConflict(top, second, curr, rates); resolved != "" {
+				// Swap entries if the resolved winner is not currently on top
+				if result.RCA[0].Bottleneck != resolved && result.RCA[1].Bottleneck == resolved {
+					result.RCA[0], result.RCA[1] = result.RCA[1], result.RCA[0]
+				}
+			}
+		}
+	}
+
 	// Primary + secondary
 	if len(result.RCA) > 0 && result.RCA[0].Score > 0 {
 		primary := result.RCA[0]
@@ -187,6 +229,48 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History) 
 		result.PrimaryPID = primary.TopPID
 		result.PrimaryProcess = primary.TopProcess
 		result.PrimaryAppName = primary.TopAppName
+	}
+
+	// Temporal scoring: sustained pressure gets a bonus over transient spikes.
+	if hist != nil && result.PrimaryScore > 0 {
+		sustainedTicks := 0
+		hLen := hist.Len()
+		lookback := 20
+		if lookback > hLen {
+			lookback = hLen
+		}
+		for i := hLen - 1; i >= hLen-lookback && i >= 0; i-- {
+			r := hist.GetRate(i)
+			// Use rate snapshot presence + prior primary score via a simple heuristic:
+			// if the previous tick had high CPU busy, IO PSI, or mem PSI, count as sustained.
+			if r != nil && r.DeltaSec > 0 {
+				snap := hist.Get(i)
+				if snap != nil {
+					maxPSI := snap.Global.PSI.CPU.Some.Avg10
+					if snap.Global.PSI.Memory.Some.Avg10 > maxPSI {
+						maxPSI = snap.Global.PSI.Memory.Some.Avg10
+					}
+					if snap.Global.PSI.IO.Some.Avg10 > maxPSI {
+						maxPSI = snap.Global.PSI.IO.Some.Avg10
+					}
+					if maxPSI >= 5.0 || r.CPUBusyPct >= 80 {
+						sustainedTicks++
+					}
+				}
+			}
+		}
+		// Sustained bonus: +5 per 10 ticks sustained (up to +15)
+		sustainedBonus := (sustainedTicks / 10) * 5
+		if sustainedBonus > 15 {
+			sustainedBonus = 15
+		}
+		result.PrimaryScore += sustainedBonus
+		cap100(&result.PrimaryScore)
+
+		if sustainedTicks > 10 {
+			result.Sustained = true
+			result.SustainedTicks = sustainedTicks
+		}
 	}
 
 	// Health level — v2: uses trust gate + domain confidence
@@ -271,7 +355,7 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History) 
 
 	// Causal chain — v2 DAG
 	if result.PrimaryScore > 0 && len(result.RCA) > 0 && result.RCA[0].EvidenceGroups >= minEvidenceGroups {
-		if dag := buildCausalDAG(result); dag != nil {
+		if dag := buildCausalDAG(result, hist.CausalLearner); dag != nil {
 			result.CausalDAG = dag
 			result.CausalChain = dag.LinearChain
 		}
@@ -631,6 +715,15 @@ func runStatisticalAnalysis(result *model.AnalysisResult, curr *model.Snapshot, 
 			hist.CausalLearner.Observe(rule.rule, causeFired, effectFired, causeFirst)
 		}
 	}
+
+	// 10. Feed co-occurrence learning from all fired evidence this tick
+	var firedIDs []string
+	for id := range evidenceMap {
+		firedIDs = append(firedIDs, id)
+	}
+	if len(firedIDs) >= 2 {
+		hist.CausalLearner.ObserveCoOccurrence(firedIDs)
+	}
 }
 
 // buildGoldenSignals approximates Google SRE Golden Signals from /proc data.
@@ -696,4 +789,44 @@ func buildGoldenSignals(curr *model.Snapshot, rates *model.RateSnapshot) *model.
 	}
 
 	return gs
+}
+
+// resolveDomainConflict uses known cascading patterns to break a tie
+// when the top two domain scores are within 10 points of each other.
+func resolveDomainConflict(top, second model.RCAEntry, curr *model.Snapshot, rates *model.RateSnapshot) string {
+	// Memory reclaim causing IO → prefer Memory as root cause
+	if top.Bottleneck == BottleneckIO && second.Bottleneck == BottleneckMemory {
+		if rates != nil && rates.DirectReclaimRate > 0 {
+			return BottleneckMemory
+		}
+	}
+	// CPU appears dominant but memory PSI exceeds CPU PSI → memory is root cause
+	if top.Bottleneck == BottleneckCPU && second.Bottleneck == BottleneckMemory {
+		if curr.Global.PSI.Memory.Some.Avg10 > curr.Global.PSI.CPU.Some.Avg10 {
+			return BottleneckMemory
+		}
+	}
+	// CPU appears dominant but high iowait → IO is root cause of CPU waiting
+	if top.Bottleneck == BottleneckCPU && second.Bottleneck == BottleneckIO {
+		if rates != nil && rates.CPUIOWaitPct > rates.CPUBusyPct*0.3 {
+			return BottleneckIO
+		}
+	}
+	return "" // no resolution, keep original ranking
+}
+
+// evidenceCategory classifies an evidence ID into a weight category for
+// the trust gate diversity check. This is independent of the weight tag
+// used by scoring — it groups evidence by data-source type.
+func evidenceCategory(id string) string {
+	switch {
+	case strings.Contains(id, "psi"):
+		return "psi"
+	case strings.Contains(id, "latency"), strings.Contains(id, "await"):
+		return "latency"
+	case strings.Contains(id, "queue"), strings.Contains(id, "dstate"), strings.Contains(id, "runq"):
+		return "queue"
+	default:
+		return "secondary"
+	}
 }

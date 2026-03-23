@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -201,13 +202,10 @@ func BuildCrossCorrelation(result *model.AnalysisResult, hist *History) []model.
 			continue // effect started first — not this correlation
 		}
 
-		// Confidence based on: lead time plausibility + signal strengths
-		confidence := 0.5
-		if leadTime > 0 && leadTime < 30 {
-			confidence += 0.3 // strong temporal evidence
-		} else if leadTime == 0 {
-			confidence += 0.1 // simultaneous — weaker
-		}
+		// Domain-specific Gaussian decay for lead time confidence
+		domain := guessDomain(pair.Cause)
+		confidence := 0.5 + causalLeadConfidence(domain, leadTime)
+
 		// Boost for strong signals
 		avgStr := (causeStr + effectStr) / 2
 		if avgStr > 0.5 {
@@ -217,12 +215,21 @@ func BuildCrossCorrelation(result *model.AnalysisResult, hist *History) []model.
 			confidence = 1.0
 		}
 
+		// Compute cross-correlation lag if correlator available
+		var leadSamples int
+		var laggedR float64
+		if hist.Correlator != nil {
+			leadSamples, laggedR = hist.Correlator.BestLag(pair.Cause, pair.Effect)
+		}
+
 		correlations = append(correlations, model.CrossCorrelation{
 			Cause:       pair.Cause,
 			Effect:      pair.Effect,
 			LeadTimeSec: leadTime,
 			Confidence:  confidence,
 			Explanation: pair.Explanation,
+			LeadSamples: leadSamples,
+			LaggedR:     laggedR,
 		})
 	}
 
@@ -319,4 +326,52 @@ func shortLabel(id string) string {
 	// Fallback: use last segment
 	parts := strings.Split(id, ".")
 	return parts[len(parts)-1]
+}
+
+// causalLeadConfidence returns a domain-specific Gaussian decay confidence
+// boost based on how well the observed lead time matches the typical lead
+// time for that domain. Replaces the old linear 0-30s bracket.
+func causalLeadConfidence(domain string, leadTimeSec float64) float64 {
+	// Typical lead times per domain
+	var typicalLead float64
+	switch {
+	case strings.Contains(domain, "network"), strings.Contains(domain, "Network"):
+		typicalLead = 5.0
+	case strings.Contains(domain, "memory"), strings.Contains(domain, "Memory"):
+		typicalLead = 15.0
+	case strings.Contains(domain, "cpu"), strings.Contains(domain, "CPU"):
+		typicalLead = 10.0
+	case strings.Contains(domain, "io"), strings.Contains(domain, "IO"):
+		typicalLead = 20.0
+	default:
+		typicalLead = 10.0
+	}
+
+	if leadTimeSec < 0 {
+		return 0.05 // reverse causality possible but very low confidence
+	}
+
+	// Gaussian: peak at typicalLead, decay with distance
+	sigma := typicalLead * 0.5
+	if sigma < 3 {
+		sigma = 3
+	}
+	diff := leadTimeSec - typicalLead
+	return 0.4 * math.Exp(-0.5*(diff*diff)/(sigma*sigma))
+}
+
+// guessDomain infers a broad domain string from an evidence ID prefix.
+func guessDomain(evidenceID string) string {
+	switch {
+	case strings.HasPrefix(evidenceID, "cpu."):
+		return "CPU"
+	case strings.HasPrefix(evidenceID, "mem."):
+		return "Memory"
+	case strings.HasPrefix(evidenceID, "io."):
+		return "IO"
+	case strings.HasPrefix(evidenceID, "net."):
+		return "Network"
+	default:
+		return ""
+	}
 }

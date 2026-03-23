@@ -8,7 +8,7 @@ import (
 
 // ---------- Memory Score ----------
 // Evidence groups: PSI, Low available, Swap active, Direct reclaim, Major faults, OOM
-func analyzeMemory(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEntry {
+func analyzeMemory(curr *model.Snapshot, rates *model.RateSnapshot, sp systemProfile) model.RCAEntry {
 	r := model.RCAEntry{Bottleneck: BottleneckMemory}
 
 	memSome := curr.Global.PSI.Memory.Some.Avg10 / 100
@@ -79,6 +79,15 @@ func analyzeMemory(curr *model.Snapshot, rates *model.RateSnapshot) model.RCAEnt
 		if dynWarn < availWarn {
 			availWarn = dynWarn
 		}
+	}
+	// System-profile-based scaling: very large systems have proportionally more headroom.
+	// Order matters: check >128 first since it's a superset of >64.
+	if sp.TotalMemGB > 128 {
+		availWarn = 92.0 // 128GB+ system: ~10GB free is still OK
+		availCrit = 98.0
+	} else if sp.TotalMemGB > 64 {
+		availWarn = 90.0 // 64GB+ system: 6.4GB free is still OK
+		availCrit = 97.0
 	}
 
 	// Direct reclaim confidence: dampen when PSI shows no pressure

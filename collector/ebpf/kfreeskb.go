@@ -198,6 +198,8 @@ func isBenignDropReason(reason uint32) bool {
 		return true
 	case 6:  // SOCKET_FILTER — BPF socket filters (tcpdump, iptables match)
 		return true
+	case 9:  // OTHERHOST — packets for other MACs on shared NIC (VMs, bridges)
+		return true
 	case 27: // TCP_FLAGS — normal FIN/RST handling in TCP lifecycle
 		return true
 	case 28: // TCP_ZEROWINDOW — flow control, expected under load

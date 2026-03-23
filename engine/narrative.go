@@ -13,71 +13,83 @@ type narrativeRule struct {
 	ids      []string // evidence IDs that must fire (at least minMatch)
 	minMatch int      // how many of ids must fire (0 = all)
 	text     string   // natural-language root cause
+	priority int      // higher = checked first; cross-domain ~90, single-domain ~70, fallback ~50
 }
 
-// narrativeTemplates are checked in order; first match wins.
-// Cross-domain rules are listed first (highest priority).
+// narrativeTemplates are sorted by priority descending; first match wins.
+// Cross-domain cascades ~90, multi-signal single-domain ~70, single-signal ~50.
 var narrativeTemplates = []narrativeRule{
 	// Cross-domain (highest priority)
-	{ids: []string{"mem.swap.activity", "io.psi"}, text: "Memory pressure causing IO storm via swap thrashing"},
-	{ids: []string{"mem.reclaim.direct", "io.disk.latency"}, text: "Memory reclaim driving disk latency"},
-	{ids: []string{"mem.oom.kills"}, text: "OOM crisis — kernel killing processes to free memory"},
-	{ids: []string{"mem.swap.activity", "mem.psi", "io.disk.latency"}, minMatch: 2, text: "Memory pressure cascading into IO latency via swap"},
+	{ids: []string{"mem.swap.activity", "io.psi"}, text: "Memory pressure causing IO storm via swap thrashing", priority: 95},
+	{ids: []string{"mem.reclaim.direct", "io.disk.latency"}, text: "Memory reclaim driving disk latency", priority: 93},
+	{ids: []string{"mem.oom.kills"}, text: "OOM crisis — kernel killing processes to free memory", priority: 92},
+	{ids: []string{"mem.swap.activity", "mem.psi", "io.disk.latency"}, minMatch: 2, text: "Memory pressure cascading into IO latency via swap", priority: 90},
 
-	// CPU
-	{ids: []string{"cpu.cgroup.throttle", "cpu.runqueue"}, text: "CPU throttle cascade — cgroup limits saturating run queue"},
-	{ids: []string{"cpu.cgroup.throttle", "cpu.psi"}, text: "CPU throttling — cgroup limits causing CPU pressure stalls"},
-	{ids: []string{"cpu.steal", "cpu.psi"}, text: "Noisy neighbor — hypervisor stealing CPU time"},
-	{ids: []string{"cpu.runqueue", "cpu.psi"}, text: "CPU saturation — run queue overloaded"},
-	{ids: []string{"cpu.psi"}, text: "CPU pressure — tasks stalling on CPU access"},
-	{ids: []string{"cpu.runqueue"}, text: "CPU contention — elevated run queue depth"},
-	{ids: []string{"cpu.sentinel.throttle"}, text: "CPU throttling detected by BPF sentinel"},
+	// CPU multi-signal
+	{ids: []string{"cpu.cgroup.throttle", "cpu.runqueue"}, text: "CPU throttle cascade — cgroup limits saturating run queue", priority: 80},
+	{ids: []string{"cpu.cgroup.throttle", "cpu.psi"}, text: "CPU throttling — cgroup limits causing CPU pressure stalls", priority: 78},
+	{ids: []string{"cpu.steal", "cpu.psi"}, text: "Noisy neighbor — hypervisor stealing CPU time", priority: 77},
+	{ids: []string{"cpu.runqueue", "cpu.psi"}, text: "CPU saturation — run queue overloaded", priority: 75},
+	// CPU single-signal
+	{ids: []string{"cpu.psi"}, text: "CPU pressure — tasks stalling on CPU access", priority: 55},
+	{ids: []string{"cpu.runqueue"}, text: "CPU contention — elevated run queue depth", priority: 53},
+	{ids: []string{"cpu.sentinel.throttle"}, text: "CPU throttling detected by BPF sentinel", priority: 50},
 
-	// Memory
-	{ids: []string{"mem.psi.acceleration", "mem.reclaim.direct"}, text: "Sudden memory pressure onset — PSI spiking with direct reclaim active"},
-	{ids: []string{"mem.slab.leak", "mem.available.low"}, text: "Kernel slab leak — unreclaimable memory growing, consuming available RAM"},
-	{ids: []string{"mem.alloc.stall", "mem.psi"}, text: "Allocation stall storm — processes blocking on memory allocation"},
-	{ids: []string{"mem.reclaim.direct", "mem.psi"}, text: "Direct reclaim storm — kernel blocking on memory allocation"},
-	{ids: []string{"mem.swap.activity", "mem.psi"}, text: "Swap thrashing — heavy swap IO causing memory pressure"},
-	{ids: []string{"mem.available.low", "mem.psi"}, text: "Memory exhaustion — available memory critically low"},
-	{ids: []string{"mem.available.low"}, text: "Memory pressure from low available memory"},
-	{ids: []string{"mem.psi"}, text: "Memory pressure — tasks stalling on allocation"},
-	{ids: []string{"mem.sentinel.oom"}, text: "OOM events detected by BPF sentinel"},
-	{ids: []string{"mem.sentinel.reclaim"}, text: "Direct reclaim events detected by BPF sentinel"},
+	// Memory multi-signal
+	{ids: []string{"mem.psi.acceleration", "mem.reclaim.direct"}, text: "Sudden memory pressure onset — PSI spiking with direct reclaim active", priority: 80},
+	{ids: []string{"mem.slab.leak", "mem.available.low"}, text: "Kernel slab leak — unreclaimable memory growing, consuming available RAM", priority: 78},
+	{ids: []string{"mem.alloc.stall", "mem.psi"}, text: "Allocation stall storm — processes blocking on memory allocation", priority: 77},
+	{ids: []string{"mem.reclaim.direct", "mem.psi"}, text: "Direct reclaim storm — kernel blocking on memory allocation", priority: 76},
+	{ids: []string{"mem.swap.activity", "mem.psi"}, text: "Swap thrashing — heavy swap IO causing memory pressure", priority: 75},
+	{ids: []string{"mem.available.low", "mem.psi"}, text: "Memory exhaustion — available memory critically low", priority: 73},
+	// Memory single-signal
+	{ids: []string{"mem.available.low"}, text: "Memory pressure from low available memory", priority: 55},
+	{ids: []string{"mem.psi"}, text: "Memory pressure — tasks stalling on allocation", priority: 53},
+	{ids: []string{"mem.sentinel.oom"}, text: "OOM events detected by BPF sentinel", priority: 52},
+	{ids: []string{"mem.sentinel.reclaim"}, text: "Direct reclaim events detected by BPF sentinel", priority: 50},
 
-	// IO
-	{ids: []string{"cpu.iowait", "io.disk.latency", "io.psi"}, minMatch: 2, text: "CPU IOWait cascade — disk latency stalling CPU on IO completion"},
-	{ids: []string{"io.disk.queuedepth", "io.disk.latency"}, text: "Disk queue saturated — deep queue driving elevated latency"},
-	{ids: []string{"io.disk.util", "io.dstate", "io.disk.latency"}, minMatch: 2, text: "Disk IO saturation causing D-state threads"},
-	{ids: []string{"io.fsfull"}, text: "Filesystem nearing capacity"},
-	{ids: []string{"io.writeback", "io.disk.latency"}, text: "Writeback flood driving disk latency"},
-	{ids: []string{"io.psi", "io.dstate"}, text: "IO saturation — D-state processes accumulating"},
-	{ids: []string{"io.psi", "io.disk.latency"}, text: "IO pressure — elevated disk latency"},
-	{ids: []string{"io.psi"}, text: "IO pressure — tasks stalling on disk access"},
+	// IO multi-signal / cross-domain
+	{ids: []string{"cpu.iowait", "io.disk.latency", "io.psi"}, minMatch: 2, text: "CPU IOWait cascade — disk latency stalling CPU on IO completion", priority: 85},
+	{ids: []string{"io.disk.queuedepth", "io.disk.latency"}, text: "Disk queue saturated — deep queue driving elevated latency", priority: 78},
+	{ids: []string{"io.disk.util", "io.dstate", "io.disk.latency"}, minMatch: 2, text: "Disk IO saturation causing D-state threads", priority: 76},
+	{ids: []string{"io.writeback", "io.disk.latency"}, text: "Writeback flood driving disk latency", priority: 73},
+	{ids: []string{"io.psi", "io.dstate"}, text: "IO saturation — D-state processes accumulating", priority: 72},
+	{ids: []string{"io.psi", "io.disk.latency"}, text: "IO pressure — elevated disk latency", priority: 70},
+	// IO single-signal
+	{ids: []string{"io.fsfull"}, text: "Filesystem nearing capacity", priority: 60},
+	{ids: []string{"io.psi"}, text: "IO pressure — tasks stalling on disk access", priority: 53},
 
-	// Security threats
-	{ids: []string{"sec.synflood", "net.drops"}, text: "DDoS SYN flood — half-open connections exhausting resources and causing drops"},
-	{ids: []string{"sec.synflood"}, text: "SYN flood detected — high rate of unanswered SYN packets from single source"},
-	{ids: []string{"sec.portscan", "sec.tcp.flags"}, text: "Port scan with evasion — anomalous TCP flags indicate stealth scanning"},
-	{ids: []string{"sec.portscan"}, text: "Port scan detected — reconnaissance probing multiple ports"},
-	{ids: []string{"sec.dns.tunnel"}, text: "DNS tunneling — data exfiltration encoded in DNS queries"},
-	{ids: []string{"sec.beacon"}, text: "C2 beacon — periodic fixed-interval callbacks to external host"},
-	{ids: []string{"sec.outbound.exfil"}, text: "Data exfiltration — large outbound data volume to single destination"},
-	{ids: []string{"sec.lateral"}, text: "Lateral movement — process connecting to many internal hosts"},
+	// Security threats (high priority — always important)
+	{ids: []string{"sec.synflood", "net.drops"}, text: "DDoS SYN flood — half-open connections exhausting resources and causing drops", priority: 88},
+	{ids: []string{"sec.synflood"}, text: "SYN flood detected — high rate of unanswered SYN packets from single source", priority: 85},
+	{ids: []string{"sec.portscan", "sec.tcp.flags"}, text: "Port scan with evasion — anomalous TCP flags indicate stealth scanning", priority: 83},
+	{ids: []string{"sec.portscan"}, text: "Port scan detected — reconnaissance probing multiple ports", priority: 80},
+	{ids: []string{"sec.dns.tunnel"}, text: "DNS tunneling — data exfiltration encoded in DNS queries", priority: 82},
+	{ids: []string{"sec.beacon"}, text: "C2 beacon — periodic fixed-interval callbacks to external host", priority: 81},
+	{ids: []string{"sec.outbound.exfil"}, text: "Data exfiltration — large outbound data volume to single destination", priority: 80},
+	{ids: []string{"sec.lateral"}, text: "Lateral movement — process connecting to many internal hosts", priority: 79},
 
-	// Network
-	{ids: []string{"net.ephemeral", "net.tcp.timewait"}, text: "Ephemeral port exhaustion — TIME_WAIT churn consuming available ports"},
-	{ids: []string{"net.tcp.synsent", "net.tcp.attemptfails"}, text: "Upstream unreachable — SYN_SENT accumulation with connection failures"},
-	{ids: []string{"net.drops.rx", "net.tcp.retrans"}, text: "Inbound buffer overflow — RX drops driving TCP retransmits"},
-	{ids: []string{"cpu.irq.imbalance", "net.drops"}, text: "IRQ imbalance — single CPU overloaded with network interrupts causing drops"},
-	{ids: []string{"net.tcp.retrans", "net.drops"}, text: "Network congestion — retransmits with packet drops"},
-	{ids: []string{"net.closewait"}, text: "Socket leak — CLOSE_WAIT accumulating, application not closing connections"},
-	{ids: []string{"net.conntrack", "net.drops"}, text: "Conntrack exhaustion — table full causing packet drops"},
-	{ids: []string{"net.conntrack"}, text: "Conntrack table pressure — approaching capacity"},
-	{ids: []string{"net.tcp.retrans"}, text: "TCP retransmits elevated — possible network congestion"},
-	{ids: []string{"net.drops"}, text: "Packet drops detected — interface or kernel buffer overflows"},
-	{ids: []string{"net.sentinel.drops"}, text: "Packet drops detected by BPF sentinel"},
-	{ids: []string{"net.sentinel.resets"}, text: "TCP resets detected by BPF sentinel"},
+	// Network multi-signal / cross-domain
+	{ids: []string{"net.ephemeral", "net.tcp.timewait"}, text: "Ephemeral port exhaustion — TIME_WAIT churn consuming available ports", priority: 78},
+	{ids: []string{"net.tcp.synsent", "net.tcp.attemptfails"}, text: "Upstream unreachable — SYN_SENT accumulation with connection failures", priority: 77},
+	{ids: []string{"net.drops.rx", "net.tcp.retrans"}, text: "Inbound buffer overflow — RX drops driving TCP retransmits", priority: 76},
+	{ids: []string{"cpu.irq.imbalance", "net.drops"}, text: "IRQ imbalance — single CPU overloaded with network interrupts causing drops", priority: 85},
+	{ids: []string{"net.tcp.retrans", "net.drops"}, text: "Network congestion — retransmits with packet drops", priority: 73},
+	{ids: []string{"net.closewait"}, text: "Socket leak — CLOSE_WAIT accumulating, application not closing connections", priority: 70},
+	{ids: []string{"net.conntrack", "net.drops"}, text: "Conntrack exhaustion — table full causing packet drops", priority: 75},
+	// Network single-signal
+	{ids: []string{"net.conntrack"}, text: "Conntrack table pressure — approaching capacity", priority: 55},
+	{ids: []string{"net.tcp.retrans"}, text: "TCP retransmits elevated — possible network congestion", priority: 53},
+	{ids: []string{"net.drops"}, text: "Packet drops detected — interface or kernel buffer overflows", priority: 52},
+	{ids: []string{"net.sentinel.drops"}, text: "Packet drops detected by BPF sentinel", priority: 50},
+	{ids: []string{"net.sentinel.resets"}, text: "TCP resets detected by BPF sentinel", priority: 50},
+}
+
+func init() {
+	// Sort narrativeTemplates by priority descending for deterministic matching.
+	sort.Slice(narrativeTemplates, func(i, j int) bool {
+		return narrativeTemplates[i].priority > narrativeTemplates[j].priority
+	})
 }
 
 // BuildNarrative produces a human-readable root cause narrative from analysis results.
