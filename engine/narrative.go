@@ -180,30 +180,61 @@ func matchNarrativeTemplate(fired map[string]model.Evidence) string {
 	return ""
 }
 
-// selectTopEvidence picks the top N fired evidence lines by strength,
-// formatted as "- {message}" strings.
+// selectTopEvidence picks the top N fired evidence lines, prioritizing
+// evidence from the primary bottleneck domain. This prevents cross-domain
+// noise (e.g., TCP retransmit showing in CPU bottleneck evidence).
 func selectTopEvidence(result *model.AnalysisResult, n int) []string {
-	var all []model.Evidence
+	primaryDomain := model.Domain("")
+	if len(result.RCA) > 0 {
+		// Map bottleneck name to domain
+		switch result.RCA[0].Bottleneck {
+		case BottleneckCPU:
+			primaryDomain = model.DomainCPU
+		case BottleneckMemory:
+			primaryDomain = model.DomainMemory
+		case BottleneckIO:
+			primaryDomain = model.DomainIO
+		case BottleneckNetwork:
+			primaryDomain = model.DomainNetwork
+		}
+	}
+
+	// Collect evidence, primary domain first
+	var primary, secondary []model.Evidence
 	seen := make(map[string]bool)
 	for _, rca := range result.RCA {
 		for _, ev := range rca.EvidenceV2 {
 			if ev.Strength > 0 && !seen[ev.ID] {
 				seen[ev.ID] = true
-				all = append(all, ev)
+				if ev.Domain == primaryDomain {
+					primary = append(primary, ev)
+				} else {
+					secondary = append(secondary, ev)
+				}
 			}
 		}
 	}
 
-	sort.Slice(all, func(i, j int) bool {
-		return all[i].Strength > all[j].Strength
-	})
+	sort.Slice(primary, func(i, j int) bool { return primary[i].Strength > primary[j].Strength })
+	sort.Slice(secondary, func(i, j int) bool { return secondary[i].Strength > secondary[j].Strength })
 
-	if len(all) > n {
-		all = all[:n]
+	// Take from primary first, fill remaining from secondary
+	var selected []model.Evidence
+	for _, ev := range primary {
+		if len(selected) >= n {
+			break
+		}
+		selected = append(selected, ev)
+	}
+	for _, ev := range secondary {
+		if len(selected) >= n {
+			break
+		}
+		selected = append(selected, ev)
 	}
 
-	lines := make([]string, 0, len(all))
-	for _, ev := range all {
+	lines := make([]string, 0, len(selected))
+	for _, ev := range selected {
 		lines = append(lines, fmt.Sprintf("- %s", ev.Message))
 	}
 	return lines

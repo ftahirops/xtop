@@ -233,29 +233,33 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History) 
 
 	// Override culprit with process history — finds the process that has been
 	// CONSISTENTLY in the top consumers, not just whoever is on top right now.
-	// This is the key to finding the ROOT CAUSE, not the symptom.
 	if hist != nil && hist.ProcessHistory != nil && result.PrimaryScore > 0 {
+		var histComm string
+		var histPID int
+		var histN int
+
 		switch result.PrimaryBottleneck {
 		case BottleneckCPU:
-			if comm, pid, n := hist.ProcessHistory.FindCPUCulprit(); n >= 3 && comm != "" {
-				result.PrimaryProcess = comm
-				result.PrimaryPID = pid
-			}
+			histComm, histPID, histN = hist.ProcessHistory.FindCPUCulprit()
 		case BottleneckIO:
-			// For IO caused by memory pressure, blame the memory hog
 			if rates != nil && rates.SwapInRate > 0 {
-				if comm, pid, n := hist.ProcessHistory.FindMemCulprit(); n >= 3 && comm != "" {
-					result.PrimaryProcess = comm
-					result.PrimaryPID = pid
-				}
-			} else if comm, pid, n := hist.ProcessHistory.FindIOCulprit(); n >= 3 && comm != "" {
-				result.PrimaryProcess = comm
-				result.PrimaryPID = pid
+				histComm, histPID, histN = hist.ProcessHistory.FindMemCulprit()
+			} else {
+				histComm, histPID, histN = hist.ProcessHistory.FindIOCulprit()
 			}
 		case BottleneckMemory:
-			if comm, pid, n := hist.ProcessHistory.FindMemCulprit(); n >= 3 && comm != "" {
-				result.PrimaryProcess = comm
-				result.PrimaryPID = pid
+			histComm, histPID, histN = hist.ProcessHistory.FindMemCulprit()
+		}
+
+		if histN >= 3 && histComm != "" {
+			result.PrimaryProcess = histComm
+			result.PrimaryPID = histPID
+			// Re-resolve app identity for the new PID
+			result.PrimaryAppName = ""
+			if curr.Global.AppIdentities != nil {
+				if id, ok := curr.Global.AppIdentities[histPID]; ok {
+					result.PrimaryAppName = id.DisplayName
+				}
 			}
 		}
 	}
