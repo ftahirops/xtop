@@ -461,11 +461,13 @@ func suggestNextSteps(result *model.AnalysisResult) []string {
 		return nil
 	}
 	var steps []string
-	domain := strings.ToLower(result.PrimaryBottleneck)
+	// Match against exact bottleneck names to avoid substring collisions
+	// ("CPU Contention" contains "io" in "content-io-n" which falsely matched IO)
+	domain := result.PrimaryBottleneck
 	appName := strings.ToLower(result.PrimaryAppName)
 
-	switch {
-	case strings.Contains(domain, "io") || strings.Contains(domain, "disk"):
+	switch domain {
+	case "IO Starvation":
 		steps = append(steps, "Press 3 for IO detail page")
 		if strings.Contains(appName, "mysql") || strings.Contains(appName, "mariadb") {
 			steps = append(steps, "MySQL: SHOW PROCESSLIST; SHOW ENGINE INNODB STATUS")
@@ -474,21 +476,21 @@ func suggestNextSteps(result *model.AnalysisResult) []string {
 		}
 		steps = append(steps, "Press I for eBPF IO latency analysis")
 
-	case strings.Contains(domain, "memory") || strings.Contains(domain, "mem") || strings.Contains(domain, "oom"):
+	case "Memory Pressure":
 		steps = append(steps, "Press 2 for Memory detail page")
 		if result.PrimaryPID > 0 {
 			steps = append(steps, fmt.Sprintf("Investigate: ps -p %d -o pid,rss,vsz,comm", result.PrimaryPID))
 		}
 		steps = append(steps, "Press I for eBPF off-CPU analysis")
 
-	case strings.Contains(domain, "cpu") || strings.Contains(domain, "throttl") || strings.Contains(domain, "contention"):
+	case "CPU Contention":
 		steps = append(steps, "Press 1 for CPU detail page")
 		if result.PrimaryPID > 0 {
 			steps = append(steps, fmt.Sprintf("Investigate: top -p %d; strace -p %d", result.PrimaryPID, result.PrimaryPID))
 		}
 		steps = append(steps, "Press I for eBPF off-CPU analysis")
 
-	case strings.Contains(domain, "net") || strings.Contains(domain, "retrans") || strings.Contains(domain, "conntrack"):
+	case "Network Overload":
 		steps = append(steps, "Press 4 for Network detail page")
 		steps = append(steps, "Check: ss -s; nstat")
 
