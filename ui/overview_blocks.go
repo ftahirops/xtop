@@ -271,31 +271,27 @@ func renderRCABox(result *model.AnalysisResult, width int) string {
 		if result.Health == model.HealthCritical {
 			sevStyle = critStyle
 		}
-		maxField := innerW - 10
-		if maxField < 40 {
-			maxField = 40
+		// Field width: leave room for label (7 chars) + box padding
+		maxField := innerW - 8
+		if maxField < 30 {
+			maxField = 30
 		}
 
-		// --- WHAT ---
-		rootCause := result.PrimaryBottleneck
-		if result.Narrative != nil && result.Narrative.RootCause != "" {
-			rootCause = result.Narrative.RootCause
-		}
-		sb.WriteString(boxRow(dimStyle.Render("WHAT:  ")+sevStyle.Render(truncate(rootCause, maxField)), innerW) + "\n")
+		// --- WHAT: short bottleneck name only ---
+		whatStr := result.PrimaryBottleneck
+		sb.WriteString(boxRow(dimStyle.Render("WHAT:  ")+sevStyle.Render(truncate(whatStr, maxField)), innerW) + "\n")
 
-		// --- WHY ---
+		// --- WHY: narrative root cause (human explanation, not raw metrics) ---
 		why := ""
-		if result.Narrative != nil && len(result.Narrative.Evidence) > 0 {
-			why = result.Narrative.Evidence[0]
-		} else if result.CausalChain != "" {
-			why = result.CausalChain
+		if result.Narrative != nil && result.Narrative.RootCause != "" {
+			why = result.Narrative.RootCause
 		}
-		if why != "" {
+		if why != "" && why != whatStr {
 			sb.WriteString(boxRow(dimStyle.Render("WHY:   ")+valueStyle.Render(truncate(why, maxField)), innerW) + "\n")
 		}
 
-		// --- WHO ---
-		culprit := "\u2014"
+		// --- WHO: culprit process ---
+		culprit := ""
 		if result.PrimaryAppName != "" {
 			culprit = result.PrimaryAppName
 			if result.PrimaryPID > 0 {
@@ -309,18 +305,21 @@ func renderRCABox(result *model.AnalysisResult, width int) string {
 		} else if result.PrimaryCulprit != "" && result.PrimaryCulprit != "/" {
 			culprit = result.PrimaryCulprit
 		}
-		sb.WriteString(boxRow(dimStyle.Render("WHO:   ")+valueStyle.Render(truncate(culprit, maxField)), innerW) + "\n")
+		if culprit != "" {
+			sb.WriteString(boxRow(dimStyle.Render("WHO:   ")+valueStyle.Render(truncate(culprit, maxField)), innerW) + "\n")
+		}
 
-		// --- SINCE ---
-		sinceParts := []string{}
+		// --- SINCE: duration + confidence (keep short, one line) ---
+		sinceStr := ""
 		if result.AnomalyStartedAgo > 0 {
-			sinceParts = append(sinceParts, sevStyle.Render(fmtDuration(result.AnomalyStartedAgo)+" ago"))
+			sinceStr = fmtDuration(result.AnomalyStartedAgo) + " ago"
 		}
-		sinceParts = append(sinceParts, fmt.Sprintf("Confidence: %s", sevStyle.Render(fmt.Sprintf("%d%%", result.Confidence))))
+		confStr := fmt.Sprintf("%d%%", result.Confidence)
+		sinceLine := dimStyle.Render("SINCE: ") + sevStyle.Render(sinceStr) + dimStyle.Render(" | Conf: ") + sevStyle.Render(confStr)
 		if result.Narrative != nil && result.Narrative.Pattern != "" {
-			sinceParts = append(sinceParts, dimStyle.Render("Pattern: ")+valueStyle.Render(result.Narrative.Pattern))
+			sinceLine += dimStyle.Render(" | ") + dimStyle.Render(truncate(result.Narrative.Pattern, 25))
 		}
-		sb.WriteString(boxRow(dimStyle.Render("SINCE: ")+strings.Join(sinceParts, dimStyle.Render(" | ")), innerW) + "\n")
+		sb.WriteString(boxRow(sinceLine, innerW) + "\n")
 
 		// --- Evidence section ---
 		if result.Narrative != nil && len(result.Narrative.Evidence) > 0 {

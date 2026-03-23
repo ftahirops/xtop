@@ -212,10 +212,34 @@ func findIOCulprit(curr *model.Snapshot, rates *model.RateSnapshot, r *model.RCA
 	}
 
 	// 1st priority: find top IO user-space process by actual IO rate
+	// Culprit selection: find who CAUSED the IO, not who's stuck in it.
+	// Priority: 1) top memory consumer (if memory-induced IO), 2) top IO writer,
+	// 3) D-state process, 4) top IO reader.
+	// Always exclude xtop itself and kernel threads.
+
+	// If IO is caused by memory reclaim (swap storm), blame the memory hog, not IO victim
+	if rates != nil && (rates.SwapInRate > 0 || rates.DirectReclaimRate > 0) {
+		var maxRSS uint64
+		for _, pr := range rates.ProcessRates {
+			if isKernelThread(pr.Comm) || isSelfProcess(pr.Comm) {
+				continue
+			}
+			if pr.RSS > maxRSS {
+				maxRSS = pr.RSS
+				r.TopProcess = pr.Comm
+				r.TopPID = pr.PID
+			}
+		}
+		if r.TopProcess != "" {
+			return
+		}
+	}
+
+	// Top IO writer by throughput (the actual IO generator)
 	if rates != nil {
 		var maxIO float64
 		for _, pr := range rates.ProcessRates {
-			if isKernelThread(pr.Comm) {
+			if isKernelThread(pr.Comm) || isSelfProcess(pr.Comm) {
 				continue
 			}
 			total := pr.ReadMBs + pr.WriteMBs
@@ -230,19 +254,19 @@ func findIOCulprit(curr *model.Snapshot, rates *model.RateSnapshot, r *model.RCA
 		}
 	}
 
-	// 2nd priority: D-state user-space process
+	// D-state user-space process (stuck waiting for IO)
 	for _, p := range curr.Processes {
-		if p.State == "D" && !isKernelThread(p.Comm) {
+		if p.State == "D" && !isKernelThread(p.Comm) && !isSelfProcess(p.Comm) {
 			r.TopProcess = p.Comm
 			r.TopPID = p.PID
 			return
 		}
 	}
 
-	// 3rd: any user-space process with high IO bytes
+	// Fallback: any user-space process with high IO bytes
 	var maxIO uint64
 	for _, p := range curr.Processes {
-		if isKernelThread(p.Comm) {
+		if isKernelThread(p.Comm) || isSelfProcess(p.Comm) {
 			continue
 		}
 		total := p.ReadBytes + p.WriteBytes

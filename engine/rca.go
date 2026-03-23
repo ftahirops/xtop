@@ -403,6 +403,11 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History) 
 	return result
 }
 
+// isSelfProcess returns true for xtop's own processes (should never be blamed as culprit).
+func isSelfProcess(comm string) bool {
+	return comm == "xtop" || comm == "xtop-daemon"
+}
+
 // isKernelThread returns true for kernel workers and filesystem daemons
 // that do IO on behalf of user processes (not the real culprits).
 func isKernelThread(comm string) bool {

@@ -255,7 +255,7 @@ func analyzeCPU(curr *model.Snapshot, rates *model.RateSnapshot, sp systemProfil
 	if rates != nil {
 		var maxCPU float64
 		for _, p := range rates.ProcessRates {
-			if isKernelThread(p.Comm) {
+			if isKernelThread(p.Comm) || isSelfProcess(p.Comm) {
 				continue
 			}
 			if p.CPUPct > maxCPU {
