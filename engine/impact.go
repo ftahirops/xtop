@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"fmt"
 	"os"
 	"sort"
 	"strconv"
@@ -183,4 +184,95 @@ func readBootTime() float64 {
 		}
 	}
 	return 0
+}
+
+// QuantifyImpact generates a human-readable impact summary describing the real-world
+// effect of the current bottleneck (e.g. blocked processes, latency increase, affected apps).
+func QuantifyImpact(result *model.AnalysisResult, snap *model.Snapshot, rates *model.RateSnapshot) string {
+	if result == nil || result.Health == model.HealthOK {
+		return ""
+	}
+
+	domain := result.PrimaryBottleneck
+	var parts []string
+
+	switch {
+	case strings.Contains(domain, "IO"):
+		// Count D-state (uninterruptible sleep) processes
+		dstate := 0
+		for _, p := range snap.Processes {
+			if p.State == "D" {
+				dstate++
+			}
+		}
+		if dstate > 0 {
+			parts = append(parts, fmt.Sprintf("%d processes blocked waiting for disk", dstate))
+		}
+		if rates != nil {
+			for _, d := range rates.DiskRates {
+				if d.AvgAwaitMs > 20 {
+					parts = append(parts, fmt.Sprintf("disk %s latency %dms (normal <5ms)", d.Name, int(d.AvgAwaitMs)))
+				}
+			}
+		}
+		// App impact
+		for _, app := range snap.Global.Apps.Instances {
+			if app.HealthScore > 0 && app.HealthScore < 70 {
+				parts = append(parts, fmt.Sprintf("%s degraded (health %d/100)", app.DisplayName, app.HealthScore))
+			}
+		}
+
+	case strings.Contains(domain, "Memory"):
+		availPct := float64(0)
+		if snap.Global.Memory.Total > 0 {
+			availPct = float64(snap.Global.Memory.Available) / float64(snap.Global.Memory.Total) * 100
+		}
+		const gb = 1024 * 1024 * 1024
+		parts = append(parts, fmt.Sprintf("%.0f%% memory available (%.1fG free of %.1fG)",
+			availPct,
+			float64(snap.Global.Memory.Available)/float64(gb),
+			float64(snap.Global.Memory.Total)/float64(gb)))
+		if snap.Global.Memory.SwapUsed > 0 {
+			parts = append(parts, "swapping active — application response times degraded")
+		}
+
+	case strings.Contains(domain, "CPU"):
+		nCPU := snap.Global.CPU.NumCPUs
+		if nCPU == 0 {
+			nCPU = 1
+		}
+		busyPct := float64(0)
+		if rates != nil {
+			busyPct = rates.CPUBusyPct
+		}
+		busyCores := int(busyPct / 100 * float64(nCPU))
+		parts = append(parts, fmt.Sprintf("%d of %d CPUs busy — reduced processing capacity", busyCores, nCPU))
+		if rates != nil && rates.CPUIOWaitPct > 10 {
+			parts = append(parts, fmt.Sprintf("%.0f%% CPU time waiting on IO", rates.CPUIOWaitPct))
+		}
+
+	case strings.Contains(domain, "Network"):
+		if rates != nil && rates.RetransRate > 0 {
+			parts = append(parts, fmt.Sprintf("%.0f retransmits/s — connection quality degraded", rates.RetransRate))
+		}
+	}
+
+	// App impact summary (cross-domain)
+	unhealthyApps := 0
+	for _, app := range snap.Global.Apps.Instances {
+		if app.HealthScore > 0 && app.HealthScore < 70 {
+			unhealthyApps++
+		}
+	}
+	if unhealthyApps > 0 {
+		// Avoid duplicate if already mentioned in IO section
+		if !strings.Contains(domain, "IO") {
+			parts = append(parts, fmt.Sprintf("%d application(s) affected", unhealthyApps))
+		}
+	}
+
+	if len(parts) == 0 {
+		return "System performance degraded"
+	}
+	return strings.Join(parts, " · ")
 }

@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ftahirops/xtop/engine"
@@ -538,7 +539,14 @@ func extractSubsystems(snap *model.Snapshot, rates *model.RateSnapshot, result *
 			if etaMin < 60 {
 				etaStr = fmt.Sprintf("ETA %.0fm", etaMin)
 			} else {
-				etaStr = fmt.Sprintf("ETA %.0fh", etaMin/60)
+				etaHours := etaMin / 60
+				if etaHours > 48 {
+					days := int(etaHours / 24)
+					fillDate := time.Now().Add(time.Duration(etaHours) * time.Hour).Format("Jan 2")
+					etaStr = fmt.Sprintf("~%dd (%s)", days, fillDate)
+				} else {
+					etaStr = fmt.Sprintf("ETA %.0fh", etaHours)
+				}
 			}
 		}
 

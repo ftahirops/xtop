@@ -24,9 +24,10 @@ type Engine struct {
 	Watchdog      *WatchdogTrigger
 	SecWatchdog   *bpf.SecWatchdog // security deep-inspection watchdog
 	MultiRes      *MultiResBuffer  // multi-resolution time series (nil if unused)
-	SLOPolicies   []SLOPolicy     // SLO policies from config/flags
-	Autopilot     *Autopilot      // autopilot subsystem (nil if disabled)
-	tickMu        sync.Mutex      // serializes Tick() calls to prevent concurrent collection
+	SLOPolicies    []SLOPolicy     // SLO policies from config/flags
+	Autopilot      *Autopilot      // autopilot subsystem (nil if disabled)
+	changeDetector *ChangeDetector // tracks system changes between ticks
+	tickMu         sync.Mutex      // serializes Tick() calls to prevent concurrent collection
 }
 
 // NewEngine creates a new engine with all collectors registered.
@@ -72,14 +73,15 @@ func NewEngine(historySize, intervalSec int) *Engine {
 	reg.Add(profiler.NewProfilerCollector())
 
 	return &Engine{
-		registry:      reg,
-		cgCollect:     cgc,
-		History:       NewHistory(historySize, intervalSec),
-		Smart:         collector.NewSMARTCollector(5 * time.Minute),
-		growthTracker: NewMountGrowthTracker(),
-		Sentinel:      sentinel,
-		Watchdog:      NewWatchdogTrigger(),
-		SecWatchdog:   bpf.NewSecWatchdog(bpf.DetectPrimaryIface()),
+		registry:       reg,
+		cgCollect:      cgc,
+		History:        NewHistory(historySize, intervalSec),
+		Smart:          collector.NewSMARTCollector(5 * time.Minute),
+		growthTracker:  NewMountGrowthTracker(),
+		Sentinel:       sentinel,
+		Watchdog:       NewWatchdogTrigger(),
+		SecWatchdog:    bpf.NewSecWatchdog(bpf.DetectPrimaryIface()),
+		changeDetector: NewChangeDetector(),
 	}
 }
 
@@ -124,6 +126,11 @@ func (e *Engine) Tick() (*model.Snapshot, *model.RateSnapshot, *model.AnalysisRe
 		rates = &r
 		e.History.PushRate(r)
 		result = AnalyzeRCA(snap, rates, e.History)
+
+		// Change detection: track new/stopped processes and recent package changes
+		if e.changeDetector != nil {
+			result.Changes = e.changeDetector.DetectChanges(snap)
+		}
 
 		// Watchdog auto-trigger: check if RCA warrants domain-specific probes
 		if domain := e.Watchdog.Check(result); domain != "" {

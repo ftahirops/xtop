@@ -394,6 +394,12 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History) 
 	// Statistical intelligence
 	runStatisticalAnalysis(result, curr, rates, hist)
 
+	// USE Method checklist
+	result.USEChecks = BuildUSEChecklist(curr, rates)
+
+	// Impact quantification
+	result.ImpactSummary = QuantifyImpact(result, curr, rates)
+
 	return result
 }
 

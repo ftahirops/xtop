@@ -331,6 +331,36 @@ type AnalysisResult struct {
 	ZScoreAnomalies   []ZScoreAnomaly     // Statistically unusual values vs recent window
 	ProcessAnomalies  []ProcessAnomaly    // Processes deviating from learned profile
 	GoldenSignals     *GoldenSignalSummary // Approximated Golden Signal metrics
+
+	// USE Method checklist (v0.36.6)
+	USEChecks []USECheck `json:"use_checks,omitempty"`
+
+	// Change detection (v0.36.6)
+	Changes []SystemChange `json:"changes,omitempty"`
+
+	// Impact quantification (v0.36.6)
+	ImpactSummary string `json:"impact_summary,omitempty"`
+}
+
+// USECheck represents one USE method check for a resource (Utilization, Saturation, Errors).
+type USECheck struct {
+	Resource    string  // "CPU", "Memory", "Disk sda", "Network"
+	Utilization float64 // percentage (0-100)
+	Saturation  float64 // queue length or pressure
+	Errors      float64 // error count/rate
+	UtilStatus  string  // "ok", "warn", "crit"
+	SatStatus   string
+	ErrStatus   string
+	UtilDetail  string // "25.3% busy"
+	SatDetail   string // "runqueue 2/6 (33%)"
+	ErrDetail   string // "0 errors"
+}
+
+// SystemChange represents a detected change on the system between ticks.
+type SystemChange struct {
+	Type   string    `json:"type"`   // "new_process", "stopped_process", "package_install", "package_upgrade"
+	Detail string    `json:"detail"`
+	When   time.Time `json:"when"`
 }
 
 // MetricChange represents a notable metric delta for the "what changed?" engine.

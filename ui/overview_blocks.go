@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ftahirops/xtop/engine"
@@ -244,127 +245,269 @@ func renderRCABox(result *model.AnalysisResult, width int) string {
 	title := fmt.Sprintf(" %s ", titleStyle.Render("Root Cause Analysis"))
 	sb.WriteString(boxTopTitle(title, innerW) + "\n")
 
-	// Dynamic line count: 3 for healthy/inconclusive, 5-6 for degraded/critical
-	var lines []string
-
 	if result == nil {
-		lines = []string{dimStyle.Render("collecting..."), " ", " "}
-	} else {
-		switch result.Health {
-		case model.HealthOK:
-			line0 := okStyle.Render("RCA: No bottleneck detected")
-			line1 := " "
-			if result.StableSince > 60 {
-				line1 = dimStyle.Render(fmt.Sprintf("Stable for %s", fmtDuration(result.StableSince)))
-			}
-			lines = []string{line0, line1, " "}
+		sb.WriteString(boxRow(dimStyle.Render("collecting..."), innerW) + "\n")
+		sb.WriteString(boxBot(innerW) + "\n")
+		return sb.String()
+	}
 
-		case model.HealthInconclusive:
-			lines = []string{
-				orangeStyle.Render("RCA: Inconclusive") + dimStyle.Render(" \u2014 evidence insufficient"),
-				dimStyle.Render("Press I to investigate (10s kernel probe)"),
-				" ",
-			}
+	switch result.Health {
+	case model.HealthOK:
+		stableLine := ""
+		if result.StableSince > 60 {
+			stableLine = "  Stable for " + fmtDuration(result.StableSince)
+		}
+		sb.WriteString(boxRow(okStyle.Render("\u25cf")+"  No bottleneck detected", innerW) + "\n")
+		if stableLine != "" {
+			sb.WriteString(boxRow(dimStyle.Render(stableLine), innerW) + "\n")
+		}
 
-		case model.HealthDegraded, model.HealthCritical:
-			style := warnStyle
-			if result.Health == model.HealthCritical {
-				style = critStyle
-			}
+	case model.HealthInconclusive:
+		sb.WriteString(boxRow(orangeStyle.Render("\u25cc")+"  Inconclusive "+dimStyle.Render("\u2014 evidence insufficient"), innerW) + "\n")
+		sb.WriteString(boxRow(dimStyle.Render("  Press I to run 10s eBPF deep dive"), innerW) + "\n")
 
-			// Line 1: ROOT CAUSE from narrative (or fall back to PrimaryBottleneck)
-			rootCause := result.PrimaryBottleneck
-			if result.Narrative != nil && result.Narrative.RootCause != "" {
-				rootCause = result.Narrative.RootCause
-			}
-			maxRC := innerW - 16
-			if maxRC < 40 {
-				maxRC = 40
-			}
-			lines = append(lines, style.Render("ROOT CAUSE: ")+valueStyle.Render(truncate(rootCause, maxRC)))
+	case model.HealthDegraded, model.HealthCritical:
+		sevStyle := warnStyle
+		if result.Health == model.HealthCritical {
+			sevStyle = critStyle
+		}
+		maxField := innerW - 10
+		if maxField < 40 {
+			maxField = 40
+		}
 
-			// Lines 2-3: Top 2 evidence lines from narrative
-			if result.Narrative != nil {
-				for i, ev := range result.Narrative.Evidence {
-					if i >= 2 {
-						break
-					}
-					lines = append(lines, dimStyle.Render(truncate(ev, innerW-4)))
+		// --- WHAT ---
+		rootCause := result.PrimaryBottleneck
+		if result.Narrative != nil && result.Narrative.RootCause != "" {
+			rootCause = result.Narrative.RootCause
+		}
+		sb.WriteString(boxRow(dimStyle.Render("WHAT:  ")+sevStyle.Render(truncate(rootCause, maxField)), innerW) + "\n")
+
+		// --- WHY ---
+		why := ""
+		if result.Narrative != nil && len(result.Narrative.Evidence) > 0 {
+			why = result.Narrative.Evidence[0]
+		} else if result.CausalChain != "" {
+			why = result.CausalChain
+		}
+		if why != "" {
+			sb.WriteString(boxRow(dimStyle.Render("WHY:   ")+valueStyle.Render(truncate(why, maxField)), innerW) + "\n")
+		}
+
+		// --- WHO ---
+		culprit := "\u2014"
+		if result.PrimaryAppName != "" {
+			culprit = result.PrimaryAppName
+			if result.PrimaryPID > 0 {
+				culprit = fmt.Sprintf("%s (PID %d)", result.PrimaryAppName, result.PrimaryPID)
+			}
+		} else if result.PrimaryProcess != "" {
+			culprit = result.PrimaryProcess
+			if result.PrimaryPID > 0 {
+				culprit = fmt.Sprintf("%s (PID %d)", result.PrimaryProcess, result.PrimaryPID)
+			}
+		} else if result.PrimaryCulprit != "" && result.PrimaryCulprit != "/" {
+			culprit = result.PrimaryCulprit
+		}
+		sb.WriteString(boxRow(dimStyle.Render("WHO:   ")+valueStyle.Render(truncate(culprit, maxField)), innerW) + "\n")
+
+		// --- SINCE ---
+		sinceParts := []string{}
+		if result.AnomalyStartedAgo > 0 {
+			sinceParts = append(sinceParts, sevStyle.Render(fmtDuration(result.AnomalyStartedAgo)+" ago"))
+		}
+		sinceParts = append(sinceParts, fmt.Sprintf("Confidence: %s", sevStyle.Render(fmt.Sprintf("%d%%", result.Confidence))))
+		if result.Narrative != nil && result.Narrative.Pattern != "" {
+			sinceParts = append(sinceParts, dimStyle.Render("Pattern: ")+valueStyle.Render(result.Narrative.Pattern))
+		}
+		sb.WriteString(boxRow(dimStyle.Render("SINCE: ")+strings.Join(sinceParts, dimStyle.Render(" | ")), innerW) + "\n")
+
+		// --- Evidence section ---
+		if result.Narrative != nil && len(result.Narrative.Evidence) > 0 {
+			sb.WriteString(boxRow("", innerW) + "\n")
+			secHdr := dimStyle.Render("\u2500\u2500 ") + titleStyle.Render("Evidence") + dimStyle.Render(" "+strings.Repeat("\u2500", innerW-14))
+			sb.WriteString(boxRow(secHdr, innerW) + "\n")
+			for i, ev := range result.Narrative.Evidence {
+				if i >= 4 {
+					break
 				}
+				sb.WriteString(boxRow(dimStyle.Render("\u25b8 ")+dimStyle.Render(truncate(ev, innerW-4)), innerW) + "\n")
 			}
-			// Pad to at least 3 lines
-			for len(lines) < 3 {
-				lines = append(lines, " ")
-			}
+		}
 
-			// Line 4: Culprit (full, on its own line for readability)
-			culprit := "\u2014"
-			if result.PrimaryAppName != "" {
-				culprit = result.PrimaryAppName
-				if result.PrimaryPID > 0 {
-					culprit = fmt.Sprintf("%s (PID %d)", result.PrimaryAppName, result.PrimaryPID)
+		// --- Impact section ---
+		if result.Narrative != nil && result.Narrative.Impact != "" {
+			sb.WriteString(boxRow("", innerW) + "\n")
+			secHdr := dimStyle.Render("\u2500\u2500 ") + titleStyle.Render("Impact") + dimStyle.Render(" "+strings.Repeat("\u2500", innerW-12))
+			sb.WriteString(boxRow(secHdr, innerW) + "\n")
+			sb.WriteString(boxRow(warnStyle.Render(truncate(result.Narrative.Impact, innerW-2)), innerW) + "\n")
+		}
+
+		// --- Timeline section ---
+		timeline := buildRCATimeline(result)
+		if len(timeline) > 0 {
+			sb.WriteString(boxRow("", innerW) + "\n")
+			secHdr := dimStyle.Render("\u2500\u2500 ") + titleStyle.Render("Timeline") + dimStyle.Render(" "+strings.Repeat("\u2500", innerW-14))
+			sb.WriteString(boxRow(secHdr, innerW) + "\n")
+			for _, te := range timeline {
+				offset := styledPad(dimStyle.Render(te.Offset), 9)
+				marker := te.Style.Render("\u25aa")
+				suffix := ""
+				if te.Current {
+					suffix = dimStyle.Render(" \u2190 CURRENT")
+					marker = sevStyle.Render("\u25ab")
 				}
-			} else if result.PrimaryProcess != "" {
-				culprit = result.PrimaryProcess
-				if result.PrimaryPID > 0 {
-					culprit = fmt.Sprintf("%s (PID %d)", result.PrimaryProcess, result.PrimaryPID)
-				}
-			} else if result.PrimaryCulprit != "" && result.PrimaryCulprit != "/" {
-				culprit = result.PrimaryCulprit
+				sb.WriteString(boxRow(offset+" "+marker+" "+valueStyle.Render(truncate(te.Event, innerW-16))+suffix, innerW) + "\n")
 			}
+		}
 
-			// Impact lines (word-wrap long impact narratives)
-			if result.Narrative != nil && result.Narrative.Impact != "" {
-				impact := result.Narrative.Impact
-				maxImpactW := innerW - 12
-				if maxImpactW < 40 {
-					maxImpactW = 40
-				}
-				// Split on ". " to get impact sentences
-				sentences := strings.Split(impact, ". ")
-				first := true
-				for _, sent := range sentences {
-					if sent == "" {
-						continue
-					}
-					prefix := dimStyle.Render("         ")
-					if first {
-						prefix = dimStyle.Render("Impact: ")
-						first = false
-					}
-					if len(sent) > maxImpactW {
-						sent = sent[:maxImpactW]
-					}
-					lines = append(lines, prefix+warnStyle.Render(sent))
-				}
-			}
-
-			// Culprit line (full, not truncated to 24 chars)
-			maxCulprit := innerW - 12
-			if maxCulprit < 30 {
-				maxCulprit = 30
-			}
-			lines = append(lines, dimStyle.Render("Culprit: ")+valueStyle.Render(truncate(culprit, maxCulprit)))
-
-			// Confidence + Active on same line
-			confLine := fmt.Sprintf("Confidence: %s", style.Render(fmt.Sprintf("%d%%", result.Confidence)))
-			if result.AnomalyStartedAgo > 0 {
-				confLine += dimStyle.Render(" | ") + fmt.Sprintf("Active: %s", critStyle.Render(fmtDuration(result.AnomalyStartedAgo)))
-			}
-			lines = append(lines, confLine)
-
-			// Pattern name if matched
-			if result.Narrative != nil && result.Narrative.Pattern != "" {
-				lines = append(lines, dimStyle.Render("Pattern: ")+valueStyle.Render(result.Narrative.Pattern))
+		// --- Next Steps section ---
+		steps := suggestNextSteps(result)
+		if len(steps) > 0 {
+			sb.WriteString(boxRow("", innerW) + "\n")
+			secHdr := dimStyle.Render("\u2500\u2500 ") + titleStyle.Render("Next Steps") + dimStyle.Render(" "+strings.Repeat("\u2500", innerW-16))
+			sb.WriteString(boxRow(secHdr, innerW) + "\n")
+			for i, step := range steps {
+				sb.WriteString(boxRow(dimStyle.Render(fmt.Sprintf("%d. ", i+1))+valueStyle.Render(truncate(step, innerW-6)), innerW) + "\n")
 			}
 		}
 	}
 
-	for _, l := range lines {
-		sb.WriteString(boxRow(l, innerW) + "\n")
-	}
 	sb.WriteString(boxBot(innerW) + "\n")
 	return sb.String()
+}
+
+// timelineEntry represents one event in the visual RCA timeline.
+type timelineEntry struct {
+	Offset  string         // e.g. "-4m30s", "now"
+	Event   string
+	Style   lipgloss.Style
+	Current bool
+}
+
+// buildRCATimeline constructs a visual timeline from temporal chain or narrative evidence.
+func buildRCATimeline(result *model.AnalysisResult) []timelineEntry {
+	var entries []timelineEntry
+
+	// Prefer structured temporal chain events
+	if result.TemporalChain != nil && len(result.TemporalChain.Events) > 0 {
+		now := time.Now()
+		for _, ev := range result.TemporalChain.Events {
+			offset := "-" + fmtDuration(int(now.Sub(ev.FirstSeen).Seconds()))
+			if now.Sub(ev.FirstSeen).Seconds() < 3 {
+				offset = "now"
+			}
+			entries = append(entries, timelineEntry{
+				Offset:  offset,
+				Event:   ev.Label,
+				Style:   warnStyle,
+				Current: offset == "now",
+			})
+		}
+	} else if result.Narrative != nil && result.Narrative.Temporal != "" {
+		// Fall back: parse the temporal summary string (format: "signal (T+0s) -> signal (T+3s)")
+		parts := strings.Split(result.Narrative.Temporal, " \u2192 ")
+		if len(parts) <= 1 {
+			parts = strings.Split(result.Narrative.Temporal, " -> ")
+		}
+		for i, p := range parts {
+			p = strings.TrimSpace(p)
+			if p == "" {
+				continue
+			}
+			isCurrent := i == len(parts)-1
+			style := warnStyle
+			if isCurrent {
+				style = critStyle
+			}
+			entries = append(entries, timelineEntry{
+				Offset:  fmt.Sprintf("T+%d", i),
+				Event:   p,
+				Style:   style,
+				Current: isCurrent,
+			})
+		}
+	}
+
+	// If we still have nothing, build from anomaly start + evidence
+	if len(entries) == 0 && result.AnomalyStartedAgo > 0 {
+		entries = append(entries, timelineEntry{
+			Offset: "-" + fmtDuration(result.AnomalyStartedAgo),
+			Event:  "Anomaly onset: " + result.PrimaryBottleneck,
+			Style:  warnStyle,
+		})
+		if result.Narrative != nil && len(result.Narrative.Evidence) > 0 {
+			entries = append(entries, timelineEntry{
+				Offset:  "now",
+				Event:   result.Narrative.Evidence[0],
+				Style:   critStyle,
+				Current: true,
+			})
+		}
+	}
+
+	// Cap at 5 entries
+	if len(entries) > 5 {
+		entries = entries[len(entries)-5:]
+	}
+	return entries
+}
+
+// suggestNextSteps generates actionable investigation steps based on the bottleneck domain.
+func suggestNextSteps(result *model.AnalysisResult) []string {
+	if result == nil {
+		return nil
+	}
+	var steps []string
+	domain := strings.ToLower(result.PrimaryBottleneck)
+	appName := strings.ToLower(result.PrimaryAppName)
+
+	switch {
+	case strings.Contains(domain, "io") || strings.Contains(domain, "disk"):
+		steps = append(steps, "Press 3 for IO detail page")
+		if strings.Contains(appName, "mysql") || strings.Contains(appName, "mariadb") {
+			steps = append(steps, "MySQL: SHOW PROCESSLIST; SHOW ENGINE INNODB STATUS")
+		} else if strings.Contains(appName, "postgres") {
+			steps = append(steps, "Postgres: SELECT * FROM pg_stat_activity WHERE wait_event_type='IO'")
+		}
+		steps = append(steps, "Press I for eBPF IO latency analysis")
+
+	case strings.Contains(domain, "memory") || strings.Contains(domain, "mem") || strings.Contains(domain, "oom"):
+		steps = append(steps, "Press 2 for Memory detail page")
+		if result.PrimaryPID > 0 {
+			steps = append(steps, fmt.Sprintf("Investigate: ps -p %d -o pid,rss,vsz,comm", result.PrimaryPID))
+		}
+		steps = append(steps, "Press I for eBPF off-CPU analysis")
+
+	case strings.Contains(domain, "cpu") || strings.Contains(domain, "throttl"):
+		steps = append(steps, "Press 1 for CPU detail page")
+		steps = append(steps, "Press I for eBPF off-CPU analysis")
+
+	case strings.Contains(domain, "net") || strings.Contains(domain, "retrans") || strings.Contains(domain, "conntrack"):
+		steps = append(steps, "Press 4 for Network detail page")
+		steps = append(steps, "Check: ss -s; nstat")
+
+	default:
+		steps = append(steps, "Press I to run 10s eBPF deep dive")
+	}
+
+	// Always ensure probe suggestion is present
+	hasProbe := false
+	for _, s := range steps {
+		if strings.Contains(s, "Press I") {
+			hasProbe = true
+			break
+		}
+	}
+	if !hasProbe {
+		steps = append(steps, "Press I to run 10s eBPF deep dive")
+	}
+
+	// Limit to 3 steps
+	if len(steps) > 3 {
+		steps = steps[:3]
+	}
+	return steps
 }
 
 // ─── SHARED: CAPACITY BLOCK ─────────────────────────────────────────────────
