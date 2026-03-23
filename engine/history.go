@@ -25,7 +25,8 @@ type History struct {
 	Correlator    *Correlator
 	Forecaster    *HoltForecaster
 	Seasonal      *SeasonalTracker
-	CausalLearner *CausalLearner
+	CausalLearner  *CausalLearner
+	ProcessHistory *ProcessHistory
 }
 
 // NewHistory creates a ring buffer with the given capacity.
@@ -46,7 +47,8 @@ func NewHistory(capacity, intervalSec int) *History {
 		Correlator:    NewCorrelator(),
 		Forecaster:    NewHoltForecaster(0.3, 0.1),
 		Seasonal:      NewSeasonalTracker(0.02),
-		CausalLearner: NewCausalLearner(),
+		CausalLearner:  NewCausalLearner(),
+		ProcessHistory: NewProcessHistory(100),
 	}
 }
 

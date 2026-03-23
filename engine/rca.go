@@ -231,6 +231,35 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History) 
 		result.PrimaryAppName = primary.TopAppName
 	}
 
+	// Override culprit with process history — finds the process that has been
+	// CONSISTENTLY in the top consumers, not just whoever is on top right now.
+	// This is the key to finding the ROOT CAUSE, not the symptom.
+	if hist != nil && hist.ProcessHistory != nil && result.PrimaryScore > 0 {
+		switch result.PrimaryBottleneck {
+		case BottleneckCPU:
+			if comm, pid, n := hist.ProcessHistory.FindCPUCulprit(); n >= 3 && comm != "" {
+				result.PrimaryProcess = comm
+				result.PrimaryPID = pid
+			}
+		case BottleneckIO:
+			// For IO caused by memory pressure, blame the memory hog
+			if rates != nil && rates.SwapInRate > 0 {
+				if comm, pid, n := hist.ProcessHistory.FindMemCulprit(); n >= 3 && comm != "" {
+					result.PrimaryProcess = comm
+					result.PrimaryPID = pid
+				}
+			} else if comm, pid, n := hist.ProcessHistory.FindIOCulprit(); n >= 3 && comm != "" {
+				result.PrimaryProcess = comm
+				result.PrimaryPID = pid
+			}
+		case BottleneckMemory:
+			if comm, pid, n := hist.ProcessHistory.FindMemCulprit(); n >= 3 && comm != "" {
+				result.PrimaryProcess = comm
+				result.PrimaryPID = pid
+			}
+		}
+	}
+
 	// Temporal scoring: sustained pressure gets a bonus over transient spikes.
 	if hist != nil && result.PrimaryScore > 0 {
 		sustainedTicks := 0

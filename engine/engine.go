@@ -125,6 +125,7 @@ func (e *Engine) Tick() (*model.Snapshot, *model.RateSnapshot, *model.AnalysisRe
 		e.growthTracker.Smooth(r.MountRates)
 		rates = &r
 		e.History.PushRate(r)
+		e.History.ProcessHistory.Record(rates)
 		result = AnalyzeRCA(snap, rates, e.History)
 
 		// Change detection: track new/stopped processes and recent package changes
