@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -330,7 +331,8 @@ func renderRCABox(result *model.AnalysisResult, width int) string {
 				if i >= 4 {
 					break
 				}
-				sb.WriteString(boxRow(dimStyle.Render("\u25b8 ")+dimStyle.Render(truncate(ev, innerW-4)), innerW) + "\n")
+				human := humanizeEvidence(ev)
+				sb.WriteString(boxRow(dimStyle.Render("\u25b8 ")+valueStyle.Render(truncate(human, innerW-4)), innerW) + "\n")
 			}
 		}
 
@@ -356,7 +358,8 @@ func renderRCABox(result *model.AnalysisResult, width int) string {
 					suffix = dimStyle.Render(" \u2190 CURRENT")
 					marker = sevStyle.Render("\u25ab")
 				}
-				sb.WriteString(boxRow(offset+" "+marker+" "+valueStyle.Render(truncate(te.Event, innerW-16))+suffix, innerW) + "\n")
+				event := humanizeEvidence(te.Event)
+				sb.WriteString(boxRow(offset+" "+marker+" "+valueStyle.Render(truncate(event, innerW-16))+suffix, innerW) + "\n")
 			}
 		}
 
@@ -510,6 +513,169 @@ func suggestNextSteps(result *model.AnalysisResult) []string {
 		steps = steps[:3]
 	}
 	return steps
+}
+
+// humanizeEvidence transforms raw engine evidence strings into plain English.
+// Input:  "- CPU PSI some=75.2% full=0.0%"
+// Output: "CPU pressure: 75.2% of time, tasks stalled waiting for CPU"
+func humanizeEvidence(raw string) string {
+	s := strings.TrimPrefix(raw, "- ")
+	s = strings.TrimSpace(s)
+	low := strings.ToLower(s)
+
+	// CPU evidence
+	if strings.HasPrefix(low, "cpu psi") {
+		if idx := strings.Index(s, "some="); idx >= 0 {
+			val := extractNum(s[idx+5:])
+			return fmt.Sprintf("CPU pressure: %.0f%% of time, tasks stalled waiting for CPU", val)
+		}
+	}
+	if strings.HasPrefix(low, "cpu busy=") {
+		val := extractNum(s[9:])
+		return fmt.Sprintf("CPU utilization: %.0f%% (all cores)", val)
+	}
+	if strings.HasPrefix(low, "runqueue ratio=") {
+		if idx := strings.Index(s, "("); idx >= 0 {
+			detail := strings.TrimSuffix(s[idx:], ")")
+			return fmt.Sprintf("Run queue overloaded: %s tasks competing for cores", strings.TrimPrefix(detail, "("))
+		}
+		return "Run queue: more tasks than available CPU cores"
+	}
+	if strings.HasPrefix(low, "cpu steal=") {
+		val := extractNum(s[10:])
+		return fmt.Sprintf("Hypervisor stealing %.0f%% of CPU time (noisy neighbor)", val)
+	}
+	if strings.HasPrefix(low, "cpu iowait=") {
+		val := extractNum(s[11:])
+		return fmt.Sprintf("%.0f%% CPU time waiting on disk IO", val)
+	}
+	if strings.HasPrefix(low, "ctx switches=") {
+		return "High context switch rate: excessive task scheduling"
+	}
+	if strings.HasPrefix(low, "cgroup throttle=") {
+		return "Cgroup CPU limit reached: processes being throttled"
+	}
+	if strings.HasPrefix(low, "bpf throttle=") {
+		return "CPU throttling detected by eBPF sentinel"
+	}
+
+	// Memory evidence
+	if strings.HasPrefix(low, "mem psi") || strings.HasPrefix(low, "memory psi") {
+		if idx := strings.Index(s, "some="); idx >= 0 {
+			val := extractNum(s[idx+5:])
+			return fmt.Sprintf("Memory pressure: %.0f%% of time, tasks stalled on memory", val)
+		}
+	}
+	if strings.HasPrefix(low, "mem available=") || strings.HasPrefix(low, "avail=") {
+		return "Low available memory: system running out of free pages"
+	}
+	if strings.Contains(low, "swap in=") || strings.Contains(low, "swap out=") {
+		return "Active swapping: memory pages moving to/from disk (slow)"
+	}
+	if strings.Contains(low, "direct reclaim") || strings.Contains(low, "reclaim=") {
+		return "Kernel actively reclaiming memory pages (high pressure)"
+	}
+	if strings.Contains(low, "oom") {
+		return "OOM killer active: system ran out of memory"
+	}
+	if strings.Contains(low, "slab leak") {
+		return "Kernel slab memory growing abnormally (possible leak)"
+	}
+
+	// IO evidence
+	if strings.HasPrefix(low, "io psi") {
+		if idx := strings.Index(s, "some="); idx >= 0 {
+			val := extractNum(s[idx+5:])
+			return fmt.Sprintf("IO pressure: %.0f%% of time, tasks stalled on disk", val)
+		}
+	}
+	if strings.Contains(low, "disk util=") || strings.Contains(low, "utilization=") {
+		return "Disk utilization near 100%: IO requests queueing"
+	}
+	if strings.Contains(low, "disk latency=") || strings.Contains(low, "await=") {
+		if idx := strings.Index(low, "="); idx >= 0 {
+			val := extractNum(s[idx+1:])
+			if val > 0 {
+				return fmt.Sprintf("Disk latency: %.0fms per IO operation (normal <5ms)", val)
+			}
+		}
+		return "Elevated disk latency"
+	}
+	if strings.Contains(low, "d-state=") || strings.Contains(low, "d-state tasks") {
+		return "Processes stuck in D-state (uninterruptible sleep waiting for IO)"
+	}
+	if strings.Contains(low, "queue depth=") || strings.Contains(low, "qdepth=") {
+		return "Disk IO queue building up: requests waiting to be served"
+	}
+	if strings.Contains(low, "dirty pages") || strings.Contains(low, "dirty=") {
+		return "Large dirty page cache: pending writes to disk"
+	}
+
+	// Network evidence
+	if strings.Contains(low, "retrans") {
+		return "TCP retransmissions: packets being resent (network quality issue)"
+	}
+	if strings.Contains(low, "drops") && !strings.Contains(low, "benign") {
+		return "Packet drops detected: network buffer overflow or filtering"
+	}
+	if strings.Contains(low, "conntrack") {
+		return "Connection tracking table pressure (firewall state table)"
+	}
+	if strings.Contains(low, "softirq") {
+		return "High kernel network processing overhead (softIRQ)"
+	}
+	if strings.Contains(low, "tcp reset") {
+		return "TCP connections being reset: peer refusing or timing out"
+	}
+
+	// Security evidence
+	if strings.Contains(low, "lateral movement") {
+		return "Lateral movement pattern: unusual outbound connections"
+	}
+	if strings.Contains(low, "syn flood") || strings.Contains(low, "synflood") {
+		return "SYN flood detected: possible DDoS attack"
+	}
+	if strings.Contains(low, "port scan") || strings.Contains(low, "portscan") {
+		return "Port scan detected: reconnaissance activity"
+	}
+	if strings.Contains(low, "beacon") {
+		return "Beacon pattern detected: possible C2 communication"
+	}
+
+	// Statistical evidence
+	if strings.Contains(low, "deviating") && strings.Contains(low, "sigma") {
+		return strings.Replace(s, "- ", "", 1) // already somewhat readable
+	}
+	if strings.Contains(low, "correlated") {
+		return strings.Replace(s, "- ", "", 1)
+	}
+
+	// App-specific (already formatted by narrative_apps.go)
+	if strings.HasPrefix(s, "[") {
+		return s
+	}
+
+	// Probe evidence
+	if strings.Contains(low, "off-cpu") || strings.Contains(low, "offcpu") {
+		return s // already formatted by probe
+	}
+
+	// Default: strip leading "- " and return
+	return strings.TrimPrefix(s, "- ")
+}
+
+// extractNum extracts the first float from a string like "75.2% foo".
+func extractNum(s string) float64 {
+	s = strings.TrimSpace(s)
+	end := 0
+	for end < len(s) && (s[end] >= '0' && s[end] <= '9' || s[end] == '.') {
+		end++
+	}
+	if end == 0 {
+		return 0
+	}
+	v, _ := strconv.ParseFloat(s[:end], 64)
+	return v
 }
 
 // ─── SHARED: CAPACITY BLOCK ─────────────────────────────────────────────────
