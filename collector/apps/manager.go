@@ -96,7 +96,20 @@ func (m *Manager) Collect(snap *model.Snapshot) error {
 	var instances []model.AppInstance
 	for i := range m.detected {
 		entry := &m.detected[i]
-		inst := entry.module.Collect(&entry.app, secrets)
+		var inst model.AppInstance
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					inst = model.AppInstance{
+						ID:          fmt.Sprintf("%s-%d", entry.module.Type(), entry.app.Index),
+						AppType:     entry.module.Type(),
+						DisplayName: entry.module.Type() + " (error)",
+						HealthScore: -1,
+					}
+				}
+			}()
+			inst = entry.module.Collect(&entry.app, secrets)
+		}()
 		// Set ID
 		if inst.ID == "" {
 			inst.ID = fmt.Sprintf("%s-%d", entry.module.Type(), entry.app.Index)

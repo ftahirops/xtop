@@ -386,10 +386,17 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot, sp systemPr
 				nil, nil))
 		}
 
-		// Data exfiltration detection — only consider non-private destinations
+		// Data exfiltration detection — exclude private IPs and known SSH session IPs
+		// SSH management traffic to admin IPs is not exfiltration
+		sshIPs := make(map[string]bool)
+		for _, sess := range curr.Global.Sessions {
+			if sess.From != "" && sess.From != "-" {
+				sshIPs[sess.From] = true
+			}
+		}
 		maxEgressMBHr := float64(0)
 		for _, ob := range curr.Global.Sentinel.OutboundTop {
-			if isPrivateIPStr(ob.DstIP) {
+			if isPrivateIPStr(ob.DstIP) || sshIPs[ob.DstIP] {
 				continue
 			}
 			mbhr := ob.BytesPerSec * 3600 / (1024 * 1024)
