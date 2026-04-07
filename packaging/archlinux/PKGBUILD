@@ -1,0 +1,28 @@
+# Maintainer: ftahirops <ftahirops@github>
+pkgname=xtop
+pkgver=0.37.1
+pkgrel=1
+pkgdesc="Real-time Linux server diagnostics with automatic root cause analysis and eBPF probes"
+arch=('x86_64')
+url="https://github.com/ftahirops/xtop"
+license=('MIT')
+depends=('glibc')
+makedepends=('go>=1.21')
+optdepends=(
+  'nvidia-utils: GPU monitoring via nvidia-smi'
+  'docker: container name resolution'
+)
+source=("${pkgname}-${pkgver}.tar.gz::https://github.com/ftahirops/xtop/archive/refs/tags/v${pkgver}.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  cd "${pkgname}-${pkgver}"
+  export CGO_ENABLED=0
+  go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=${pkgver}" -o xtop .
+}
+
+package() {
+  cd "${pkgname}-${pkgver}"
+  install -Dm755 xtop "${pkgdir}/usr/local/bin/xtop"
+  install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}
