@@ -68,7 +68,7 @@
 - [Cron Integration](#cron-integration) — Automated health checks
 - [9 Output Modes](#9-output-modes) — TUI, watch, doctor, JSON, Markdown, daemon, record/replay, shell widget
 - [Quick Start](#quick-start) — One-liner install
-- [Installation](#installation) — .deb, .rpm, from source, uninstall
+- [Installation](#installation) — .deb, .rpm, Arch Linux, from source, uninstall
 - [Documentation](#documentation)
   - [CLI Reference](#cli-reference) — All flags and options
   - [Key Bindings](#key-bindings) — Keyboard shortcuts
@@ -596,6 +596,10 @@ sudo dpkg -i xtop_0.37.1-1_amd64.deb
 # RHEL/Rocky/Fedora (x86_64)
 wget https://github.com/ftahirops/xtop/releases/download/v0.37.1/xtop-0.37.1-1.x86_64.rpm
 sudo rpm -i xtop-0.37.1-1.x86_64.rpm
+
+# Arch Linux
+git clone https://github.com/ftahirops/xtop.git
+cd xtop/packaging/archlinux && makepkg -si
 ```
 
 ### Build from Source
@@ -646,6 +650,20 @@ wget https://github.com/ftahirops/xtop/releases/download/v0.37.1/xtop-0.37.1-1.x
 sudo rpm -i xtop-0.37.1-1.x86_64.rpm
 ```
 
+### Arch Linux (PKGBUILD)
+
+```bash
+# Build and install from PKGBUILD
+git clone https://github.com/ftahirops/xtop.git
+cd xtop/packaging/archlinux
+makepkg -si
+
+# Or with an AUR helper (once published to AUR)
+# yay -S xtop
+```
+
+Builds from source automatically. Optional dependencies: `nvidia-utils` (GPU monitoring), `docker` (container name resolution).
+
 ### From Source
 
 ```bash
@@ -660,6 +678,7 @@ sudo install -m 755 xtop /usr/local/bin/xtop
 ```bash
 sudo dpkg -r xtop        # Debian/Ubuntu
 sudo rpm -e xtop          # RHEL/Rocky
+sudo pacman -R xtop       # Arch Linux
 # or
 sudo rm /usr/local/bin/xtop
 ```
