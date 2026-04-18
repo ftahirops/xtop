@@ -754,14 +754,10 @@ func (pm *ProbeManager) Pack() string {
 
 // Tick checks for state transitions. Called each UI tick (~1s).
 // The Running→Done transition is handled by the goroutine.
-// This only handles Done→Idle expiry.
+// Done results persist until the next probe is started (no time-based expiry).
 func (pm *ProbeManager) Tick() {
-	pm.mu.Lock()
-	defer pm.mu.Unlock()
-	if pm.state == ProbeDone && time.Since(pm.doneAt) >= pm.expiry {
-		pm.state = ProbeIdle
-		pm.findings = nil
-	}
+	// Intentionally no-op: probe findings persist on the Probe page
+	// until a new probe is started. Start() clears findings for the new run.
 }
 
 // ─── probeQuerier interface (for UI) ────────────────────────────────────────
