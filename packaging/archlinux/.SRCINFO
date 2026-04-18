@@ -1,6 +1,6 @@
 pkgbase = xtop
 	pkgdesc = Real-time Linux server diagnostics with automatic root cause analysis and eBPF probes
-	pkgver = 0.37.2
+	pkgver = 0.37.3
 	pkgrel = 1
 	url = https://github.com/ftahirops/xtop
 	arch = x86_64
@@ -9,7 +9,7 @@ pkgbase = xtop
 	depends = glibc
 	optdepends = nvidia-utils: GPU monitoring via nvidia-smi
 	optdepends = docker: container name resolution
-	source = xtop-0.37.2.tar.gz::https://github.com/ftahirops/xtop/archive/refs/tags/v0.37.2.tar.gz
+	source = xtop-0.37.3.tar.gz::https://github.com/ftahirops/xtop/archive/refs/tags/v0.37.3.tar.gz
 	sha256sums = SKIP
 
 pkgname = xtop
