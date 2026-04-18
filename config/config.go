@@ -90,6 +90,7 @@ func Path() string {
 }
 
 // Load loads config from disk; returns defaults on error.
+// Auto-upgrades stale values from old versions (e.g., interval_sec: 1 → 3).
 func Load() Config {
 	cfg := Default()
 	p := Path()
@@ -102,6 +103,16 @@ func Load() Config {
 	}
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		log.Printf("xtop: warning: config parse error: %v", err)
+	}
+	// Migration: old configs had interval_sec=1 and history_size=300.
+	// Current defaults are 3s and 600. Upgrade silently so the user gets
+	// sane defaults without editing the file. Users explicitly choosing
+	// a value other than 1/300 keep their choice.
+	if cfg.IntervalSec == 1 {
+		cfg.IntervalSec = 3
+	}
+	if cfg.HistorySize == 300 {
+		cfg.HistorySize = 600
 	}
 	return cfg
 }
