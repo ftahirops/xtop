@@ -172,7 +172,8 @@ func buildSystemProfile(snap *model.Snapshot) systemProfile {
 }
 
 // AnalyzeRCA runs all bottleneck detectors and builds the full analysis result.
-func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History) *model.AnalysisResult {
+// peerIncidents provides cross-host correlation data (may be nil).
+func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History, peerIncidents map[string]*model.HostIncident) *model.AnalysisResult {
 	result := &model.AnalysisResult{}
 
 	sp := buildSystemProfile(curr)
@@ -388,7 +389,11 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History) 
 
 	// Causal chain — v2 DAG
 	if result.PrimaryScore > 0 && len(result.RCA) > 0 && result.RCA[0].EvidenceGroups >= minEvidenceGroups {
-		if dag := buildCausalDAG(result, hist.CausalLearner); dag != nil {
+		var learner *CausalLearner
+		if hist != nil {
+			learner = hist.CausalLearner
+		}
+		if dag := buildCausalDAG(result, learner); dag != nil {
 			result.CausalDAG = dag
 			result.CausalChain = dag.LinearChain
 		}
@@ -433,7 +438,63 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History) 
 	// Impact quantification
 	result.ImpactSummary = QuantifyImpact(result, curr, rates)
 
+	// Baseline readiness
+	if hist != nil && hist.Baselines != nil {
+		result.BaselineReadiness = hist.Baselines.BaselineReadiness()
+	}
+
+	// Cross-host correlation: check peer hosts for matching bottlenecks or causal links
+	if len(peerIncidents) > 0 && result.PrimaryScore > 0 {
+		result.CrossHostCorrelation = correlatePeerIncidents(result, peerIncidents)
+	}
+
 	return result
+}
+
+// correlatePeerIncidents checks peer hosts for matching bottlenecks and causal links.
+// Returns a human-readable correlation string, or empty if no correlation found.
+func correlatePeerIncidents(result *model.AnalysisResult, peers map[string]*model.HostIncident) string {
+	var parts []string
+
+	for hostID, inc := range peers {
+		if inc == nil || inc.PrimaryScore <= 0 {
+			continue
+		}
+
+		// Same bottleneck on both hosts → boost confidence signal
+		if inc.PrimaryBottleneck == result.PrimaryBottleneck {
+			parts = append(parts, fmt.Sprintf("Host %s also reports %s (score %d)", hostID, inc.PrimaryBottleneck, inc.PrimaryScore))
+		}
+
+		// Causal cross-link: peer's effect matches this host's bottleneck.
+		// e.g. peer has "IO Starvation" on a DB host → could be the cause of "IO Starvation" on app host.
+		if inc.PrimaryBottleneck != result.PrimaryBottleneck && causalLinkExists(inc.PrimaryBottleneck, result.PrimaryBottleneck) {
+			parts = append(parts, fmt.Sprintf("Host %s reports %s (score %d) → may be causing %s here", hostID, inc.PrimaryBottleneck, inc.PrimaryScore, result.PrimaryBottleneck))
+		}
+	}
+
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, "; ")
+}
+
+// causalLinkExists returns true if bottleneck A on a peer host could plausibly
+// cause bottleneck B on this host. Covers known cross-host causal patterns.
+func causalLinkExists(peerBN, localBN string) bool {
+	// Known causal patterns:
+	// - IO starvation on DB → IO starvation on app (shared storage)
+	// - Memory pressure on DB → IO starvation on app (swap thrashing on shared NFS)
+	// - Network overload on load balancer → IO/memory/CPU issues on backends
+	switch peerBN {
+	case BottleneckIO:
+		return localBN == BottleneckIO // shared storage contention
+	case BottleneckMemory:
+		return localBN == BottleneckIO || localBN == BottleneckNetwork // swap/NFS thrashing
+	case BottleneckNetwork:
+		return localBN == BottleneckIO || localBN == BottleneckMemory || localBN == BottleneckCPU // network-induced backpressure
+	}
+	return false
 }
 
 // isSelfProcess returns true for xtop's own processes (should never be blamed as culprit).
@@ -617,7 +678,10 @@ func fmtAge(seconds int) string {
 
 // runStatisticalAnalysis feeds evidence into statistical trackers and populates results.
 func runStatisticalAnalysis(result *model.AnalysisResult, curr *model.Snapshot, rates *model.RateSnapshot, hist *History) {
-	if hist == nil {
+	// Guard against nil hist AND nil sub-fields (e.g., if History was constructed
+	// outside NewHistory() — tests or direct struct literals).
+	if hist == nil || hist.Baselines == nil || hist.ZScores == nil ||
+		hist.Forecaster == nil || hist.Seasonal == nil || hist.Correlator == nil {
 		return
 	}
 
@@ -744,29 +808,124 @@ func runStatisticalAnalysis(result *model.AnalysisResult, curr *model.Snapshot, 
 	}
 	hist.mu.RUnlock()
 
-	for _, rule := range causalRules {
-		_, causeFired := evidenceMap[rule.from]
-		_, effectFired := evidenceMap[rule.to]
-		if causeFired || effectFired {
-			causeOnset, cOK := onsetsCopy[rule.from]
-			effectOnset, eOK := onsetsCopy[rule.to]
-			causeFirst := false
-			if cOK && eOK {
-				causeFirst = !causeOnset.After(effectOnset)
-			} else if cOK && !eOK {
-				causeFirst = true
+	// Guard CausalLearner usage — hist.CausalLearner may be nil if History was
+	// constructed outside NewHistory().
+	if hist.CausalLearner != nil {
+		for _, rule := range causalRules {
+			_, causeFired := evidenceMap[rule.from]
+			_, effectFired := evidenceMap[rule.to]
+			if causeFired || effectFired {
+				causeOnset, cOK := onsetsCopy[rule.from]
+				effectOnset, eOK := onsetsCopy[rule.to]
+				causeFirst := false
+				if cOK && eOK {
+					causeFirst = !causeOnset.After(effectOnset)
+				} else if cOK && !eOK {
+					causeFirst = true
+				}
+				hist.CausalLearner.Observe(rule.rule, causeFired, effectFired, causeFirst)
 			}
-			hist.CausalLearner.Observe(rule.rule, causeFired, effectFired, causeFirst)
+		}
+
+		// 10. Feed co-occurrence learning from all fired evidence this tick
+		var firedIDs []string
+		for id := range evidenceMap {
+			firedIDs = append(firedIDs, id)
+		}
+		if len(firedIDs) >= 2 {
+			hist.CausalLearner.ObserveCoOccurrence(firedIDs)
 		}
 	}
 
-	// 10. Feed co-occurrence learning from all fired evidence this tick
-	var firedIDs []string
-	for id := range evidenceMap {
-		firedIDs = append(firedIDs, id)
+	// 11. Forecast-based early warning — check if any tracked metric is
+	// trending toward its critical threshold. Boost PrimaryScore when
+	// a breach is imminent, and set ForecastWarning for display.
+	//
+	// Critical thresholds match those used by the analyzers above.
+	forecastCritThresholds := map[string]float64{
+		"cpu.psi":              20.0,
+		"cpu.busy":             90.0,
+		"cpu.runqueue":         2.0,
+		"mem.psi":              20.0,
+		"mem.available.low":    95.0, // used%
+		"mem.reclaim.direct":   500.0,
+		"mem.swap.in":          30.0,
+		"io.disk.util":         90.0,
+		"io.disk.latency":      100.0,
+		"io.psi":               20.0,
+		"net.conntrack":        90.0, // %
+		"net.drops":            100.0,
+		"net.tcp.retrans":      200.0,
 	}
-	if len(firedIDs) >= 2 {
-		hist.CausalLearner.ObserveCoOccurrence(firedIDs)
+
+	// Display labels for ForecastWarning
+	forecastLabels := map[string]string{
+		"cpu.psi":              "CPU stall",
+		"cpu.busy":             "CPU busy",
+		"cpu.runqueue":         "CPU run queue",
+		"mem.psi":              "Memory stall",
+		"mem.available.low":    "Memory",
+		"mem.reclaim.direct":   "Memory reclaim",
+		"mem.swap.in":          "Swap in",
+		"io.disk.util":         "Disk utilization",
+		"io.disk.latency":      "Disk latency",
+		"io.psi":               "IO stall",
+		"net.conntrack":        "Conntrack table",
+		"net.drops":            "Network drops",
+		"net.tcp.retrans":      "TCP retransmits",
+	}
+
+	// Collection interval determines steps-to-seconds conversion
+	stepsPerSecond := 1.0
+	if hist != nil && hist.Len() > 1 {
+		latestRate := hist.GetRate(hist.Len() - 1)
+		if latestRate != nil && latestRate.DeltaSec > 0 {
+			stepsPerSecond = 1.0 / latestRate.DeltaSec
+		}
+	}
+
+	const (
+		forecastMaxSteps    = 120  // cap ETA at this many steps
+		forecastWarnSteps30 = 30   // ~30s window → score boost +10
+		forecastWarnSteps60 = 60   // ~60s window → score boost +5
+	)
+
+	var bestForecastID string
+	var bestForecastETA float64 // in seconds
+
+	for id, crit := range forecastCritThresholds {
+		eta := hist.Forecaster.ETAToThreshold(id, crit, forecastMaxSteps)
+		if eta <= 0 {
+			continue // not trending toward threshold, or insufficient data
+		}
+		etaSeconds := eta / stepsPerSecond
+		if etaSeconds > 120 {
+			continue // too far out to be actionable
+		}
+		if bestForecastID == "" || etaSeconds < bestForecastETA {
+			bestForecastID = id
+			bestForecastETA = etaSeconds
+		}
+	}
+
+	if bestForecastID != "" {
+		label := forecastLabels[bestForecastID]
+		if label == "" {
+			label = bestForecastID
+		}
+		crit := forecastCritThresholds[bestForecastID]
+		current := evidenceMap[bestForecastID]
+		etaSec := int(bestForecastETA)
+		result.ForecastWarning = fmt.Sprintf("%s will hit %.0f in ~%ds at current trend (currently %.1f)",
+			label, crit, etaSec, current)
+
+		// Score boost for imminent breach
+		if bestForecastETA <= forecastWarnSteps30/stepsPerSecond {
+			result.PrimaryScore += 10
+		} else if bestForecastETA <= forecastWarnSteps60/stepsPerSecond {
+			result.PrimaryScore += 5
+		}
+		cap100(&result.PrimaryScore)
 	}
 }
 

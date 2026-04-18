@@ -75,6 +75,10 @@ func appCompactVerdict(app model.AppInstance) string {
 		return redisCompactVerdict(app)
 	case "elasticsearch":
 		return esCompactVerdict(app)
+	case "logstash":
+		return logstashCompactVerdict(app)
+	case "kibana":
+		return kibanaCompactVerdict(app)
 	case "mysql":
 		return mysqlCompactVerdict(app)
 	case "postgresql":
@@ -105,6 +109,10 @@ func renderAppCompactSections(app model.AppInstance, iw int) string {
 		return redisCompactSections(app, iw)
 	case "elasticsearch":
 		return esCompactSections(app, iw)
+	case "logstash":
+		return logstashCompactSections(app, iw)
+	case "kibana":
+		return kibanaCompactSections(app, iw)
 	case "mysql":
 		return mysqlCompactSections(app, iw)
 	case "postgresql":

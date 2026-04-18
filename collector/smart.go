@@ -26,28 +26,28 @@ func NewSMARTCollector(interval time.Duration) *SMARTCollector {
 	return &SMARTCollector{interval: interval}
 }
 
-// Get returns cached disk health data, refreshing if stale.
+// Get returns cached disk health data, triggering async refresh if stale.
 func (s *SMARTCollector) Get() []model.SMARTDisk {
 	s.mu.RLock()
-	if time.Since(s.lastRun) < s.interval && len(s.disks) > 0 {
-		disks := s.disks
-		s.mu.RUnlock()
-		return disks
-	}
+	disks := s.disks
 	s.mu.RUnlock()
 
-	// Need to refresh
+	// Trigger async refresh in background (non-blocking)
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	stale := time.Since(s.lastRun) >= s.interval || len(s.disks) == 0
+	s.mu.Unlock()
 
-	// Double-check after acquiring write lock
-	if time.Since(s.lastRun) < s.interval && len(s.disks) > 0 {
-		return s.disks
+	if stale {
+		go func() {
+			data := s.collect()
+			s.mu.Lock()
+			s.disks = data
+			s.lastRun = time.Now()
+			s.mu.Unlock()
+		}()
 	}
 
-	s.disks = s.collect()
-	s.lastRun = time.Now()
-	return s.disks
+	return disks
 }
 
 func (s *SMARTCollector) collect() []model.SMARTDisk {

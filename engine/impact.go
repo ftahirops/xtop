@@ -61,6 +61,15 @@ func ComputeImpactScores(snap *model.Snapshot, rates *model.RateSnapshot, result
 	now := time.Now()
 	bootTime := readBootTime()
 
+	// Build PID → StartTimeTicks map once to avoid O(n²) linear scan per process.
+	// On a system with 500 processes, this saved ~250k comparisons per tick.
+	pidStart := make(map[int]uint64, len(snap.Processes))
+	for _, pm := range snap.Processes {
+		if pm.StartTimeTicks > 0 {
+			pidStart[pm.PID] = pm.StartTimeTicks
+		}
+	}
+
 	scores := make([]model.ImpactScore, 0, len(rates.ProcessRates))
 	for _, p := range rates.ProcessRates {
 		if isKernelThread(p.Comm) {
@@ -83,18 +92,15 @@ func ComputeImpactScores(snap *model.Snapshot, rates *model.RateSnapshot, result
 		composite := cpuNorm*weightCPU + psiNorm*weightPSI + ioNorm*weightIO +
 			memNorm*weightMem + netNorm*weightNet
 
-		// Newness penalty: boost for recently started processes
+		// Newness penalty: boost for recently started processes (O(1) map lookup)
 		newness := float64(0)
 		if bootTime > 0 {
-			for _, pm := range snap.Processes {
-				if pm.PID == p.PID && pm.StartTimeTicks > 0 {
-					ticksPerSec := float64(100) // SC_CLK_TCK = 100 on most Linux
-					procStart := bootTime + float64(pm.StartTimeTicks)/ticksPerSec
-					ageSec := float64(now.Unix()) - procStart
-					if ageSec >= 0 && ageSec < newnessAgeSec {
-						newness = newnessBonus
-					}
-					break
+			if startTicks, ok := pidStart[p.PID]; ok {
+				ticksPerSec := float64(100) // SC_CLK_TCK = 100 on most Linux
+				procStart := bootTime + float64(startTicks)/ticksPerSec
+				ageSec := float64(now.Unix()) - procStart
+				if ageSec >= 0 && ageSec < newnessAgeSec {
+					newness = newnessBonus
 				}
 			}
 		}

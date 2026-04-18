@@ -179,7 +179,7 @@ func netSoftIRQSnap() (*model.Snapshot, *model.RateSnapshot) {
 func runRCA(s *model.Snapshot, r *model.RateSnapshot) *model.AnalysisResult {
 	h := newTestHistory()
 	feedHistory(h, s, r, 10)
-	return AnalyzeRCA(s, r, h)
+	return AnalyzeRCA(s, r, h, nil)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -342,7 +342,7 @@ func TestCulprit_ProcessHistoryConsistent(t *testing.T) {
 	}
 	feedHistory(h, s, &rDominant, 10)
 
-	result := AnalyzeRCA(s, &rDominant, h)
+	result := AnalyzeRCA(s, &rDominant, h, nil)
 	assertNotCulprit(t, result, "xtop")
 	assertCulprit(t, result, "appworker")
 }
@@ -545,7 +545,7 @@ func TestSustained_BonusApplied(t *testing.T) {
 		h.ProcessHistory.Record(&rh)
 	}
 
-	result := AnalyzeRCA(s, r, h)
+	result := AnalyzeRCA(s, r, h, nil)
 	if !result.Sustained {
 		t.Log("NOTE: Sustained flag not set (may need different threshold conditions)")
 	}

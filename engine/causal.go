@@ -25,7 +25,8 @@ var causalRules = []causalRule{
 	{"mem.available.low", "mem.reclaim.direct", "lowmem→reclaim", 0.9},
 	{"mem.available.low", "mem.major.faults", "lowmem→faults", 0.7},
 	{"mem.available.low", "mem.swap.activity", "lowmem→swap", 0.85},
-	{"mem.oom.kills", "mem.available.low", "oom→lowmem", 0.95},
+	// FIX: low available memory causes OOM kills, not reverse
+	{"mem.available.low", "mem.oom.kills", "lowmem→oom", 0.95},
 
 	// Cross-domain: memory → IO
 	{"mem.swap.activity", "io.psi", "swap→iopsi", 0.7},
@@ -73,9 +74,9 @@ var causalRules = []causalRule{
 	{"mem.alloc.stall", "mem.psi", "allocstall→mempsi", 0.8},
 	{"mem.swap.in", "io.disk.latency", "swapin→iolatency", 0.7},
 
-	// CPU extended
-	{"cpu.iowait", "io.disk.latency", "iowait→iolatency", 0.8},
-	{"cpu.iowait", "io.psi", "iowait→iopsi", 0.7},
+	// CPU extended — FIX: disk latency causes iowait, not reverse
+	{"io.disk.latency", "cpu.iowait", "iolatency→iowait", 0.8},
+	{"io.disk.latency", "io.psi", "iolatency→iopsi", 0.7},
 	{"cpu.irq.imbalance", "net.drops", "irqimbalance→drops", 0.6},
 
 	// Network extended
@@ -85,6 +86,11 @@ var causalRules = []causalRule{
 	{"net.tcp.resets", "net.tcp.retrans", "resets→retrans", 0.5},
 	{"net.tcp.timewait", "net.ephemeral", "timewait→ephemeral", 0.7},
 	{"net.udp.errors", "net.drops", "udperrors→drops", 0.4},
+
+	// FD exhaustion — NEW evidence type
+	{"proc.fd.exhaustion", "net.tcp.retrans", "fdexhaust→retrans", 0.8},
+	{"proc.fd.exhaustion", "net.drops", "fdexhaust→drops", 0.7},
+	{"proc.fd.exhaustion", "io.disk.latency", "fdexhaust→iolatency", 0.5},
 
 	// .NET domain
 	{"dotnet.gc.pause", "cpu.runqueue", "gcpause→runqueue", 0.7},
@@ -241,8 +247,15 @@ func linearize(dag *model.CausalDAG, firedMap map[string]model.Evidence) string 
 	}
 	var bestPath pathResult
 
+	// Depth limit prevents infinite loops if causalRules ever contains cycles
+	// (e.g., net.drops → net.tcp.retrans → net.softirq → net.drops).
+	maxDepth := len(dag.Nodes) + 2
+
 	var dfs func(node string, path []string, totalWeight float64, visited map[string]bool)
 	dfs = func(node string, path []string, totalWeight float64, visited map[string]bool) {
+		if len(path) >= maxDepth {
+			return // cycle safeguard
+		}
 		path = append(path, node)
 		visited[node] = true
 

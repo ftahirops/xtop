@@ -99,7 +99,7 @@ func TestRCA_CPUStress_CorrectBottleneck(t *testing.T) {
 	h := newTestHistory()
 	feedHistory(h, snap, rates, 10)
 
-	result := AnalyzeRCA(snap, rates, h)
+	result := AnalyzeRCA(snap, rates, h, nil)
 
 	// Log evidence details for debugging
 	for _, rca := range result.RCA {
@@ -136,7 +136,7 @@ func TestRCA_CPUStress_CorrectCulprit(t *testing.T) {
 	h := newTestHistory()
 	feedHistory(h, snap, rates, 10) // 10 ticks of history
 
-	result := AnalyzeRCA(snap, rates, h)
+	result := AnalyzeRCA(snap, rates, h, nil)
 
 	if result.PrimaryProcess != "stress-ng-cpu" {
 		t.Errorf("WHO: expected stress-ng-cpu, got %q (PID %d)", result.PrimaryProcess, result.PrimaryPID)
@@ -156,7 +156,7 @@ func TestRCA_CPUStress_XtopNeverCulprit(t *testing.T) {
 	h := newTestHistory()
 	feedHistory(h, snap, rates, 10)
 
-	result := AnalyzeRCA(snap, rates, h)
+	result := AnalyzeRCA(snap, rates, h, nil)
 
 	if result.PrimaryProcess == "xtop" {
 		t.Error("WHO: xtop must never be blamed as culprit")
@@ -178,7 +178,7 @@ func TestRCA_CPUStress_NoMySQLEvidence(t *testing.T) {
 	h := newTestHistory()
 	feedHistory(h, snap, rates, 10)
 
-	result := AnalyzeRCA(snap, rates, h)
+	result := AnalyzeRCA(snap, rates, h, nil)
 
 	if result.Narrative != nil {
 		for _, ev := range result.Narrative.Evidence {
@@ -200,7 +200,7 @@ func TestRCA_CPUStress_EvidenceDomainScoped(t *testing.T) {
 	h := newTestHistory()
 	feedHistory(h, snap, rates, 10)
 
-	result := AnalyzeRCA(snap, rates, h)
+	result := AnalyzeRCA(snap, rates, h, nil)
 
 	if result.Narrative != nil {
 		for _, ev := range result.Narrative.Evidence {
@@ -227,7 +227,7 @@ func TestRCA_MemoryPressure_CorrectBottleneck(t *testing.T) {
 	h := newTestHistory()
 	feedHistory(h, snap, rates, 10)
 
-	result := AnalyzeRCA(snap, rates, h)
+	result := AnalyzeRCA(snap, rates, h, nil)
 
 	if result.PrimaryBottleneck != BottleneckMemory {
 		t.Errorf("expected Memory Pressure, got %q", result.PrimaryBottleneck)
@@ -248,7 +248,7 @@ func TestRCA_MemoryPressure_BlameLargestRSS(t *testing.T) {
 	h := newTestHistory()
 	feedHistory(h, snap, rates, 10)
 
-	result := AnalyzeRCA(snap, rates, h)
+	result := AnalyzeRCA(snap, rates, h, nil)
 
 	if result.PrimaryProcess != "mysqld" {
 		t.Errorf("WHO: expected mysqld (largest RSS), got %q", result.PrimaryProcess)
@@ -269,7 +269,7 @@ func TestRCA_OOMKill_HighSeverity(t *testing.T) {
 	h := newTestHistory()
 	feedHistory(h, snap, rates, 10)
 
-	result := AnalyzeRCA(snap, rates, h)
+	result := AnalyzeRCA(snap, rates, h, nil)
 
 	if result.Health != model.HealthCritical {
 		t.Errorf("OOM kill should trigger Critical, got health=%d", result.Health)
@@ -293,7 +293,7 @@ func TestRCA_IOSaturation_CorrectBottleneck(t *testing.T) {
 	h := newTestHistory()
 	feedHistory(h, snap, rates, 10)
 
-	result := AnalyzeRCA(snap, rates, h)
+	result := AnalyzeRCA(snap, rates, h, nil)
 
 	if result.PrimaryBottleneck != BottleneckIO {
 		t.Errorf("expected IO Starvation, got %q", result.PrimaryBottleneck)
@@ -321,7 +321,7 @@ func TestRCA_IOFromSwap_BlameMemoryHog(t *testing.T) {
 	h := newTestHistory()
 	feedHistory(h, snap, rates, 10)
 
-	result := AnalyzeRCA(snap, rates, h)
+	result := AnalyzeRCA(snap, rates, h, nil)
 
 	// Culprit should be the memory hog, not the IO victim
 	if result.PrimaryProcess == "mysqld" {
@@ -349,7 +349,7 @@ func TestRCA_IOSaturation_CorrectCulprit(t *testing.T) {
 	h := newTestHistory()
 	feedHistory(h, snap, rates, 10)
 
-	result := AnalyzeRCA(snap, rates, h)
+	result := AnalyzeRCA(snap, rates, h, nil)
 
 	if result.PrimaryProcess != "mysqld" {
 		t.Errorf("WHO: expected mysqld (top IO writer), got %q", result.PrimaryProcess)
@@ -369,7 +369,7 @@ func TestRCA_NetworkDrops_CorrectBottleneck(t *testing.T) {
 	h := newTestHistory()
 	feedHistory(h, snap, rates, 10)
 
-	result := AnalyzeRCA(snap, rates, h)
+	result := AnalyzeRCA(snap, rates, h, nil)
 
 	if result.PrimaryBottleneck != BottleneckNetwork {
 		t.Errorf("expected Network Overload, got %q", result.PrimaryBottleneck)
@@ -394,7 +394,7 @@ func TestRCA_MemoryInducedIO_PrefersMemory(t *testing.T) {
 	h := newTestHistory()
 	feedHistory(h, snap, rates, 10)
 
-	result := AnalyzeRCA(snap, rates, h)
+	result := AnalyzeRCA(snap, rates, h, nil)
 
 	// When memory reclaim is active and both IO+Memory score high,
 	// domain conflict resolution should prefer Memory as root cause
@@ -412,7 +412,7 @@ func TestRCA_HealthySystem_NoBottleneck(t *testing.T) {
 	h := newTestHistory()
 	feedHistory(h, snap, rates, 10)
 
-	result := AnalyzeRCA(snap, rates, h)
+	result := AnalyzeRCA(snap, rates, h, nil)
 
 	if result.Health != model.HealthOK {
 		t.Errorf("healthy system should be OK, got health=%d bottleneck=%q score=%d",
@@ -439,7 +439,7 @@ func TestRCA_AppEnrichment_OnlyWhenCulprit(t *testing.T) {
 	h := newTestHistory()
 	feedHistory(h, snap, rates, 10)
 
-	result := AnalyzeRCA(snap, rates, h)
+	result := AnalyzeRCA(snap, rates, h, nil)
 
 	if result.Narrative != nil {
 		rootCause := strings.ToLower(result.Narrative.RootCause)
@@ -472,7 +472,7 @@ func TestRCA_AppEnrichment_DegradedAppShown(t *testing.T) {
 	h := newTestHistory()
 	feedHistory(h, snap, rates, 10)
 
-	result := AnalyzeRCA(snap, rates, h)
+	result := AnalyzeRCA(snap, rates, h, nil)
 
 	if result.Narrative == nil {
 		t.Skip("no narrative generated")
@@ -621,7 +621,7 @@ func TestBuildNarrative_CPUBottleneck_NoNetworkNoise(t *testing.T) {
 	h := newTestHistory()
 	feedHistory(h, snap, rates, 10)
 
-	result := AnalyzeRCA(snap, rates, h)
+	result := AnalyzeRCA(snap, rates, h, nil)
 
 	if result.Narrative == nil {
 		t.Skip("no narrative")

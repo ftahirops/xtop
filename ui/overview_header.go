@@ -194,8 +194,8 @@ func renderOverviewAppsSummary(snap *model.Snapshot, width int) string {
 	if innerW < 40 {
 		innerW = 40
 	}
-	if innerW > 100 {
-		innerW = 100
+	if innerW > 200 {
+		innerW = 200
 	}
 
 	title := fmt.Sprintf(" %s ", titleStyle.Render("Apps"))
@@ -289,6 +289,36 @@ func overviewAppOneLiner(app model.AppInstance) string {
 		if h := dm["jvm_heap_used_pct"]; h != "" {
 			parts = append(parts, h+" heap")
 		}
+		if rej := dm["tp_total_rejected"]; rej != "" && rej != "0" {
+			parts = append(parts, rej+" rej")
+		}
+		return strings.Join(parts, "  ")
+	case "logstash":
+		parts := []string{}
+		if s := dm["status"]; s != "" {
+			parts = append(parts, s)
+		}
+		if in := dm["events_in_per_sec"]; in != "" {
+			parts = append(parts, in+"→"+dm["events_out_per_sec"]+" ev/s")
+		}
+		if q := dm["queue_total_pct"]; q != "" {
+			parts = append(parts, q+"% q")
+		}
+		if dlq := dm["dlq_total_events"]; dlq != "" && dlq != "0" {
+			parts = append(parts, dlq+" DLQ")
+		}
+		return strings.Join(parts, "  ")
+	case "kibana":
+		parts := []string{}
+		if s := dm["status_overall"]; s != "" {
+			parts = append(parts, s)
+		}
+		if d := dm["event_loop_delay_ms"]; d != "" {
+			parts = append(parts, d+"ms loop")
+		}
+		if h := dm["heap_used_pct"]; h != "" {
+			parts = append(parts, h+"% heap")
+		}
 		return strings.Join(parts, "  ")
 	case "mysql":
 		parts := []string{}
@@ -364,8 +394,8 @@ func renderOverviewSecuritySummary(snap *model.Snapshot, width int) string {
 	if innerW < 40 {
 		innerW = 40
 	}
-	if innerW > 100 {
-		innerW = 100
+	if innerW > 200 {
+		innerW = 200
 	}
 
 	title := fmt.Sprintf(" %s ", titleStyle.Render("Security"))

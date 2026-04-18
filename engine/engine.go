@@ -26,8 +26,11 @@ type Engine struct {
 	MultiRes      *MultiResBuffer  // multi-resolution time series (nil if unused)
 	SLOPolicies    []SLOPolicy     // SLO policies from config/flags
 	Autopilot      *Autopilot      // autopilot subsystem (nil if disabled)
-	changeDetector *ChangeDetector // tracks system changes between ticks
+	changeDetector   *ChangeDetector   // tracks system changes between ticks
+	incidentRecorder *IncidentRecorder // records past RCA incidents for learning
 	tickMu         sync.Mutex      // serializes Tick() calls to prevent concurrent collection
+	peerIncidents  map[string]*model.HostIncident // hostID → latest incident
+	peerMu         sync.RWMutex
 }
 
 // NewEngine creates a new engine with all collectors registered.
@@ -62,6 +65,8 @@ func NewEngine(historySize, intervalSec int) *Engine {
 	appm.Register(apps.NewRedisModule())
 	appm.Register(apps.NewMemcachedModule())
 	appm.Register(apps.NewESModule())
+	appm.Register(apps.NewLogstashModule())
+	appm.Register(apps.NewKibanaModule())
 	appm.Register(apps.NewRabbitMQModule())
 	appm.Register(apps.NewKafkaModule())
 	appm.Register(apps.NewDockerModule())
@@ -81,7 +86,9 @@ func NewEngine(historySize, intervalSec int) *Engine {
 		Sentinel:       sentinel,
 		Watchdog:       NewWatchdogTrigger(),
 		SecWatchdog:    bpf.NewSecWatchdog(bpf.DetectPrimaryIface()),
-		changeDetector: NewChangeDetector(),
+		changeDetector:   NewChangeDetector(),
+		incidentRecorder: NewIncidentRecorder(),
+		peerIncidents:  make(map[string]*model.HostIncident),
 	}
 }
 
@@ -126,11 +133,29 @@ func (e *Engine) Tick() (*model.Snapshot, *model.RateSnapshot, *model.AnalysisRe
 		rates = &r
 		e.History.PushRate(r)
 		e.History.ProcessHistory.Record(rates)
-		result = AnalyzeRCA(snap, rates, e.History)
+
+		// Get peer incidents for cross-host correlation
+		peers := e.GetPeerIncidents()
+		result = AnalyzeRCA(snap, rates, e.History, peers)
 
 		// Change detection: track new/stopped processes and recent package changes
 		if e.changeDetector != nil {
 			result.Changes = e.changeDetector.DetectChanges(snap)
+		}
+
+		// Incident recording: track active incidents, persist completed ones,
+		// and enrich current narrative with history context (recurrence info).
+		if e.incidentRecorder != nil {
+			e.incidentRecorder.Record(result)
+			if result.Health > model.HealthOK {
+				ctx := e.incidentRecorder.HistoryContext(result)
+				if ctx != "" {
+					result.HistoryContext = ctx
+					if result.Narrative != nil {
+						result.Narrative.Evidence = append([]string{ctx}, result.Narrative.Evidence...)
+					}
+				}
+			}
 		}
 
 		// Watchdog auto-trigger: check if RCA warrants domain-specific probes
@@ -210,4 +235,22 @@ func primaryDisplayName(result *model.AnalysisResult) string {
 		return result.PrimaryAppName
 	}
 	return result.PrimaryProcess
+}
+
+// ReportPeerIncident records the latest incident from a peer host for cross-host correlation.
+func (e *Engine) ReportPeerIncident(hostID string, inc *model.HostIncident) {
+	e.peerMu.Lock()
+	defer e.peerMu.Unlock()
+	e.peerIncidents[hostID] = inc
+}
+
+// GetPeerIncidents returns a snapshot of all known peer host incidents.
+func (e *Engine) GetPeerIncidents() map[string]*model.HostIncident {
+	e.peerMu.RLock()
+	defer e.peerMu.RUnlock()
+	out := make(map[string]*model.HostIncident, len(e.peerIncidents))
+	for k, v := range e.peerIncidents {
+		out[k] = v
+	}
+	return out
 }

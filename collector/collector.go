@@ -50,7 +50,7 @@ func NewRegistry() *Registry {
 			&FilesystemCollector{},
 			&DeletedOpenCollector{MaxFiles: 20},
 			&FilelessCollector{},
-			&BigFileCollector{MaxFiles: 10, MinSize: 50 * 1024 * 1024},
+			&BigFileCollector{MaxFiles: 10, MinSize: 50 * 1024 * 1024, firstRun: true},
 			&ProcessCollector{MaxProcs: 50},
 			&IdentityCollector{},
 			&SecurityCollector{},
@@ -73,11 +73,28 @@ func (r *Registry) Add(c Collector) {
 // failing collector from crashing the entire collection cycle.
 func (r *Registry) CollectAll(snap *model.Snapshot) []error {
 	var errs []error
+	health := &model.CollectionHealth{Total: len(r.collectors)}
+	var totalLatencyMs float64
+
 	for _, c := range r.collectors {
-		if err := r.safeCollect(c, snap); err != nil {
+		start := time.Now()
+		err := r.safeCollect(c, snap)
+		latencyMs := float64(time.Since(start).Microseconds()) / 1000.0
+		totalLatencyMs += latencyMs
+
+		if err != nil {
+			health.Failed++
 			errs = append(errs, err)
+		} else {
+			health.Succeeded++
 		}
 	}
+
+	if health.Total > 0 {
+		health.AvgLatencyMs = totalLatencyMs / float64(health.Total)
+	}
+	snap.CollectionHealth = health
+
 	return errs
 }
 

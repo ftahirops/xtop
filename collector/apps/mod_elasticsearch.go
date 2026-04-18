@@ -342,41 +342,217 @@ func collectESMetrics(client *http.Client, inst *model.AppInstance, port int, se
 		}
 	}
 
+	// 6. Deep metrics: thread pools, breakers, shards, index lifecycle, GC, pending tasks, slow indices
+	if inst.HasDeepMetrics {
+		collectESDeepMetrics(client, inst, baseURL, user, password)
+	}
+
 	// Health scoring
 	inst.HealthScore = 100
-	if inst.HasDeepMetrics {
-		switch inst.DeepMetrics["status"] {
-		case "red":
-			inst.HealthScore -= 30
-			inst.HealthIssues = append(inst.HealthIssues, "cluster status RED — data loss risk")
-		case "yellow":
-			inst.HealthScore -= 10
-			inst.HealthIssues = append(inst.HealthIssues, "cluster status YELLOW — replicas unassigned")
-		}
-		if unassigned, _ := strconv.Atoi(inst.DeepMetrics["unassigned_shards"]); unassigned > 0 {
-			inst.HealthIssues = append(inst.HealthIssues,
-				fmt.Sprintf("%d unassigned shards", unassigned))
-		}
-		if pctStr := inst.DeepMetrics["jvm_heap_used_pct"]; pctStr != "" {
-			pct, _ := strconv.ParseFloat(strings.TrimSuffix(pctStr, "%"), 64)
-			if pct > 85 {
-				inst.HealthScore -= 15
-				inst.HealthIssues = append(inst.HealthIssues,
-					fmt.Sprintf("JVM heap pressure: %s used", pctStr))
-			}
-		}
-		if ev, _ := strconv.ParseInt(inst.DeepMetrics["fielddata_evictions"], 10, 64); ev > 100 {
-			inst.HealthScore -= 10
-			inst.HealthIssues = append(inst.HealthIssues,
-				fmt.Sprintf("fielddata evictions: %d", ev))
-		}
-		if redCount, _ := strconv.Atoi(inst.DeepMetrics["indices_red"]); redCount > 0 {
-			inst.HealthIssues = append(inst.HealthIssues,
-				fmt.Sprintf("%d indices in RED state", redCount))
-		}
-	}
+	esApplyHealthRules(inst)
 	if inst.HealthScore < 0 {
 		inst.HealthScore = 0
+	}
+	if inst.HealthScore > 100 {
+		inst.HealthScore = 100
+	}
+}
+
+// esApplyHealthRules runs all 20+ ES health checks against the collected metrics.
+func esApplyHealthRules(inst *model.AppInstance) {
+	if !inst.HasDeepMetrics {
+		return
+	}
+	dm := inst.DeepMetrics
+
+	// 1. Cluster status
+	switch dm["status"] {
+	case "red":
+		inst.HealthScore -= 30
+		inst.HealthIssues = append(inst.HealthIssues, "cluster status RED — data loss risk")
+	case "yellow":
+		inst.HealthScore -= 10
+		inst.HealthIssues = append(inst.HealthIssues, "cluster status YELLOW — replicas unassigned")
+	}
+
+	// 2. Unassigned shards
+	if unassigned, _ := strconv.Atoi(dm["unassigned_shards"]); unassigned > 0 {
+		inst.HealthScore -= 10
+		inst.HealthIssues = append(inst.HealthIssues,
+			fmt.Sprintf("%d unassigned shards", unassigned))
+	}
+
+	// 3. JVM heap pressure
+	if pctStr := dm["jvm_heap_used_pct"]; pctStr != "" {
+		pct, _ := strconv.ParseFloat(strings.TrimSuffix(pctStr, "%"), 64)
+		if pct > 90 {
+			inst.HealthScore -= 25
+			inst.HealthIssues = append(inst.HealthIssues,
+				fmt.Sprintf("JVM heap at %s — risk of GC death spiral", pctStr))
+		} else if pct > 85 {
+			inst.HealthScore -= 15
+			inst.HealthIssues = append(inst.HealthIssues,
+				fmt.Sprintf("JVM heap pressure: %s used", pctStr))
+		}
+	}
+
+	// 4. Fielddata evictions (cache thrash)
+	if ev, _ := strconv.ParseInt(dm["fielddata_evictions"], 10, 64); ev > 100 {
+		inst.HealthScore -= 10
+		inst.HealthIssues = append(inst.HealthIssues,
+			fmt.Sprintf("fielddata evictions: %d — cache undersized", ev))
+	}
+
+	// 5. RED indices
+	if redCount, _ := strconv.Atoi(dm["indices_red"]); redCount > 0 {
+		inst.HealthScore -= 15
+		inst.HealthIssues = append(inst.HealthIssues,
+			fmt.Sprintf("%d indices in RED state — shards missing", redCount))
+	}
+
+	// 6. Thread-pool rejections (any rejection = critical)
+	if rej, _ := strconv.ParseInt(dm["tp_total_rejected"], 10, 64); rej > 0 {
+		inst.HealthScore -= 15
+		var pools []string
+		for _, pool := range []string{"write", "search", "bulk", "get"} {
+			if r, _ := strconv.ParseInt(dm["tp_"+pool+"_rejected"], 10, 64); r > 0 {
+				pools = append(pools, fmt.Sprintf("%s:%d", pool, r))
+			}
+		}
+		inst.HealthIssues = append(inst.HealthIssues,
+			fmt.Sprintf("thread-pool rejections (%s) — queue saturated", strings.Join(pools, " ")))
+	}
+
+	// 7. Write queue backlog
+	if q, _ := strconv.Atoi(dm["tp_write_queue"]); q > 100 {
+		inst.HealthScore -= 10
+		inst.HealthIssues = append(inst.HealthIssues,
+			fmt.Sprintf("write queue %d items — indexing backlog", q))
+	}
+
+	// 8. Search queue backlog
+	if q, _ := strconv.Atoi(dm["tp_search_queue"]); q > 500 {
+		inst.HealthScore -= 10
+		inst.HealthIssues = append(inst.HealthIssues,
+			fmt.Sprintf("search queue %d items — query backlog", q))
+	}
+
+	// 9. Circuit breaker trips
+	if trips, _ := strconv.ParseInt(dm["cb_total_tripped"], 10, 64); trips > 0 {
+		inst.HealthScore -= 20
+		var names []string
+		for _, br := range []string{"parent", "fielddata", "request", "in_flight_requests"} {
+			if t, _ := strconv.ParseInt(dm["cb_"+br+"_tripped"], 10, 64); t > 0 {
+				names = append(names, fmt.Sprintf("%s:%d", br, t))
+			}
+		}
+		if len(names) == 0 {
+			names = []string{fmt.Sprintf("total:%d", trips)}
+		}
+		inst.HealthIssues = append(inst.HealthIssues,
+			fmt.Sprintf("circuit breaker trips (%s) — requests rejected", strings.Join(names, " ")))
+	}
+
+	// 10. Parent breaker near limit
+	if pctStr := dm["cb_parent_pct"]; pctStr != "" {
+		pct, _ := strconv.ParseFloat(pctStr, 64)
+		if pct > 95 {
+			inst.HealthScore -= 15
+			inst.HealthIssues = append(inst.HealthIssues,
+				fmt.Sprintf("parent breaker at %.1f%% — heap nearly exhausted", pct))
+		}
+	}
+
+	// 11. Pending cluster-state tasks
+	if n, _ := strconv.Atoi(dm["pending_tasks_count"]); n > 10 {
+		inst.HealthScore -= 15
+		inst.HealthIssues = append(inst.HealthIssues,
+			fmt.Sprintf("%d pending cluster tasks — master overloaded", n))
+	}
+	if msStr := dm["pending_tasks_oldest_ms"]; msStr != "" {
+		if ms, _ := strconv.ParseInt(msStr, 10, 64); ms > 30000 {
+			inst.HealthScore -= 10
+			inst.HealthIssues = append(inst.HealthIssues,
+				fmt.Sprintf("oldest pending task %.1fs — cluster-state propagation slow", float64(ms)/1000))
+		}
+	}
+
+	// 12. Oversized shards
+	if n, _ := strconv.Atoi(dm["shards_oversized"]); n > 0 {
+		inst.HealthScore -= 5
+		inst.HealthIssues = append(inst.HealthIssues,
+			fmt.Sprintf("%d shards >50GB — rebalance/recovery will be slow", n))
+	}
+
+	// 13. Too many tiny shards
+	if n, _ := strconv.Atoi(dm["shards_undersized"]); n > 50 {
+		inst.HealthScore -= 5
+		inst.HealthIssues = append(inst.HealthIssues,
+			fmt.Sprintf("%d undersized primary shards <1GB — overhead per shard", n))
+	}
+
+	// 14. Too many indices
+	if n, _ := strconv.Atoi(dm["indices_total_cat"]); n > 1000 {
+		inst.HealthScore -= 5
+		inst.HealthIssues = append(inst.HealthIssues,
+			fmt.Sprintf("%d indices — cluster-state overhead high", n))
+	}
+
+	// 15. Old indices (>90d)
+	if n, _ := strconv.Atoi(dm["indices_aging_90d"]); n > 0 {
+		if n >= 50 {
+			inst.HealthScore -= 5
+			inst.HealthIssues = append(inst.HealthIssues,
+				fmt.Sprintf("%d indices older than 90 days — consider ILM/curator", n))
+		}
+	}
+
+	// 16. Young GC pause
+	if p95 := dm["gc_young_p95_approx_ms"]; p95 != "" {
+		ms, _ := strconv.ParseFloat(p95, 64)
+		if ms > 200 {
+			inst.HealthScore -= 10
+			inst.HealthIssues = append(inst.HealthIssues,
+				fmt.Sprintf("young GC p95 ≈%.0fms — approaching STW pain", ms))
+		}
+	}
+
+	// 17. Old GC pause
+	if p95 := dm["gc_old_p95_approx_ms"]; p95 != "" {
+		ms, _ := strconv.ParseFloat(p95, 64)
+		if ms > 1000 {
+			inst.HealthScore -= 15
+			inst.HealthIssues = append(inst.HealthIssues,
+				fmt.Sprintf("old GC p95 ≈%.0fms — long stop-the-world pauses", ms))
+		}
+	}
+
+	// 18. GC frequency
+	if fStr := dm["gc_frequency"]; fStr != "" {
+		freq, _ := strconv.ParseFloat(fStr, 64)
+		if freq > 30 {
+			inst.HealthScore -= 10
+			inst.HealthIssues = append(inst.HealthIssues,
+				fmt.Sprintf("GC running %.1f/min — heap churn", freq))
+		}
+	}
+
+	// 19. Slow index search latency (>200ms avg)
+	if cntStr := dm["slow_index_count"]; cntStr != "" {
+		cnt, _ := strconv.Atoi(cntStr)
+		for i := 0; i < cnt; i++ {
+			prefix := fmt.Sprintf("slow_index_%d_", i)
+			if avgStr := dm[prefix+"search_avg_ms"]; avgStr != "" {
+				avg, _ := strconv.ParseFloat(avgStr, 64)
+				if avg > 200 {
+					inst.HealthScore -= 5
+					name := dm[prefix+"name"]
+					inst.HealthIssues = append(inst.HealthIssues,
+						fmt.Sprintf("index %q search avg %.0fms — slow queries", name, avg))
+					break // one is enough
+				}
+			}
+		}
 	}
 }
 

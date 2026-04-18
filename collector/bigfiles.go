@@ -23,6 +23,7 @@ type BigFileCollector struct {
 	cache     []model.BigFile
 	lastScan  time.Time
 	triggered bool // set externally when disk pressure detected
+	firstRun  bool // true = skip expensive scan on first tick; set false after first Collect
 }
 
 func (b *BigFileCollector) Name() string { return "bigfiles" }
@@ -55,6 +56,13 @@ func (b *BigFileCollector) Collect(snap *model.Snapshot) error {
 	b.mu.Lock()
 	needScan := b.triggered || time.Since(b.lastScan) >= bigFileScanInterval
 	b.triggered = false
+	// Skip expensive full-directory walk on first tick
+	if b.firstRun {
+		b.firstRun = false
+		b.mu.Unlock()
+		snap.Global.BigFiles = b.cache
+		return nil
+	}
 	b.mu.Unlock()
 
 	if !needScan {

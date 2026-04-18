@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -26,10 +27,18 @@ type AlertConfig struct {
 	TelegramChatID   string
 }
 
+// alertJob is a queued alert notification.
+type alertJob struct {
+	event   string
+	payload interface{}
+}
+
 // Notifier sends alert notifications.
 type Notifier struct {
 	cfg    AlertConfig
 	client *http.Client
+	queue  chan alertJob
+	once   sync.Once
 }
 
 // NewNotifier creates a notifier.
@@ -39,6 +48,7 @@ func NewNotifier(cfg AlertConfig) *Notifier {
 		client: &http.Client{
 			Timeout: 5 * time.Second,
 		},
+		queue: make(chan alertJob, 100),
 	}
 }
 
@@ -54,7 +64,22 @@ func (n *Notifier) Notify(event string, payload interface{}) {
 	if !n.Enabled() {
 		return
 	}
-	go n.notify(event, payload)
+	n.once.Do(func() {
+		go n.alertWorker()
+	})
+	// Non-blocking send: drop alert if queue is full
+	select {
+	case n.queue <- alertJob{event: event, payload: payload}:
+	default:
+		log.Printf("xtop: alert queue full, dropping event: %s", event)
+	}
+}
+
+// alertWorker processes queued alerts sequentially.
+func (n *Notifier) alertWorker() {
+	for job := range n.queue {
+		n.notify(job.event, job.payload)
+	}
 }
 
 // SendFormatted dispatches a formatted alert to all configured channels.

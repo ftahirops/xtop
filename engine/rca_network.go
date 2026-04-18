@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"net"
 	"strings"
 
 	"github.com/ftahirops/xtop/model"
@@ -95,7 +96,11 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot, sp systemPr
 
 	// Ephemeral ports
 	eph := curr.Global.EphemeralPorts
-	ephRange := eph.RangeHi - eph.RangeLo + 1
+	// Guard against corrupt/zero values that would cause underflow or div-by-zero.
+	var ephRange int
+	if eph.RangeHi > eph.RangeLo {
+		ephRange = eph.RangeHi - eph.RangeLo + 1
+	}
 	var ephPct float64
 	if ephRange > 0 {
 		ephPct = float64(eph.InUse) / float64(ephRange) * 100
@@ -390,9 +395,15 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot, sp systemPr
 		// SSH management traffic to admin IPs is not exfiltration
 		sshIPs := make(map[string]bool)
 		for _, sess := range curr.Global.Sessions {
-			if sess.From != "" && sess.From != "-" {
-				sshIPs[sess.From] = true
+			if sess.From == "" || sess.From == "-" {
+				continue
 			}
+			// Strip :port suffix (SSH sessions may include port info)
+			ip := sess.From
+			if h, _, err := net.SplitHostPort(sess.From); err == nil {
+				ip = h
+			}
+			sshIPs[ip] = true
 		}
 		maxEgressMBHr := float64(0)
 		for _, ob := range curr.Global.Sentinel.OutboundTop {

@@ -78,6 +78,9 @@ var evidenceWeightCategory = map[string]string{
 	"pve.vm.memlimit":  "queue",
 	"pve.vm.mempsi":    "psi",
 
+	// Process
+	"proc.fd.exhaustion":     "queue",
+
 	// Sentinel evidence
 	"net.sentinel.drops":    "latency",
 	"net.sentinel.resets":   "latency",

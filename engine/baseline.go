@@ -290,6 +290,23 @@ func (bt *BaselineTracker) UpdateAll(ids []string, values []float64) {
 	}
 }
 
+// BaselineReadiness returns the fraction of tracked metrics that have >= 30 samples
+// (0.0 = all metrics warming up, 1.0 = fully ready).
+func (bt *BaselineTracker) BaselineReadiness() float64 {
+	bt.mu.RLock()
+	defer bt.mu.RUnlock()
+	if len(bt.baselines) == 0 {
+		return 0
+	}
+	ready := 0
+	for _, b := range bt.baselines {
+		if b.Count >= minWarmupSamples {
+			ready++
+		}
+	}
+	return float64(ready) / float64(len(bt.baselines))
+}
+
 // SeasonalTracker maintains per-hour-of-day baselines for key metrics.
 // This allows the engine to learn that "CPU is always high at 2AM during backups".
 type SeasonalTracker struct {

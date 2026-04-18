@@ -48,7 +48,13 @@ func (w *zWindow) meanStd() (float64, float64) {
 		d := w.vals[i] - mean
 		sq += d * d
 	}
-	std := math.Sqrt(sq / float64(n))
+	// Sample variance (divide by n-1) — unbiased estimator.
+	// Consistent with Welford's method in baseline.go.
+	denom := float64(n)
+	if n > 1 {
+		denom = float64(n - 1)
+	}
+	std := math.Sqrt(sq / denom)
 	return mean, std
 }
 

@@ -28,3 +28,10 @@ Thumbs.db
 *.out
 *.prof
 
+.aider*
+
+# Agent/IDE state
+.agent_history/
+.minimax/
+.opencode/
+WHYTOP_ANALYSIS.md

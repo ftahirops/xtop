@@ -219,7 +219,9 @@ func RunDaemon(cfg DaemonConfig) error {
 				fp := ComputeFingerprint(active, result)
 				scores := ComputeImpactScores(snap, rates, result)
 				// Only insert if new (ignore duplicate key on subsequent ticks)
-				_ = db.InsertIncident(*active, fp, scores)
+				if err := db.InsertIncident(*active, fp, scores); err != nil {
+					log.Printf("WARNING: failed to insert incident: %v", err)
+				}
 			}
 
 			// SQLite: insert 10s aggregate (every 10th tick)

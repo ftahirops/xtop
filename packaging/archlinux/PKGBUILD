@@ -1,6 +1,6 @@
 # Maintainer: ftahirops <ftahirops@github>
 pkgname=xtop
-pkgver=0.37.1
+pkgver=0.37.2
 pkgrel=1
 pkgdesc="Real-time Linux server diagnostics with automatic root cause analysis and eBPF probes"
 arch=('x86_64')

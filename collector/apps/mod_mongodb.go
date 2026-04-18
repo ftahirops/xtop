@@ -23,6 +23,12 @@ type collPrev [4]int64
 type mongoModule struct {
 	prevColl map[string]collPrev // key: "db.coll"
 	prevTime time.Time
+
+	// Overload protection
+	consecutiveSlowQueries int       // count of queries >2s
+	skipUntil              time.Time // skip tier2 collection until this time
+	lastFullScan           time.Time // last time heavy queries ran (per-db, currentOps)
+	lastQueryDuration      time.Duration
 }
 
 func NewMongoModule() AppModule { return &mongoModule{} }
@@ -130,16 +136,63 @@ func (m *mongoModule) Collect(app *DetectedApp, secrets *AppSecrets) model.AppIn
 		}
 	}
 
-	// Tier 2: mongosh/mongo CLI queries
+	// Overload protection: skip tier 2 queries if MongoDB was overloaded recently.
+	// Each mongosh invocation spawns a Node.js runtime which can use 1-3 CPU seconds.
+	// On a busy MongoDB, this compounds into severe load (user reported load avg 150
+	// on 16 vCPU). We probe with one lightweight query; if it's slow, skip this cycle
+	// and back off progressively.
+	if time.Now().Before(m.skipUntil) {
+		inst.DeepMetrics["tier2_skipped"] = "overload-protection"
+		inst.HealthScore = 100
+		return inst
+	}
+
+	// Tier 2: mongosh/mongo CLI queries — now consolidated to reduce subprocess spawns.
+	queryStart := time.Now()
 	tier2ok := mongoCollectServerStatus(&inst, secrets, app.Port)
+	serverStatusDuration := time.Since(queryStart)
+	m.lastQueryDuration = serverStatusDuration
+
+	// If serverStatus took >2s, MongoDB is likely overloaded. Skip the rest.
+	if serverStatusDuration > 2*time.Second {
+		m.consecutiveSlowQueries++
+		// Back off exponentially: 30s, 60s, 120s, 300s max
+		backoff := 30 * time.Second
+		if m.consecutiveSlowQueries >= 2 {
+			backoff = 60 * time.Second
+		}
+		if m.consecutiveSlowQueries >= 3 {
+			backoff = 120 * time.Second
+		}
+		if m.consecutiveSlowQueries >= 5 {
+			backoff = 300 * time.Second
+		}
+		m.skipUntil = time.Now().Add(backoff)
+		inst.DeepMetrics["tier2_slow"] = fmt.Sprintf("%.1fs (backing off %s)", serverStatusDuration.Seconds(), backoff)
+		if tier2ok {
+			inst.HasDeepMetrics = true
+		}
+		return inst
+	}
+	// Query was fast — reset consecutive slow counter
+	m.consecutiveSlowQueries = 0
+
 	if tier2ok {
 		inst.HasDeepMetrics = true
+		// Light queries: run every tick
 		mongoCollectWTCache(&inst, secrets, app.Port)
 		mongoCollectWTTickets(&inst, secrets, app.Port)
 		mongoCollectReplStatus(&inst, secrets, app.Port)
 		mongoCollectReplLag(&inst, secrets, app.Port)
-		m.mongoCollectPerDBStats(&inst, secrets, app.Port)
-		mongoCollectCurrentOps(&inst, secrets, app.Port)
+
+		// Heavy queries: only every 30 seconds (these scan all DBs/collections)
+		if time.Since(m.lastFullScan) >= 30*time.Second {
+			m.mongoCollectPerDBStats(&inst, secrets, app.Port)
+			mongoCollectCurrentOps(&inst, secrets, app.Port)
+			m.lastFullScan = time.Now()
+		} else {
+			inst.DeepMetrics["heavy_queries"] = fmt.Sprintf("throttled (next in %.0fs)", (30*time.Second - time.Since(m.lastFullScan)).Seconds())
+		}
 	} else {
 		// CLI not available or auth required
 		if secrets == nil || secrets.MongoDB == nil || secrets.MongoDB.URI == "" {
@@ -166,13 +219,15 @@ func mongoQuery(secrets *AppSecrets, port int, jsCode string) (string, error) {
 	} else {
 		args = append(args, "--port", fmt.Sprintf("%d", port))
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// Aggressive 3s timeout — on a healthy MongoDB, serverStatus returns in <200ms.
+	// If it takes longer, we'd rather fail fast and back off than pile up queries.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	// Try mongosh first, fall back to mongo
 	cmd := exec.CommandContext(ctx, "mongosh", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx2, cancel2 := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel2()
 		cmd2 := exec.CommandContext(ctx2, "mongo", args...)
 		out, err = cmd2.CombinedOutput()

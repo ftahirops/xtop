@@ -4,12 +4,14 @@ import "time"
 
 // Snapshot holds a point-in-time system state.
 type Snapshot struct {
-	Timestamp time.Time
-	Global    GlobalMetrics
-	Cgroups   []CgroupMetrics
-	Processes []ProcessMetrics
-	SysInfo   *SysInfo
-	Errors    []string
+	HostID           string    // unique identifier for this host (hostname or user-configured)
+	Timestamp        time.Time
+	Global           GlobalMetrics
+	Cgroups          []CgroupMetrics
+	Processes        []ProcessMetrics
+	SysInfo          *SysInfo
+	Errors           []string
+	CollectionHealth *CollectionHealth
 }
 
 // HealthLevel represents overall system health.
@@ -34,6 +36,16 @@ func (h HealthLevel) String() string {
 		return "CRITICAL"
 	}
 	return "UNKNOWN"
+}
+
+// HostIncident holds cross-host correlation data for a single peer host.
+type HostIncident struct {
+	HostID            string
+	Health            HealthLevel
+	PrimaryBottleneck string
+	PrimaryScore      int
+	Timestamp         time.Time
+	EvidenceIDs       []string
 }
 
 // Warning represents an early-warning signal.
@@ -227,6 +239,14 @@ type WatchdogState struct {
 	Domain string
 }
 
+// CollectionHealth tracks the health of individual collectors in a collection cycle.
+type CollectionHealth struct {
+	Total        int
+	Succeeded    int
+	Failed       int
+	AvgLatencyMs float64
+}
+
 // AnalysisResult is the full output of one analysis cycle.
 type AnalysisResult struct {
 	Health     HealthLevel
@@ -340,6 +360,22 @@ type AnalysisResult struct {
 
 	// Impact quantification (v0.36.6)
 	ImpactSummary string `json:"impact_summary,omitempty"`
+
+	// Historical context — populated from past similar incidents
+	HistoryContext string `json:"history_context,omitempty"`
+
+	// Set when UI is showing a pinned result after recovery (sticky RCA).
+	// Value is seconds since health returned to OK. 0 = live incident.
+	PinnedResolvedSec int `json:"pinned_resolved_sec,omitempty"`
+
+	// Baseline readiness: 0.0 = all metrics warming up, 1.0 = fully ready
+	BaselineReadiness float64 `json:"baseline_readiness,omitempty"`
+
+	// Forecast warning from Holt-Winters trend prediction
+	ForecastWarning string `json:"forecast_warning,omitempty"` // e.g. "Memory will hit 95% in ~45s at current rate"
+
+	// Cross-host correlation: related incidents on other hosts
+	CrossHostCorrelation string `json:"cross_host_correlation,omitempty"` // e.g. "Host db-server also reports IO bottleneck (score 78)"
 }
 
 // USECheck represents one USE method check for a resource (Utilization, Saturation, Errors).

@@ -85,6 +85,20 @@ func trackAnomaly(result *model.AnalysisResult, hist *History) {
 	// Deployment correlation: find recently started processes near anomaly onset
 	if result.PrimaryScore > 0 && result.AnomalyStartedAgo > 0 && result.AnomalyStartedAgo < 120 {
 		trackDeployCorrelation(result, hist)
+		// Boost confidence when a recent deploy correlates with anomaly onset
+		if result.RecentDeploy != "" {
+			bonus := result.PrimaryScore / 10 // ~10% boost
+			if bonus < 10 {
+				bonus = 10
+			}
+			if bonus > 15 {
+				bonus = 15
+			}
+			result.PrimaryScore += bonus
+			if result.PrimaryScore > 100 {
+				result.PrimaryScore = 100
+			}
+		}
 	}
 
 	// Change detection: compare current to ~30s ago
@@ -826,8 +840,9 @@ func trackDegradation(result *model.AnalysisResult, hist *History) {
 	}
 }
 
-// trackDeployCorrelation finds processes that started recently (within 2 minutes
-// of anomaly onset) and reports them as potential deployment triggers.
+// trackDeployCorrelation finds processes that started recently (within 60s
+// of anomaly onset) and are top CPU/memory consumers, reporting them as
+// potential deployment triggers.
 func trackDeployCorrelation(result *model.AnalysisResult, hist *History) {
 	curr := hist.Latest()
 	if curr == nil {
@@ -853,6 +868,39 @@ func trackDeployCorrelation(result *model.AnalysisResult, hist *History) {
 	bestComm := ""
 	bestPID := 0
 
+	// Compute system totals for determining "top" consumer thresholds
+	var totalCPU uint64
+	var totalRSS uint64
+	var nProcs int
+	for _, p := range curr.Processes {
+		if isKernelThread(p.Comm) {
+			continue
+		}
+		procAge := uptimeSec - float64(p.StartTimeTicks)/hz
+		if procAge < 2 {
+			continue
+		}
+		totalCPU += p.UTime + p.STime
+		totalRSS += p.RSS
+		nProcs++
+	}
+	if nProcs == 0 {
+		return
+	}
+	avgCPU := totalCPU / uint64(nProcs)
+	avgRSS := totalRSS / uint64(nProcs)
+	// A "top" consumer is >= 2x the average. Integer division rounds down —
+	// on a mostly idle system avgCPU can be 0, making everything qualify.
+	// Enforce minimum thresholds to prevent false deploy-correlation flags.
+	cpuThreshold := avgCPU * 2
+	if cpuThreshold < 10 {
+		cpuThreshold = 10 // minimum 10 ticks (~0.1s CPU time)
+	}
+	rssThreshold := avgRSS * 2
+	if rssThreshold < 10*1024*1024 {
+		rssThreshold = 10 * 1024 * 1024 // minimum 10 MB RSS
+	}
+
 	for _, p := range curr.Processes {
 		if p.StartTimeTicks == 0 {
 			continue
@@ -865,15 +913,20 @@ func trackDeployCorrelation(result *model.AnalysisResult, hist *History) {
 		if procAge < 0 {
 			continue
 		}
-		// Only consider processes started in the last 5 minutes
-		if procAge > 300 {
+		// Only consider processes started in the last 60 seconds
+		if procAge > 60 {
 			continue
 		}
 		// Skip very short-lived processes (< 2 seconds)
 		if procAge < 2 {
 			continue
 		}
-		// Prefer the most recently started non-trivial process
+		// Must be a top CPU or memory consumer
+		cpuTicks := p.UTime + p.STime
+		if cpuTicks < cpuThreshold && p.RSS < rssThreshold {
+			continue
+		}
+		// Prefer the most recently started qualifying process
 		if procAge < bestAge {
 			bestAge = procAge
 			bestComm = p.Comm

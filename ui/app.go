@@ -70,6 +70,11 @@ type collectMsg struct {
 	result *model.AnalysisResult
 }
 
+// smartMsg carries asynchronously collected SMART data.
+type smartMsg struct {
+	disks []model.SMARTDisk
+}
+
 // saveConfirmMsg is sent after a save completes.
 type saveConfirmMsg struct {
 	path string
@@ -238,6 +243,9 @@ type Model struct {
 	// Container name resolution
 	containerResolver *collector.ContainerResolver
 
+	// Cached SMART data (populated asynchronously to avoid blocking View)
+	cachedSmart []model.SMARTDisk
+
 	// Process signal (kill) overlay — works on CPU, Memory, IO pages
 	signalMode       bool   // true = signal overlay is open
 	signalProcIdx    int    // selected process index in sorted list
@@ -305,6 +313,15 @@ func collectOnce(ticker engine.Ticker) tea.Cmd {
 	return func() tea.Msg {
 		snap, rates, result := ticker.Tick()
 		return collectMsg{snap: snap, rates: rates, result: result}
+	}
+}
+
+// collectSmartAsync runs SMART collection in a background goroutine
+// and returns the result as a smartMsg so View() is never blocked.
+func collectSmartAsync(smart *collector.SMARTCollector) tea.Cmd {
+	return func() tea.Msg {
+		disks := smart.Get()
+		return smartMsg{disks: disks}
 	}
 }
 
@@ -1172,7 +1189,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.paused {
 			return m, nil
 		}
-		return m, tea.Batch(tick(m.interval), collectOnce(m.ticker))
+		return m, tea.Batch(tick(m.interval), collectOnce(m.ticker), collectSmartAsync(m.engine.Smart))
 	case collectMsg:
 		if !m.paused {
 			m.snap = msg.snap
@@ -1240,6 +1257,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.saveMsg = fmt.Sprintf("Saved: %s", msg.path)
 		}
 		m.saveMsgTime = time.Now()
+	case smartMsg:
+		m.cachedSmart = msg.disks
 	}
 	return m, nil
 }
@@ -1278,7 +1297,7 @@ func (m Model) View() string {
 		}
 	}
 
-	smartDisks := m.engine.Smart.Get()
+	smartDisks := m.cachedSmart
 
 	// Sticky RCA: use pinned result for RCA-heavy views (overview, beginner, explain)
 	// Live metrics on detail pages always use current m.result
@@ -1903,7 +1922,9 @@ func (m Model) renderHelp() string {
 }
 
 // stickyRCAHoldDuration is how long a pinned RCA result stays visible after recovery.
-const stickyRCAHoldDuration = 45 * time.Second
+// Increased from 45s → 5 minutes so users have time to read and act on diagnoses
+// without the box vanishing mid-read.
+const stickyRCAHoldDuration = 5 * time.Minute
 
 // stickyNetHoldDuration is how long a pinned network intelligence summary stays visible after recovery.
 const stickyNetHoldDuration = 60 * time.Second
@@ -2083,7 +2104,13 @@ func (m *Model) displayResult() (result *model.AnalysisResult, resolvedAgo int) 
 		if !m.resolvedAt.IsZero() {
 			ago = int(time.Since(m.resolvedAt).Seconds())
 		}
+		// Stamp the transient field so renderRCABox knows this is a historical view.
+		// Only set if we're past the resolved point — while problem is active ago=0.
+		m.pinnedResult.PinnedResolvedSec = ago
 		return m.pinnedResult, ago
+	}
+	if m.result != nil {
+		m.result.PinnedResolvedSec = 0
 	}
 	return m.result, 0
 }

@@ -178,8 +178,8 @@ func renderOwnersBlock(result *model.AnalysisResult, width int) string {
 	if innerW < 40 {
 		innerW = 40
 	}
-	if innerW > 100 {
-		innerW = 100
+	if innerW > 200 {
+		innerW = 200
 	}
 	var lines []string
 
@@ -239,8 +239,8 @@ func renderRCABox(result *model.AnalysisResult, width int) string {
 	if innerW < 40 {
 		innerW = 40
 	}
-	if innerW > 100 {
-		innerW = 100
+	if innerW > 200 {
+		innerW = 200
 	}
 
 	title := fmt.Sprintf(" %s ", titleStyle.Render("Root Cause Analysis"))
@@ -684,8 +684,8 @@ func renderCapacityBlock(result *model.AnalysisResult, withBars bool, barW int, 
 	if innerW < 40 {
 		innerW = 40
 	}
-	if innerW > 100 {
-		innerW = 100
+	if innerW > 200 {
+		innerW = 200
 	}
 
 	title := fmt.Sprintf(" %s ", titleStyle.Render("Capacity Remaining"))
@@ -793,8 +793,8 @@ func renderExhaustionBlock(result *model.AnalysisResult, width int) string {
 	if innerW < 40 {
 		innerW = 40
 	}
-	if innerW > 100 {
-		innerW = 100
+	if innerW > 200 {
+		innerW = 200
 	}
 
 	title := fmt.Sprintf(" %s ", titleStyle.Render("Exhaustion Warnings"))
@@ -822,8 +822,8 @@ func renderChangesBlock(result *model.AnalysisResult, width int) string {
 	if innerW < 40 {
 		innerW = 40
 	}
-	if innerW > 100 {
-		innerW = 100
+	if innerW > 200 {
+		innerW = 200
 	}
 
 	title := fmt.Sprintf(" %s ", titleStyle.Render("What Changed (30s)"))
@@ -904,8 +904,8 @@ func renderActionsBlock(result *model.AnalysisResult, width int) string {
 	if innerW < 40 {
 		innerW = 40
 	}
-	if innerW > 100 {
-		innerW = 100
+	if innerW > 200 {
+		innerW = 200
 	}
 
 	title := fmt.Sprintf(" %s ", titleStyle.Render("Suggested Actions"))
@@ -972,8 +972,8 @@ func renderDegradationBlock(result *model.AnalysisResult, width int) string {
 	if innerW < 40 {
 		innerW = 40
 	}
-	if innerW > 100 {
-		innerW = 100
+	if innerW > 200 {
+		innerW = 200
 	}
 
 	title := fmt.Sprintf(" %s ", titleStyle.Render("Slow Degradation"))
@@ -1363,8 +1363,8 @@ func renderExplainPanel(result *model.AnalysisResult, width int) string {
 	if innerW < 60 {
 		innerW = 60
 	}
-	if innerW > 100 {
-		innerW = 100
+	if innerW > 200 {
+		innerW = 200
 	}
 
 	sb.WriteString("\n")

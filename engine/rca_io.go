@@ -139,6 +139,23 @@ func analyzeIO(curr *model.Snapshot, rates *model.RateSnapshot, sp systemProfile
 			nil, map[string]string{"mount": worstInodeMount}))
 	}
 
+	// FD exhaustion: per-process file descriptor pressure (causes ENOSPC on open, queue buildup)
+	if rates != nil {
+		for _, pr := range rates.ProcessRates {
+			if isKernelThread(pr.Comm) || isSelfProcess(pr.Comm) {
+				continue
+			}
+			if pr.FDPct >= 80 {
+				w, c = threshold("proc.fd.exhaustion", 70, 95)
+				r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("proc.fd.exhaustion", model.DomainIO,
+					pr.FDPct, w, c, true, 0.9,
+					fmt.Sprintf("File descriptor usage at %.0f%% (PID %d, process %s)", pr.FDPct, pr.PID, pr.Comm), "1s",
+					nil, map[string]string{"pid": fmt.Sprintf("%d", pr.PID)}))
+				break // use worst FD-hogging process
+			}
+		}
+	}
+
 	// v2 switchover: weighted scoring replaces clamp-based
 	v2Score := weightedDomainScore(r.EvidenceV2)
 	if !v2TrustGate(r.EvidenceV2) {

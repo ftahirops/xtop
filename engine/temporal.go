@@ -33,12 +33,30 @@ func UpdateSignalOnsets(hist *History, result *model.AnalysisResult) {
 		}
 	}
 
-	// Clear signals that are no longer firing
-	for id := range hist.signalOnsets {
-		if !currentlyFiring[id] {
-			delete(hist.signalOnsets, id)
+	// CRITICAL FIX: Never delete onsets. Temporal ordering must be preserved
+	// even after a signal stops firing, so causal chains remain valid.
+	// e.g. if mem.reclaim.direct fires at T+0 and stops at T+10, but
+	// io.disk.latency starts at T+15, we still need to know reclaim came first.
+	// Onsets are cleared only when the entire incident resolves (no RCA firing).
+	if !hasAnyActiveRCA(result) {
+		// Full incident resolved — reset all onsets for next incident
+		hist.signalOnsets = make(map[string]time.Time)
+	}
+}
+
+// hasAnyActiveRCA returns true if any RCA result has evidence firing.
+func hasAnyActiveRCA(result *model.AnalysisResult) bool {
+	if result == nil {
+		return false
+	}
+	for _, rca := range result.RCA {
+		for _, ev := range rca.EvidenceV2 {
+			if ev.Strength > 0 {
+				return true
+			}
 		}
 	}
+	return false
 }
 
 // BuildTemporalChain constructs a temporal causality chain from the currently
@@ -140,8 +158,8 @@ var predefinedPairs = []crossSignalPair{
 	{"mem.slab.leak", "mem.available.low", "Unreclaimable slab growth consuming available memory"},
 	{"mem.alloc.stall", "mem.psi", "Allocation stalls adding to memory PSI pressure"},
 
-	// CPU extended
-	{"cpu.iowait", "io.disk.latency", "CPU IOWait driven by elevated disk latency"},
+	// CPU extended — FIX: disk latency causes iowait, not reverse
+	{"io.disk.latency", "cpu.iowait", "Disk latency driving CPU IOWait"},
 	{"cpu.irq.imbalance", "net.drops", "IRQ imbalance on single CPU causing packet drops"},
 
 	// Network extended

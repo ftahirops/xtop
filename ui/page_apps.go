@@ -350,6 +350,10 @@ func renderAppDeepMetrics(app model.AppInstance, iw int) string {
 	switch app.AppType {
 	case "elasticsearch":
 		return renderESDeepMetrics(app, iw)
+	case "logstash":
+		return renderLogstashDeepMetrics(app, iw)
+	case "kibana":
+		return renderKibanaDeepMetrics(app, iw)
 	case "redis":
 		return renderRedisDeepMetrics(app, iw)
 	case "mysql":
@@ -389,45 +393,51 @@ func renderESDeepMetrics(app model.AppInstance, iw int) string {
 	var sb strings.Builder
 	dm := app.DeepMetrics
 
-	sb.WriteString(appSection("CLUSTER", iw, []kv{
-		{Key: "Cluster Name", Val: dm["cluster_name"]},
+	// --- Overall health banner on top ---
+	sb.WriteString(esRenderHealthBanner(app, iw))
+
+	// --- Performance suggestions & config issues (if any) ---
+	sb.WriteString(esRenderSuggestions(app, iw))
+
+	// --- Compact 2-column sections ---
+	sb.WriteString(appSection2Col("CLUSTER", iw, []kv{
+		{Key: "Name", Val: dm["cluster_name"]},
 		{Key: "Status", Val: esColorStatus(dm["status"])},
-		{Key: "Nodes", Val: dm["number_of_nodes"]},
-		{Key: "Data Nodes", Val: dm["number_of_data_nodes"]},
+		{Key: "Nodes", Val: esWithVerdictInt(dm["number_of_nodes"], 1, 1)},
+		{Key: "Data Nodes", Val: esWithVerdictInt(dm["number_of_data_nodes"], 1, 1)},
 		{Key: "Lucene", Val: dm["lucene_version"]},
 	}))
 
-	sb.WriteString(appSection("SHARDS", iw, []kv{
-		{Key: "Active Primary", Val: dm["active_primary_shards"]},
-		{Key: "Active Total", Val: dm["active_shards"]},
-		{Key: "Unassigned", Val: esColorVal(dm["unassigned_shards"], "0")},
-		{Key: "Relocating", Val: dm["relocating_shards"]},
-		{Key: "Initializing", Val: dm["initializing_shards"]},
-		{Key: "Pending Tasks", Val: dm["number_of_pending_tasks"]},
-		{Key: "Active %", Val: dm["active_shards_percent_as_number"]},
+	sb.WriteString(appSection2Col("SHARDS", iw, []kv{
+		{Key: "Primary", Val: esOK(dm["active_primary_shards"])},
+		{Key: "Total", Val: esOK(dm["active_shards"])},
+		{Key: "Unassigned", Val: esVerdictCount(dm["unassigned_shards"], 0, 5)},
+		{Key: "Relocating", Val: esVerdictCount(dm["relocating_shards"], 0, 5)},
+		{Key: "Initializing", Val: esVerdictCount(dm["initializing_shards"], 0, 5)},
+		{Key: "Pending Tasks", Val: esVerdictCount(dm["number_of_pending_tasks"], 5, 20)},
+		{Key: "Active %", Val: esVerdictPctLow(dm["active_shards_percent_as_number"], 95, 99)},
 	}))
 
-	sb.WriteString(appSection("INDICES", iw, []kv{
-		{Key: "Total Indices", Val: dm["total_indices"]},
-		{Key: "Green", Val: dm["indices_green"]},
-		{Key: "Yellow", Val: esColorVal(dm["indices_yellow"], "0")},
-		{Key: "Red", Val: esColorVal(dm["indices_red"], "0")},
+	sb.WriteString(appSection2Col("INDICES", iw, []kv{
+		{Key: "Total", Val: esVerdictCount(dm["total_indices"], 1000, 5000)},
+		{Key: "Green", Val: esOK(dm["indices_green"])},
+		{Key: "Yellow", Val: esVerdictCount(dm["indices_yellow"], 0, 5)},
+		{Key: "Red", Val: esVerdictCount(dm["indices_red"], 0, 1)},
 		{Key: "Documents", Val: dm["doc_count"]},
-		{Key: "Deleted Docs", Val: dm["deleted_docs"]},
+		{Key: "Deleted", Val: dm["deleted_docs"]},
 		{Key: "Store Size", Val: dm["store_size"]},
 		{Key: "Segments", Val: dm["segment_count"]},
-		{Key: "Segment Memory", Val: dm["segment_memory"]},
 	}))
 
-	sb.WriteString(appSection("JVM & MEMORY", iw, []kv{
+	sb.WriteString(appSection2Col("JVM & MEMORY", iw, []kv{
 		{Key: "Heap Used", Val: dm["jvm_heap_used"]},
 		{Key: "Heap Max", Val: dm["jvm_heap_max"]},
-		{Key: "Heap Used %", Val: dm["jvm_heap_used_pct"]},
-		{Key: "Fielddata Mem", Val: dm["fielddata_memory"]},
-		{Key: "Fielddata Evictions", Val: dm["fielddata_evictions"]},
-		{Key: "Query Cache Mem", Val: dm["query_cache_memory"]},
-		{Key: "Query Cache Hits", Val: dm["query_cache_hits"]},
-		{Key: "Query Cache Misses", Val: dm["query_cache_misses"]},
+		{Key: "Heap %", Val: esVerdictPct(dm["jvm_heap_used_pct"], 75, 85)},
+		{Key: "Fielddata", Val: dm["fielddata_memory"]},
+		{Key: "FD Evictions", Val: esVerdictCount(dm["fielddata_evictions"], 0, 10)},
+		{Key: "QueryCache", Val: dm["query_cache_memory"]},
+		{Key: "QC Hits", Val: dm["query_cache_hits"]},
+		{Key: "QC Misses", Val: dm["query_cache_misses"]},
 	}))
 
 	// GC — collect all gc_*_count keys
@@ -455,17 +465,131 @@ func renderESDeepMetrics(app model.AppInstance, iw int) string {
 		sb.WriteString(appSection("GARBAGE COLLECTION", iw, gcKVs))
 	}
 
-	sb.WriteString(appSection("THROUGHPUT", iw, []kv{
+	sb.WriteString(appSection2Col("THROUGHPUT", iw, []kv{
 		{Key: "Index Total", Val: dm["index_total"]},
-		{Key: "Index Time (ms)", Val: dm["index_time_ms"]},
-		{Key: "Search Queries", Val: dm["search_query_total"]},
-		{Key: "Search Time (ms)", Val: dm["search_query_time_ms"]},
+		{Key: "Index Time", Val: esMS(dm["index_time_ms"])},
+		{Key: "Search Q", Val: dm["search_query_total"]},
+		{Key: "Search Time", Val: esMS(dm["search_query_time_ms"])},
 		{Key: "Merges", Val: dm["merge_total"]},
-		{Key: "OS CPU", Val: dm["os_cpu_pct"]},
-		{Key: "HTTP Connections", Val: dm["http_current_open"]},
+		{Key: "OS CPU", Val: esVerdictPct(dm["os_cpu_pct"], 70, 90)},
+		{Key: "HTTP Conns", Val: dm["http_current_open"]},
 	}))
 
+	// Thread pools — compact grid with verdicts
+	if dm["tp_write_queue"] != "" || dm["tp_search_queue"] != "" || dm["tp_total_rejected"] != "" {
+		tpKVs := []kv{
+			{Key: "Write A/Q/R", Val: esThreePartVerdict(dm["tp_write_active"], dm["tp_write_queue"], dm["tp_write_rejected"])},
+			{Key: "Search A/Q/R", Val: esThreePartVerdict(dm["tp_search_active"], dm["tp_search_queue"], dm["tp_search_rejected"])},
+			{Key: "Bulk A/Q/R", Val: esThreePartVerdict(dm["tp_bulk_active"], dm["tp_bulk_queue"], dm["tp_bulk_rejected"])},
+			{Key: "Get A/Q/R", Val: esThreePartVerdict(dm["tp_get_active"], dm["tp_get_queue"], dm["tp_get_rejected"])},
+			{Key: "Total Rejected", Val: esVerdictCount(dm["tp_total_rejected"], 0, 1)},
+		}
+		sb.WriteString(appSection2Col("THREAD POOLS (Active/Queue/Rejected)", iw, tpKVs))
+	}
+
+	// Circuit breakers — compact
+	if dm["cb_total_tripped"] != "" || dm["cb_parent_pct"] != "" {
+		cbKVs := []kv{
+			{Key: "Parent Pct", Val: esVerdictPct(dm["cb_parent_pct"], 80, 95)},
+			{Key: "Parent Size/Limit", Val: esTwoPart(dm["cb_parent_size"], dm["cb_parent_limit"])},
+			{Key: "Fielddata", Val: esTwoPart(dm["cb_fielddata_size"], dm["cb_fielddata_limit"])},
+			{Key: "Request", Val: esTwoPart(dm["cb_request_size"], dm["cb_request_limit"])},
+			{Key: "In-Flight", Val: esTwoPart(dm["cb_in_flight_requests_size"], dm["cb_in_flight_requests_limit"])},
+			{Key: "Total Trips", Val: esVerdictCount(dm["cb_total_tripped"], 0, 1)},
+		}
+		sb.WriteString(appSection2Col("CIRCUIT BREAKERS", iw, cbKVs))
+	}
+
+	// Pending tasks + Shard analysis + Index lifecycle — merged into one compact section
+	var sharKVs []kv
+	if dm["pending_tasks_count"] != "" {
+		sharKVs = append(sharKVs, kv{Key: "Pending Tasks", Val: esVerdictCount(dm["pending_tasks_count"], 5, 20)})
+		if dm["pending_tasks_oldest_ms"] != "" {
+			sharKVs = append(sharKVs, kv{Key: "Oldest (ms)", Val: esVerdictMs(dm["pending_tasks_oldest_ms"], 5000, 30000)})
+		}
+	}
+	if dm["shards_unassigned_cat"] != "" {
+		sharKVs = append(sharKVs, kv{Key: "Unassigned", Val: esVerdictCount(dm["shards_unassigned_cat"], 0, 1)})
+	}
+	if dm["shards_oversized"] != "" {
+		sharKVs = append(sharKVs, kv{Key: "Oversized>50G", Val: esVerdictCount(dm["shards_oversized"], 0, 3)})
+	}
+	if dm["shards_undersized"] != "" {
+		sharKVs = append(sharKVs, kv{Key: "Undersized<1G", Val: dm["shards_undersized"]})
+	}
+	if dm["largest_shard"] != "" {
+		sharKVs = append(sharKVs, kv{Key: "Largest", Val: dm["largest_shard"] + " · " + dm["largest_shard_size"]})
+	}
+	if dm["indices_total_cat"] != "" {
+		sharKVs = append(sharKVs, kv{Key: "Total Indices", Val: esVerdictCount(dm["indices_total_cat"], 1000, 5000)})
+	}
+	if dm["indices_aging_90d"] != "" {
+		sharKVs = append(sharKVs, kv{Key: "Aging >90d", Val: dm["indices_aging_90d"]})
+	}
+	if dm["indices_empty"] != "" {
+		sharKVs = append(sharKVs, kv{Key: "Empty", Val: dm["indices_empty"]})
+	}
+	if dm["indices_tiny"] != "" {
+		sharKVs = append(sharKVs, kv{Key: "Tiny<100KB", Val: dm["indices_tiny"]})
+	}
+	if len(sharKVs) > 0 {
+		sb.WriteString(appSection2Col("SHARDS & INDEX LIFECYCLE", iw, sharKVs))
+	}
+
+	// GC details (compact)
+	if dm["gc_young_per_min"] != "" || dm["gc_young_avg_ms"] != "" {
+		sb.WriteString(appSection2Col("GARBAGE COLLECTION", iw, []kv{
+			{Key: "Young /min", Val: esVerdictGC(dm["gc_young_per_min"], 60, 120)},
+			{Key: "Young Avg", Val: esMS(dm["gc_young_avg_ms"])},
+			{Key: "Young p95", Val: esVerdictMs(dm["gc_young_p95_approx_ms"], 100, 500)},
+			{Key: "Old /min", Val: esVerdictGC(dm["gc_old_per_min"], 1, 5)},
+			{Key: "Old Avg", Val: esMS(dm["gc_old_avg_ms"])},
+			{Key: "Old p95", Val: esVerdictMs(dm["gc_old_p95_approx_ms"], 500, 2000)},
+			{Key: "Total Freq/min", Val: dm["gc_frequency"]},
+		}))
+	}
+
+	// Slow indices
+	if cntStr := dm["slow_index_count"]; cntStr != "" {
+		cnt, _ := strconv.Atoi(cntStr)
+		if cnt > 0 {
+			slowKVs := []kv{}
+			for i := 0; i < cnt; i++ {
+				prefix := fmt.Sprintf("slow_index_%d_", i)
+				name := dm[prefix+"name"]
+				if name == "" {
+					continue
+				}
+				label := fmt.Sprintf("#%d %s", i+1, name)
+				val := fmt.Sprintf("search %sms · index %sms · %s queries",
+					appFmtDash(dm[prefix+"search_avg_ms"]),
+					appFmtDash(dm[prefix+"index_avg_ms"]),
+					appFmtDash(dm[prefix+"search_count"]))
+				slowKVs = append(slowKVs, kv{Key: label, Val: val})
+			}
+			if len(slowKVs) > 0 {
+				sb.WriteString(appSection("SLOWEST INDICES", iw, slowKVs))
+			}
+		}
+	}
+
 	return sb.String()
+}
+
+// esThreePart renders "a / b / c" collapsing empty slots.
+func esThreePart(a, b, c string) string {
+	if a == "" && b == "" && c == "" {
+		return ""
+	}
+	parts := []string{appFmtDash(a), appFmtDash(b), appFmtDash(c)}
+	return strings.Join(parts, " / ")
+}
+
+func esTwoPart(a, b string) string {
+	if a == "" && b == "" {
+		return ""
+	}
+	return appFmtDash(a) + " / " + appFmtDash(b)
 }
 
 func esColorStatus(s string) string {
@@ -1684,6 +1808,388 @@ func appSection(title string, iw int, kvs []kv) string {
 		sb.WriteString(boxRow(row, iw) + "\n")
 	}
 	sb.WriteString(boxBot(iw) + "\n\n")
+	return sb.String()
+}
+
+// appSection2Col renders a section in a 2-column compact layout to save vertical space.
+// Each row shows two (key, value) pairs side by side. Scales to 3 columns on very wide terminals.
+func appSection2Col(title string, iw int, kvs []kv) string {
+	var sb strings.Builder
+	// Filter out empty values
+	filtered := make([]kv, 0, len(kvs))
+	for _, item := range kvs {
+		if item.Val != "" {
+			filtered = append(filtered, item)
+		}
+	}
+	if len(filtered) == 0 {
+		return ""
+	}
+
+	sb.WriteString("  " + titleStyle.Render(title) + "\n")
+	sb.WriteString(boxTop(iw) + "\n")
+
+	// Decide columns: 3 cols if iw >= 120, else 2
+	cols := 2
+	if iw >= 120 {
+		cols = 3
+	}
+	// Each cell gets ~ (iw - 4) / cols chars. Label is ~15, value ~rest.
+	cellW := (iw - 4) / cols
+	if cellW < 28 {
+		cellW = 28
+		cols = 2
+	}
+	labelW := 14 // fixed label column width inside each cell
+
+	// Render in row-major order with `cols` items per row
+	for i := 0; i < len(filtered); i += cols {
+		parts := []string{}
+		for j := 0; j < cols && i+j < len(filtered); j++ {
+			item := filtered[i+j]
+			label := styledPad(dimStyle.Render(item.Key+":"), labelW)
+			// Value takes the rest of the cell
+			valW := cellW - labelW - 1
+			if valW < 10 {
+				valW = 10
+			}
+			val := styledPad(valueStyle.Render(item.Val), valW)
+			parts = append(parts, label+" "+val)
+		}
+		row := "  " + strings.Join(parts, " ")
+		sb.WriteString(boxRow(row, iw) + "\n")
+	}
+	sb.WriteString(boxBot(iw) + "\n")
+	return sb.String()
+}
+
+// --- Verdict helpers — color a value GREEN/YELLOW/RED based on thresholds ---
+
+// esVerdictPct: higher is worse (heap %, os cpu %). Returns value with colored symbol + verdict.
+func esVerdictPct(val string, warn, crit float64) string {
+	if val == "" {
+		return ""
+	}
+	v, err := strconv.ParseFloat(strings.TrimSuffix(strings.TrimSuffix(val, "%"), " %"), 64)
+	if err != nil {
+		return val
+	}
+	return esVerdictFloat(val+"%", v, warn, crit, true)
+}
+
+// esVerdictPctLow: lower is worse (shards active %).
+func esVerdictPctLow(val string, warn, crit float64) string {
+	if val == "" {
+		return ""
+	}
+	v, err := strconv.ParseFloat(strings.TrimSuffix(val, "%"), 64)
+	if err != nil {
+		return val
+	}
+	if v < crit {
+		return critStyle.Render("● " + val + "% CRIT")
+	}
+	if v < warn {
+		return warnStyle.Render("● " + val + "% WARN")
+	}
+	return okStyle.Render("● " + val + "%")
+}
+
+// esVerdictCount: integer where 0 is good, > warn is warn, > crit is crit.
+func esVerdictCount(val string, warn, crit int) string {
+	if val == "" {
+		return ""
+	}
+	v, err := strconv.Atoi(val)
+	if err != nil {
+		return val
+	}
+	if v >= crit && crit > 0 {
+		return critStyle.Render("● " + val + " CRIT")
+	}
+	if v > warn {
+		return warnStyle.Render("● " + val + " WARN")
+	}
+	return okStyle.Render("● " + val)
+}
+
+// esVerdictInt: validates a count has at least minVal (used for node count).
+func esWithVerdictInt(val string, warn, crit int) string {
+	if val == "" {
+		return ""
+	}
+	v, err := strconv.Atoi(val)
+	if err != nil {
+		return val
+	}
+	if v < crit {
+		return critStyle.Render("● " + val + " LOW")
+	}
+	if v < warn {
+		return warnStyle.Render("● " + val)
+	}
+	return okStyle.Render("● " + val)
+}
+
+// esVerdictMs: milliseconds, higher is worse.
+func esVerdictMs(val string, warn, crit float64) string {
+	if val == "" {
+		return ""
+	}
+	v, err := strconv.ParseFloat(strings.TrimSuffix(val, "ms"), 64)
+	if err != nil {
+		return val + "ms"
+	}
+	return esVerdictFloat(fmt.Sprintf("%.0fms", v), v, warn, crit, true)
+}
+
+// esVerdictGC: GC collections/min, higher is worse.
+func esVerdictGC(val string, warn, crit float64) string {
+	if val == "" {
+		return ""
+	}
+	v, err := strconv.ParseFloat(val, 64)
+	if err != nil {
+		return val
+	}
+	return esVerdictFloat(val, v, warn, crit, true)
+}
+
+// esVerdictFloat: generic helper — colors value based on whether v exceeds warn/crit.
+// higherIsWorse=true means v>=crit is RED, v>=warn is YELLOW, else GREEN.
+func esVerdictFloat(display string, v, warn, crit float64, higherIsWorse bool) string {
+	if higherIsWorse {
+		if v >= crit {
+			return critStyle.Render("● " + display + " CRIT")
+		}
+		if v >= warn {
+			return warnStyle.Render("● " + display + " WARN")
+		}
+		return okStyle.Render("● " + display)
+	}
+	if v <= crit {
+		return critStyle.Render("● " + display + " CRIT")
+	}
+	if v <= warn {
+		return warnStyle.Render("● " + display + " WARN")
+	}
+	return okStyle.Render("● " + display)
+}
+
+// esOK marks a neutral/informational value in green (used for healthy counts).
+func esOK(val string) string {
+	if val == "" {
+		return ""
+	}
+	return okStyle.Render("● " + val)
+}
+
+// esMS formats a raw number as milliseconds with no verdict.
+func esMS(val string) string {
+	if val == "" {
+		return ""
+	}
+	return val + "ms"
+}
+
+// esThreePartVerdict shows "active / queue / rejected" with the rejected portion colored.
+func esThreePartVerdict(active, queue, rejected string) string {
+	if active == "" && queue == "" && rejected == "" {
+		return ""
+	}
+	a := appFmtDash(active)
+	q := appFmtDash(queue)
+	r := appFmtDash(rejected)
+	// Color queue (rising = warn) and rejected (any = crit)
+	if rv, err := strconv.Atoi(rejected); err == nil && rv > 0 {
+		r = critStyle.Render(r + " REJ")
+	} else {
+		r = okStyle.Render(r)
+	}
+	if qv, err := strconv.Atoi(queue); err == nil {
+		if qv > 100 {
+			q = critStyle.Render(q + " QUE")
+		} else if qv > 10 {
+			q = warnStyle.Render(q)
+		} else {
+			q = okStyle.Render(q)
+		}
+	}
+	return fmt.Sprintf("%s / %s / %s", a, q, r)
+}
+
+// --- Health banner + suggestions ---
+
+// esRenderHealthBanner shows overall ES health at the top: green/yellow/red badge + summary.
+func esRenderHealthBanner(app model.AppInstance, iw int) string {
+	var sb strings.Builder
+	dm := app.DeepMetrics
+
+	// Aggregate health from key signals
+	score := app.HealthScore
+	var status, badgeStyle string
+	switch {
+	case score >= 80:
+		status = "HEALTHY"
+		badgeStyle = "ok"
+	case score >= 50:
+		status = "DEGRADED"
+		badgeStyle = "warn"
+	default:
+		status = "CRITICAL"
+		badgeStyle = "crit"
+	}
+
+	// Build one-liner summary of key issues
+	var issues []string
+	if s := dm["status"]; s == "red" {
+		issues = append(issues, "cluster RED")
+	} else if s == "yellow" {
+		issues = append(issues, "cluster YELLOW")
+	}
+	if n, _ := strconv.Atoi(dm["unassigned_shards"]); n > 0 {
+		issues = append(issues, fmt.Sprintf("%d unassigned shards", n))
+	}
+	if n, _ := strconv.Atoi(dm["tp_total_rejected"]); n > 0 {
+		issues = append(issues, fmt.Sprintf("%d thread pool rejections", n))
+	}
+	if n, _ := strconv.Atoi(dm["cb_total_tripped"]); n > 0 {
+		issues = append(issues, fmt.Sprintf("%d circuit breaker trips", n))
+	}
+	if pct, _ := strconv.ParseFloat(strings.TrimSuffix(dm["jvm_heap_used_pct"], "%"), 64); pct > 85 {
+		issues = append(issues, fmt.Sprintf("heap %.0f%%", pct))
+	}
+
+	// Render banner
+	sb.WriteString(boxTop(iw) + "\n")
+	var badge string
+	summary := "all metrics normal"
+	switch badgeStyle {
+	case "ok":
+		badge = okStyle.Render(fmt.Sprintf("● %s", status))
+	case "warn":
+		badge = warnStyle.Render(fmt.Sprintf("● %s", status))
+	default:
+		badge = critStyle.Render(fmt.Sprintf("● %s", status))
+	}
+	if len(issues) > 0 {
+		summary = strings.Join(issues, " · ")
+	}
+	scoreStr := dimStyle.Render(fmt.Sprintf("score %d/100", score))
+	line := fmt.Sprintf("  %s  %s  %s",
+		styledPad(badge, 14),
+		styledPad(scoreStr, 14),
+		valueStyle.Render(summary))
+	sb.WriteString(boxRow(line, iw) + "\n")
+	if cn := dm["cluster_name"]; cn != "" {
+		sub := fmt.Sprintf("  %s  %s",
+			dimStyle.Render("Cluster:"),
+			valueStyle.Render(cn))
+		if v := dm["version"]; v != "" {
+			sub += dimStyle.Render("  ·  ES "+v)
+		}
+		sb.WriteString(boxRow(sub, iw) + "\n")
+	}
+	sb.WriteString(boxBot(iw) + "\n\n")
+	return sb.String()
+}
+
+// esRenderSuggestions analyses metrics and produces actionable performance/config suggestions.
+func esRenderSuggestions(app model.AppInstance, iw int) string {
+	dm := app.DeepMetrics
+	var perf []string  // performance suggestions (metric-driven)
+	var conf []string  // configuration issues (structural)
+
+	// Performance — derived from live metrics
+	if pct, _ := strconv.ParseFloat(strings.TrimSuffix(dm["jvm_heap_used_pct"], "%"), 64); pct > 85 {
+		perf = append(perf, fmt.Sprintf("Heap at %.0f%% — raise -Xmx or reduce fielddata/query cache", pct))
+	} else if pct > 75 {
+		perf = append(perf, fmt.Sprintf("Heap at %.0f%% — monitor, near pressure threshold", pct))
+	}
+	if n, _ := strconv.Atoi(dm["fielddata_evictions"]); n > 10 {
+		perf = append(perf, fmt.Sprintf("Fielddata evictions (%d) — raise indices.fielddata.cache.size or use doc_values", n))
+	}
+	if n, _ := strconv.Atoi(dm["tp_write_rejected"]); n > 0 {
+		perf = append(perf, fmt.Sprintf("Write pool rejections (%d) — bulk clients overloading, increase thread_pool.write.queue_size or slow down ingest", n))
+	}
+	if n, _ := strconv.Atoi(dm["tp_search_rejected"]); n > 0 {
+		perf = append(perf, fmt.Sprintf("Search rejections (%d) — queries exceed thread_pool.search.queue_size, add replicas or tune queries", n))
+	}
+	if n, _ := strconv.Atoi(dm["cb_total_tripped"]); n > 0 {
+		perf = append(perf, fmt.Sprintf("Circuit breaker trips (%d) — queries too large, use search.max_buckets or reduce request size", n))
+	}
+	if n, _ := strconv.Atoi(dm["pending_tasks_count"]); n > 10 {
+		perf = append(perf, fmt.Sprintf("Pending cluster tasks (%d) — master node overloaded, check logs on master", n))
+	}
+	if young, _ := strconv.ParseFloat(dm["gc_young_per_min"], 64); young > 120 {
+		perf = append(perf, fmt.Sprintf("Young GC frequency high (%.0f/min) — allocation pressure, reduce query result sizes or scroll batches", young))
+	}
+	if old, _ := strconv.ParseFloat(dm["gc_old_per_min"], 64); old > 3 {
+		perf = append(perf, fmt.Sprintf("Old GC frequency high (%.0f/min) — major heap pressure, likely needs more RAM", old))
+	}
+	if p95, _ := strconv.ParseFloat(dm["gc_old_p95_approx_ms"], 64); p95 > 1000 {
+		perf = append(perf, fmt.Sprintf("Old GC p95 %.0fms — indexing/search stalling during major GC", p95))
+	}
+
+	// Configuration issues — structural
+	if n, _ := strconv.Atoi(dm["shards_oversized"]); n > 0 {
+		conf = append(conf, fmt.Sprintf("%d shard(s) >50GB — split large indices, target 20-40GB per shard", n))
+	}
+	if n, _ := strconv.Atoi(dm["shards_undersized"]); n >= 10 {
+		conf = append(conf, fmt.Sprintf("%d shard(s) <1GB — too many small shards wastes resources, use ILM rollover with larger window", n))
+	}
+	if total, _ := strconv.Atoi(dm["indices_total_cat"]); total > 1000 {
+		conf = append(conf, fmt.Sprintf("%d indices in cluster — setup Index Lifecycle Management (ILM) for retention/rollover", total))
+	}
+	if n, _ := strconv.Atoi(dm["indices_aging_90d"]); n > 50 {
+		conf = append(conf, fmt.Sprintf("%d indices older than 90 days — use ILM to cold/delete them", n))
+	}
+	if n, _ := strconv.Atoi(dm["indices_empty"]); n > 0 {
+		conf = append(conf, fmt.Sprintf("%d empty indices — delete if unused, they still consume cluster state", n))
+	}
+	if n, _ := strconv.Atoi(dm["shards_unassigned_cat"]); n > 0 {
+		conf = append(conf, fmt.Sprintf("%d unassigned shards — check cluster.allocation.explain for reason (disk full? node missing?)", n))
+	}
+	if nodes, _ := strconv.Atoi(dm["number_of_nodes"]); nodes == 1 {
+		conf = append(conf, "Single-node cluster — no redundancy, yellow shards are expected but no high availability")
+	}
+	if s := dm["status"]; s == "red" {
+		conf = append(conf, "Cluster status RED — primary shards missing, DATA LOSS risk, investigate immediately")
+	}
+
+	if len(perf) == 0 && len(conf) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	if len(perf) > 0 {
+		sb.WriteString("  " + titleStyle.Render("PERFORMANCE SUGGESTIONS") + "\n")
+		sb.WriteString(boxTop(iw) + "\n")
+		for i, s := range perf {
+			if i >= 6 {
+				break
+			}
+			row := fmt.Sprintf("  %s %s",
+				warnStyle.Render(fmt.Sprintf("%d.", i+1)),
+				valueStyle.Render(s))
+			sb.WriteString(boxRow(row, iw) + "\n")
+		}
+		sb.WriteString(boxBot(iw) + "\n\n")
+	}
+	if len(conf) > 0 {
+		sb.WriteString("  " + titleStyle.Render("CONFIGURATION ISSUES") + "\n")
+		sb.WriteString(boxTop(iw) + "\n")
+		for i, s := range conf {
+			if i >= 6 {
+				break
+			}
+			row := fmt.Sprintf("  %s %s",
+				orangeStyle.Render(fmt.Sprintf("%d.", i+1)),
+				valueStyle.Render(s))
+			sb.WriteString(boxRow(row, iw) + "\n")
+		}
+		sb.WriteString(boxBot(iw) + "\n\n")
+	}
 	return sb.String()
 }
 
