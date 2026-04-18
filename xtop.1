@@ -45,8 +45,8 @@ is equivalent to
 .BR "xtop -interval 5" .
 .TP
 .BI \-history " N"
-Number of snapshots to keep in the ring buffer for trend detection. Default: 300
-(5 minutes at 1-second interval).
+Number of snapshots to keep in the ring buffer for trend detection. Default: 600
+(30 minutes at 3-second interval).
 .TP
 .B \-json
 Output a single JSON snapshot (two samples with rate computation) to stdout
@@ -397,7 +397,7 @@ Cgroup v2 metrics (cpu.stat, memory.current, memory.events, io.stat, pids.curren
 .SH EXAMPLES
 .TP
 .B sudo xtop
-Start the interactive TUI with default 1-second refresh.
+Start the interactive TUI with default 3-second refresh.
 .TP
 .B sudo xtop 5
 Start TUI with 5-second refresh interval.
@@ -418,7 +418,7 @@ Replay a recorded incident file (no root required).
 Extract only active bottleneck entries from JSON output.
 .TP
 .B sudo xtop -watch
-CLI output mode with overview section, 1-second refresh.
+CLI output mode with overview section, 3-second refresh.
 .TP
 .B sudo xtop -watch -section cpu
 CLI mode showing only the CPU subsystem.

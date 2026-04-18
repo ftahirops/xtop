@@ -23,7 +23,7 @@ import (
 )
 
 // Version is set at build time via ldflags.
-var Version = "0.37.2"
+var Version = "0.37.3"
 
 // Config holds CLI configuration.
 type Config struct {
@@ -108,6 +108,7 @@ Shell Widget:
 Options:
   -interval N       Collection interval in seconds (default: 3)
   -history N        Snapshots to keep in ring buffer (default: 600, ~30 min at 3s)
+
   -section NAME     Section to display in -watch mode (default: overview)
                     Sections: overview, cpu, mem, io, net, cgroup, rca
   -count N          Number of iterations for -watch mode (0 = infinite, default: 0)
@@ -123,9 +124,9 @@ Positional:
   INTERVAL          First positional arg sets interval: xtop 5 = xtop -interval 5
 
 Examples:
-  sudo xtop                          Interactive TUI, 1s refresh
+  sudo xtop                          Interactive TUI, 3s refresh (default)
   sudo xtop 5                        Interactive TUI, 5s refresh
-  sudo xtop -watch                   CLI mode, overview section, 1s refresh
+  sudo xtop -watch                   CLI mode, overview section, 3s refresh (default)
   sudo xtop -watch -section cpu      CLI mode, CPU section only
   sudo xtop -watch -section io 3     CLI mode, IO section, 3s refresh
   sudo xtop -watch -section rca      CLI mode, RCA analysis only
@@ -221,7 +222,7 @@ func Run() error {
 	}
 
 	flag.IntVar(&intervalSec, "interval", intervalSec, "Collection interval in seconds")
-	flag.IntVar(&cfg.HistorySize, "history", historyDefault, "Number of snapshots to keep in history (5 min at 1s)")
+	flag.IntVar(&cfg.HistorySize, "history", historyDefault, "Number of snapshots to keep in history (30 min at 3s default)")
 	flag.BoolVar(&cfg.JSONMode, "json", false, "Output a single JSON snapshot and exit")
 	flag.BoolVar(&cfg.MDMode, "md", false, "Output a single Markdown incident report and exit")
 	flag.BoolVar(&cfg.WatchMode, "watch", false, "CLI output mode (no TUI, prints to terminal)")

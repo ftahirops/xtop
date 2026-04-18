@@ -21,7 +21,18 @@ func renderLayoutA(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 	sb.WriteString(renderHeader(snap, rates, result))
 	sb.WriteString("\n")
 
-	leftW := width/2 - 2
+	// Left column width is sized to actual box content (not half the terminal).
+	// Previously: leftW = width/2 which wasted 30+ columns of space on wide terminals
+	// because boxes are capped at maxBoxInner (55). Now we right-size the left column
+	// and give all remaining space to the right column.
+	boxInnerW := width/2 - 7 // start from half, but clamp to maxBoxInner
+	if boxInnerW < 30 {
+		boxInnerW = 30
+	}
+	if boxInnerW > maxBoxInner {
+		boxInnerW = maxBoxInner
+	}
+	leftW := boxInnerW + 5 // account for box borders/padding
 	if leftW < 30 {
 		leftW = 30
 	}
@@ -32,14 +43,6 @@ func renderLayoutA(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 
 	// Build left column: Subsystem Health
 	var left strings.Builder
-
-	boxInnerW := leftW - 5
-	if boxInnerW < 30 {
-		boxInnerW = 30
-	}
-	if boxInnerW > maxBoxInner {
-		boxInnerW = maxBoxInner
-	}
 
 	for _, s := range ss {
 		title := fmt.Sprintf(" %s %s  %s ",

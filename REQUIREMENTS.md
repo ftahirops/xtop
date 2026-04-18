@@ -111,6 +111,6 @@ Arrow-connected timeline of correlated events
 - `?` — Help overlay
 
 ## Sampling Strategy
-- 1-second collection interval (configurable via --interval flag)
-- 60-snapshot ring buffer for trend detection
+- 3-second default collection interval (configurable via --interval flag)
+- 600-snapshot ring buffer for trend detection (30 min at 3s)
 - Top-N process limiting (default 50) to avoid /proc scan overhead
