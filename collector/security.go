@@ -2,6 +2,7 @@ package collector
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -24,15 +25,15 @@ type SecurityCollector struct {
 	lastDecay     time.Time // #2: periodic decay for failedAuthIPs
 
 	// Port baseline
-	portBaseline  map[int]bool
-	portInit      bool
-	portInitTime  time.Time // #12: grace period for port baseline promotion
+	portBaseline map[int]bool
+	portInit     bool
+	portInitTime time.Time // #12: grace period for port baseline promotion
 
 	// SUID baseline
-	suidBaseline  map[string]time.Time
-	suidInit      bool
-	suidInitTime  time.Time // #12: grace period for SUID baseline promotion
-	lastSUIDScan  time.Time
+	suidBaseline map[string]time.Time
+	suidInit     bool
+	suidInitTime time.Time // #12: grace period for SUID baseline promotion
+	lastSUIDScan time.Time
 }
 
 func (s *SecurityCollector) Name() string { return "security" }
@@ -475,7 +476,9 @@ func readFDLink(pid, fd int) string {
 func (s *SecurityCollector) collectSessions(snap *model.Snapshot) {
 	snap.Global.Sessions = nil
 
-	out, err := exec.Command("w").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "w").Output()
 	if err != nil {
 		return
 	}

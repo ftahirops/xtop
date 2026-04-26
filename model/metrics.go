@@ -920,6 +920,13 @@ type CgroupMetrics struct {
 	// PIDs
 	PIDCount uint64
 	PIDLimit uint64
+
+	// Kubernetes attribution — populated when the cgroup is under
+	// kubepods.slice (or the cgroup-v1 equivalent). Empty on non-k8s hosts.
+	PodName        string
+	PodNamespace   string
+	ContainerName  string
+	PodQoS         string // "Guaranteed", "Burstable", "BestEffort"
 }
 
 // ProcessMetrics holds metrics for a single process.

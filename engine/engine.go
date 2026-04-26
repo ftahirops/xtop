@@ -1,6 +1,11 @@
 package engine
 
 import (
+	"fmt"
+	"log"
+	"os"
+	"runtime"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -27,75 +32,307 @@ type Engine struct {
 	SLOPolicies    []SLOPolicy     // SLO policies from config/flags
 	Autopilot      *Autopilot      // autopilot subsystem (nil if disabled)
 	changeDetector   *ChangeDetector   // tracks system changes between ticks
+	configDrift      *ConfigDriftDetector // watches /etc/* config files for drift
 	incidentRecorder *IncidentRecorder // records past RCA incidents for learning
+	runbooks         *RunbookLibrary   // operator runbooks matched against live incidents
+	usage            *UsageRecorder    // per-minute utilization rollups for right-sizing
+	logTailer        *LogTailer        // correlates incidents with app log output
+	calibrator       *ConfidenceCalibrator // learns per-bottleneck confidence bias from past outcomes
+	traces           *TraceCorrelator  // optional OTel-trace correlation from a JSONL feed
+	deepScan         *collector.DeepBigFileScanner // opt-in full-FS big-file walker
+	guard            *ResourceGuard    // opt-in xtop self-throttle
+	intervalSec      int               // base tick interval (for guard + callers)
+	mode             collector.Mode    // Rich (TUI) or Lean (daemon/agent)
+	memReliefQuit    chan struct{}     // signals the memory-relief goroutine to exit
 	tickMu         sync.Mutex      // serializes Tick() calls to prevent concurrent collection
 	peerIncidents  map[string]*model.HostIncident // hostID → latest incident
 	peerMu         sync.RWMutex
+
+	// Fleet push client — nil if --fleet-hub not configured
+	fleet         *FleetClient
+	fleetHostname string
+	fleetVersion  string
 }
 
 // NewEngine creates a new engine with all collectors registered.
 // intervalSec is the collection interval used to calibrate alert thresholds.
 func NewEngine(historySize, intervalSec int) *Engine {
-	reg := collector.NewRegistry()
-	cgc := cgcollector.NewCollector()
-	reg.Add(cgc)
+	return NewEngineMode(historySize, intervalSec, collector.ModeRich)
+}
 
-	sentinel := bpf.NewSentinelManager()
-	reg.Add(sentinel)
+// NewEngineMode constructs an engine in the requested collector mode.
+// Lean mode (used by daemon + fleet-hub agents) registers a small fixed
+// set of essential collectors and skips the heavy ones — apps deep
+// scanning, profiler audits, the cgroup tree walk, the eBPF sentinel
+// program, all of the runtime detectors. The RCA engine downstream
+// degrades gracefully on missing signals.
+//
+// On top of the mode's baseline list, ~/.xtop/modules.json (managed by
+// the v0.45 module toggle subcommand + UI) further filters which Optional
+// and Heavy modules actually run. Essential collectors always run; the
+// module config can never disable them.
+func NewEngineMode(historySize, intervalSec int, mode collector.Mode) *Engine {
+	reg := collector.NewRegistryMode(mode)
+	moduleCfg := collector.LoadModuleConfig()
 
-	// Runtime detection modules — runs after ProcessCollector so snap.Processes is available
-	rtm := rt.NewManager()
-	rtm.Register(rt.NewDotNetModule())
-	rtm.Register(rt.NewJVMModule())
-	rtm.Register(rt.NewPythonModule())
-	rtm.Register(rt.NewNodeModule())
-	rtm.Register(rt.NewGoModule())
-	reg.Add(rtm)
-
-	// App diagnostics — auto-detect and monitor running applications
-	appm := apps.NewManager()
-	appm.Register(apps.NewNginxModule())
-	appm.Register(apps.NewApacheModule())
-	appm.Register(apps.NewHAProxyModule())
-	appm.Register(apps.NewCaddyModule())
-	appm.Register(apps.NewTraefikModule())
-	appm.Register(apps.NewMySQLModule())
-	appm.Register(apps.NewPostgreSQLModule())
-	appm.Register(apps.NewMongoModule())
-	appm.Register(apps.NewRedisModule())
-	appm.Register(apps.NewMemcachedModule())
-	appm.Register(apps.NewESModule())
-	appm.Register(apps.NewLogstashModule())
-	appm.Register(apps.NewKibanaModule())
-	appm.Register(apps.NewRabbitMQModule())
-	appm.Register(apps.NewKafkaModule())
-	appm.Register(apps.NewDockerModule())
-	appm.Register(apps.NewPHPFPMModule())
-	appm.Register(apps.NewPleskModule())
-	reg.Add(appm)
-
-	// System Profiler — role detection + optimization audit (runs after Apps)
-	reg.Add(profiler.NewProfilerCollector())
-
-	return &Engine{
-		registry:       reg,
-		cgCollect:      cgc,
-		History:        NewHistory(historySize, intervalSec),
-		Smart:          collector.NewSMARTCollector(5 * time.Minute),
-		growthTracker:  NewMountGrowthTracker(),
-		Sentinel:       sentinel,
-		Watchdog:       NewWatchdogTrigger(),
-		SecWatchdog:    bpf.NewSecWatchdog(bpf.DetectPrimaryIface()),
-		changeDetector:   NewChangeDetector(),
-		incidentRecorder: NewIncidentRecorder(),
-		peerIncidents:  make(map[string]*model.HostIncident),
+	// In lean mode, we also clamp the history ring to a much smaller
+	// buffer. The hub stores the long history; the agent only needs
+	// enough to compute rates between two consecutive ticks plus a
+	// short look-back for trend detection.
+	if mode == collector.ModeLean && historySize > 30 {
+		historySize = 30
 	}
+
+	var cgc *cgcollector.Collector
+	var sentinel *bpf.SentinelManager
+	var rtm *rt.Manager
+	var appm *apps.Manager
+
+	enabled := collector.ResolveEnabledModules(moduleCfg)
+	addIfEnabled := func(name string, c collector.Collector) {
+		if enabled[name] {
+			reg.Add(c)
+		}
+	}
+
+	if mode == collector.ModeRich {
+		// cgroup tree walker — Standard tier; user can disable on hosts
+		// where the cgroup tree is huge (kubernetes nodes) and they don't
+		// need the per-pod breakdown locally.
+		if enabled["cgroup"] {
+			cgc = cgcollector.NewCollector()
+			reg.Add(cgc)
+		}
+
+		// eBPF sentinel — Optional tier; opt-in. Off by default in
+		// Standard profile; on in SRE / Investigation.
+		if enabled["ebpf-sentinel"] {
+			sentinel = bpf.NewSentinelManager()
+			reg.Add(sentinel)
+		}
+
+		// Runtime detection modules — Standard tier. Runs after
+		// ProcessCollector so snap.Processes is available.
+		if enabled["runtime"] {
+			rtm = rt.NewManager()
+			rtm.Register(rt.NewDotNetModule())
+			rtm.Register(rt.NewJVMModule())
+			rtm.Register(rt.NewPythonModule())
+			rtm.Register(rt.NewNodeModule())
+			rtm.Register(rt.NewGoModule())
+			reg.Add(rtm)
+		}
+
+		// App diagnostics — Standard tier. Auto-detect running apps and
+		// surface basic health. Heavy deep-metric probes (mongosh, mysql
+		// INFO, etc.) are gated separately by the resource guard.
+		if enabled["apps"] {
+			appm = apps.NewManager()
+			appm.Register(apps.NewNginxModule())
+			appm.Register(apps.NewApacheModule())
+			appm.Register(apps.NewHAProxyModule())
+			appm.Register(apps.NewCaddyModule())
+			appm.Register(apps.NewTraefikModule())
+			appm.Register(apps.NewMySQLModule())
+			appm.Register(apps.NewPostgreSQLModule())
+			appm.Register(apps.NewMongoModule())
+			appm.Register(apps.NewRedisModule())
+			appm.Register(apps.NewMemcachedModule())
+			appm.Register(apps.NewESModule())
+			appm.Register(apps.NewLogstashModule())
+			appm.Register(apps.NewKibanaModule())
+			appm.Register(apps.NewRabbitMQModule())
+			appm.Register(apps.NewKafkaModule())
+			appm.Register(apps.NewDockerModule())
+			appm.Register(apps.NewPHPFPMModule())
+			appm.Register(apps.NewPleskModule())
+			reg.Add(appm)
+		}
+
+		// System Profiler — Heavy tier. Off by default in Standard;
+		// enabled in SRE Workstation + Investigation profiles.
+		if enabled["profiler"] {
+			reg.Add(profiler.NewProfilerCollector())
+		}
+	}
+	// Silence linter for unused helper when no module needed it on this path.
+	_ = addIfEnabled
+
+	e := &Engine{
+		registry:         reg,
+		cgCollect:        cgc, // nil in lean mode — call sites guard
+		History:          NewHistory(historySize, intervalSec),
+		Smart:            collector.NewSMARTCollector(5 * time.Minute),
+		growthTracker:    NewMountGrowthTracker(),
+		Sentinel:         sentinel, // nil in lean — eBPF probes never attached
+		Watchdog:         NewWatchdogTrigger(),
+		SecWatchdog:      bpf.NewSecWatchdog(bpf.DetectPrimaryIface()),
+		changeDetector:   NewChangeDetector(),
+		configDrift:      NewConfigDriftDetector(),
+		incidentRecorder: NewIncidentRecorder(),
+		runbooks:         NewRunbookLibrary(),
+		usage:            NewUsageRecorder(),
+		logTailer:        NewLogTailer(),
+		calibrator:       NewConfidenceCalibrator(),
+		traces:           NewTraceCorrelator(),
+		deepScan:         buildDeepScanner(),
+		peerIncidents:    make(map[string]*model.HostIncident),
+		intervalSec:      intervalSec,
+		mode:             mode,
+		memReliefQuit:    make(chan struct{}),
+	}
+	// Self-relief loop — every 5 minutes, return idle pages to the OS so
+	// long-running daemons don't hold onto a high RSS forever after a
+	// transient allocation spike. Cheap (microseconds) but Go's runtime
+	// won't do this on its own without a memstats hint.
+	if mode == collector.ModeLean {
+		go e.memoryReliefLoop()
+	}
+	return e
+}
+
+// guardOrCreate lazily constructs the ResourceGuard on first Tick once
+// snapshots tell us the actual NumCPUs. Separate from NewEngine because
+// the initial snapshot (for CPU count) isn't available at construction.
+func (e *Engine) guardOrCreate(numCPUs int) *ResourceGuard {
+	if e.guard != nil {
+		return e.guard
+	}
+	base := e.intervalSec
+	if base <= 0 {
+		base = 3
+	}
+	e.guard = NewResourceGuard(numCPUs, base)
+	return e.guard
+}
+
+// memoryReliefLoop runs in lean mode and enforces a tiered memory budget
+// (Guardian v2). Three escalating responses:
+//
+//   Heap < soft       — silent. Heap and OS pages are doing fine.
+//   Heap >= soft      — log warning, force runtime.GC + debug.FreeOSMemory.
+//                       This is a HINT to the runtime: "give back what you
+//                       can." Cheap, bounded, no functional change.
+//   Heap >= hard      — flush in-process caches (process history, runtime
+//                       detection, log tailer, trace correlator), then GC.
+//                       If still over hard after recovery: self-restart
+//                       (exit 2 → systemd Restart=on-failure brings us
+//                       back clean), rate-limited to 3/hour.
+//
+// Frequency: every 60 s. Cost: <1 ms per call.
+func (e *Engine) memoryReliefLoop() {
+	soft := guardianSoftHeapMB(e.mode)
+	hard := guardianHardHeapMB(e.mode)
+	auditPath := guardianAuditPath()
+	t := time.NewTicker(60 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-t.C:
+			e.enforceMemoryBudget(soft, hard, auditPath)
+		case <-e.memReliefQuit:
+			return
+		}
+	}
+}
+
+func (e *Engine) enforceMemoryBudget(soft, hard float64, auditPath string) {
+	var ms runtime.MemStats
+	runtime.ReadMemStats(&ms)
+	heapMB := float64(ms.HeapInuse) / 1024 / 1024
+
+	// Below soft → just gently nudge the runtime every cycle. Cheap.
+	if heapMB < soft {
+		runtime.GC()
+		debug.FreeOSMemory()
+		return
+	}
+
+	// At soft → log + GC. The first time we cross soft, write an audit
+	// line so the operator has a paper trail.
+	guardianAudit(auditPath, fmt.Sprintf(
+		"heap=%.0fMB > soft=%.0fMB · goroutines=%d gc-runs=%d · GC+FreeOSMemory",
+		heapMB, soft, runtime.NumGoroutine(), ms.NumGC))
+	log.Printf("[guardian] heap %.0fMB > %.0fMB soft (gc + free)",
+		heapMB, soft)
+	runtime.GC()
+	debug.FreeOSMemory()
+	if heapMB < hard {
+		return
+	}
+
+	// At hard → flush caches aggressively, then re-measure.
+	guardianAudit(auditPath, fmt.Sprintf(
+		"heap=%.0fMB >= hard=%.0fMB · flushing in-process caches",
+		heapMB, hard))
+	log.Printf("[guardian] heap %.0fMB >= %.0fMB HARD; flushing caches",
+		heapMB, hard)
+	e.flushCaches()
+	runtime.GC()
+	debug.FreeOSMemory()
+	runtime.ReadMemStats(&ms)
+	postFlushMB := float64(ms.HeapInuse) / 1024 / 1024
+	guardianAudit(auditPath, fmt.Sprintf(
+		"after-flush heap=%.0fMB", postFlushMB))
+
+	// Still over hard after recovery → self-preserving restart, but only
+	// when systemd is supervising us so the unit gets relaunched clean.
+	if postFlushMB >= hard {
+		if !guardianRestartAllowed(auditPath) {
+			log.Printf("[guardian] heap still %.0fMB >= hard, but restart rate-limit hit — staying alive degraded",
+				postFlushMB)
+			return
+		}
+		if !systemdSupervised() {
+			log.Printf("[guardian] heap still %.0fMB >= hard, but no systemd supervisor — staying alive",
+				postFlushMB)
+			return
+		}
+		log.Printf("[guardian] self-preserving exit: heap %.0fMB >= %.0fMB hard after flush; systemd will relaunch",
+			postFlushMB, hard)
+		guardianAudit(auditPath, fmt.Sprintf(
+			"SELF-RESTART · heap=%.0fMB >= hard=%.0fMB after cache flush", postFlushMB, hard))
+		os.Exit(2)
+	}
+}
+
+// flushCaches drops in-process caches the engine accumulates over time.
+// Each component's "flush" method is best-effort — if a component isn't
+// initialized for this mode, its check is a no-op.
+func (e *Engine) flushCaches() {
+	if e.History != nil {
+		e.History.FlushOlderThan(2)
+	}
+	if e.logTailer != nil {
+		e.logTailer.Flush()
+	}
+	if e.traces != nil {
+		e.traces.Flush()
+	}
+	// Process history rings already self-bound; nothing larger to drop.
+}
+
+// systemdSupervised heuristically detects whether the process is running
+// under a systemd unit (so restart will be honored). Two signals: parent
+// PID is 1, AND the INVOCATION_ID env var is set (systemd injects this
+// for every unit). Both signals together rule out plain init systems and
+// shell-launched daemons where exit 2 just dies silently.
+func systemdSupervised() bool {
+	if os.Getppid() != 1 {
+		return false
+	}
+	return os.Getenv("INVOCATION_ID") != ""
 }
 
 // Tick performs one collection + analysis cycle.
 // Returns the snapshot, computed rates, and full analysis result.
 // Serialized via tickMu to prevent concurrent collection when ticks overlap.
 func (e *Engine) Tick() (*model.Snapshot, *model.RateSnapshot, *model.AnalysisResult) {
+	// Guard advice is function-scoped because multiple code paths (log
+	// tailer inside the "prev != nil" block, deep-scan merge outside it)
+	// all need to consult it. Zero-value is "no skips" — matches the
+	// behavior when the guard is disabled.
+	var skipAdvice GuardAdvice
 	e.tickMu.Lock()
 	defer e.tickMu.Unlock()
 
@@ -142,6 +379,43 @@ func (e *Engine) Tick() (*model.Snapshot, *model.RateSnapshot, *model.AnalysisRe
 		if e.changeDetector != nil {
 			result.Changes = e.changeDetector.DetectChanges(snap)
 		}
+		// Config drift: walk the watchlist of /etc/* configs; merge any newly-
+		// detected modifications into Changes so they appear in Recent Activity.
+		if e.configDrift != nil {
+			result.Changes = append(result.Changes, e.configDrift.Tick()...)
+
+			// If an incident is active, look back 30 minutes for config drift
+			// events. A config change that landed shortly before degradation
+			// is the single highest-yield piece of RCA context we can surface.
+			if result != nil && result.Health > model.HealthOK {
+				recent := e.configDrift.RecentWithin(time.Now(), 30*time.Minute)
+				if len(recent) > 0 && result.Narrative != nil {
+					hint := formatConfigDriftHint(recent)
+					if hint != "" {
+						result.Narrative.Evidence = append(
+							[]string{hint},
+							result.Narrative.Evidence...,
+						)
+					}
+				}
+			}
+		}
+
+		// Confidence calibration: detect incident completions to record outcomes,
+		// and apply the learned per-bottleneck bias to the live result. The order
+		// matters — we look at what the recorder had as "active" before we pass
+		// in the new result.
+		if e.calibrator != nil && e.incidentRecorder != nil {
+			if prev := e.incidentRecorder.Active(); prev != nil &&
+				(result == nil || result.Health == model.HealthOK) {
+				duration := time.Since(prev.StartedAt)
+				e.calibrator.RecordOutcome(prev.Bottleneck, prev.PeakScore, duration)
+			}
+			if result != nil && result.PrimaryBottleneck != "" {
+				result.Confidence = e.calibrator.ApplyTo(
+					result.PrimaryBottleneck, result.Confidence)
+			}
+		}
 
 		// Incident recording: track active incidents, persist completed ones,
 		// and enrich current narrative with history context (recurrence info).
@@ -153,6 +427,92 @@ func (e *Engine) Tick() (*model.Snapshot, *model.RateSnapshot, *model.AnalysisRe
 					result.HistoryContext = ctx
 					if result.Narrative != nil {
 						result.Narrative.Evidence = append([]string{ctx}, result.Narrative.Evidence...)
+					}
+				}
+				// Structured diff against prior similar incidents — lets the UI
+				// show "score delta / new signals / same-hour pattern" without
+				// re-deriving everything from the narrative string.
+				if diff := e.incidentRecorder.DiffAgainstHistory(result); diff != nil {
+					result.IncidentDiff = diff
+					if diff.DriftHint != "" && result.Narrative != nil {
+						result.Narrative.Evidence = append(
+							[]string{"vs history: " + diff.DriftHint},
+							result.Narrative.Evidence...,
+						)
+					}
+				}
+			}
+		}
+
+		// Runbook matching — operator-authored remediation docs loaded from
+		// ~/.xtop/runbooks/*.md. The engine attaches only the lightweight
+		// reference; UIs pull the full body via RunbookLibrary.Lookup.
+		if e.runbooks != nil && result != nil && result.Health > model.HealthOK {
+			if rb := e.runbooks.Match(result); rb != nil {
+				result.Runbook = rb
+				if result.Narrative != nil {
+					result.Narrative.Evidence = append(
+						[]string{"RUNBOOK: " + rb.Name + "  (" + rb.Path + ")"},
+						result.Narrative.Evidence...,
+					)
+				}
+			}
+		}
+
+		// ── Resource guard: decide what to skip this tick ─────────────
+		// The guard reads host load + host busy% + our own CPU and picks a
+		// level 0-3. Each level enables a progressively larger skip-set so
+		// xtop stays small on a stressed box. Guard is opt-in — when off,
+		// `skipAdvice` is the zero-value (all false) and nothing changes.
+		if result != nil && rates != nil {
+			g := e.guardOrCreate(snap.Global.CPU.NumCPUs)
+			skipAdvice = g.Advise(snap.Global.CPU.LoadAvg.Load1, rates.CPUBusyPct)
+			if g.Enabled() {
+				result.Guard = buildGuardStatus(skipAdvice)
+			}
+		}
+
+		// OTel trace correlation — optional, silent when no feed file present.
+		// When operators have wired an OTel collector to emit summaries, this
+		// surfaces the slow/errored spans overlapping the incident window.
+		if !skipAdvice.SkipTraces && e.traces != nil && result != nil && result.Health > model.HealthOK {
+			if samples := e.traces.Observe(result); len(samples) > 0 {
+				result.TraceSamples = samples
+				if result.Narrative != nil {
+					top := samples[0]
+					hint := "TRACE: "
+					if top.StatusCode == "ERROR" {
+						hint += "ERROR "
+					}
+					if top.Service != "" {
+						hint += top.Service + " "
+					}
+					if top.Operation != "" {
+						hint += top.Operation + " "
+					}
+					hint += "took " + fmtMs(top.DurationMs)
+					if len(samples) > 1 {
+						hint += " (+" + itoa(len(samples)-1) + " more)"
+					}
+					result.Narrative.Evidence = append(
+						[]string{hint}, result.Narrative.Evidence...)
+				}
+			}
+		}
+
+		// Log correlation — cross-reference the culprit app's own log output.
+		// Rate-limited internally (once every 10 s) + bounded per-tick budget,
+		// so this is a safe call on every active-incident tick.
+		if !skipAdvice.SkipLogTailer && e.logTailer != nil && result != nil && result.Health > model.HealthOK {
+			if excerpts := e.logTailer.Observe(result); len(excerpts) > 0 {
+				result.LogExcerpts = excerpts
+				if result.Narrative != nil {
+					hint := formatLogExcerptHint(excerpts)
+					if hint != "" {
+						result.Narrative.Evidence = append(
+							[]string{hint},
+							result.Narrative.Evidence...,
+						)
 					}
 				}
 			}
@@ -198,12 +558,97 @@ func (e *Engine) Tick() (*model.Snapshot, *model.RateSnapshot, *model.AnalysisRe
 		}
 	}
 
+	// Enrich the Apps page with the per-app "resource share" SRE view.
+	// Done once here so every consumer (TUI, fleet push, postmortem) sees
+	// the same ranked + capacity-share + bottleneck-contribution fields.
+	if result != nil && rates != nil {
+		scores := ComputeImpactScores(snap, rates, result)
+		EnrichAppResourceShare(snap, rates, result, scores)
+	}
+
+	// Publish the current worst-disk IO% to the atomic the deep scanner
+	// reads for adaptive pacing. Also merge scanner findings into the
+	// snapshot's BigFiles list so the DiskGuard page shows them.
+	if rates != nil {
+		var worst float64
+		for _, d := range rates.DiskRates {
+			if d.UtilPct > worst {
+				worst = d.UtilPct
+			}
+		}
+		setCurrentIOPct(worst)
+	}
+	if e.deepScan != nil && !skipAdvice.SkipDeepScan {
+		mergeDeepScanResults(snap, e.deepScan)
+	}
+
+	// Fleet push: non-blocking, only after the first tick has rates+result
+	if e.fleet != nil && result != nil {
+		e.fleet.Observe(snap, result, e.fleetHostname, e.fleetVersion)
+	}
+
+	// Usage recording: per-tick aggregate that the per-minute rollup absorbs.
+	// We only record when we have rates (i.e. after the second tick), since
+	// CPU% requires a delta.
+	if e.usage != nil && rates != nil {
+		memPct := 0.0
+		if snap.Global.Memory.Total > 0 {
+			memPct = float64(snap.Global.Memory.Total-snap.Global.Memory.Available) /
+				float64(snap.Global.Memory.Total) * 100
+		}
+		ioWorst := 0.0
+		for _, d := range rates.DiskRates {
+			if d.UtilPct > ioWorst {
+				ioWorst = d.UtilPct
+			}
+		}
+		e.usage.Observe(
+			rates.CPUBusyPct, memPct, ioWorst,
+			snap.Global.CPU.LoadAvg.Load1,
+			snap.Global.CPU.NumCPUs,
+			snap.Global.Memory.Total,
+		)
+	}
+
 	return snap, rates, result
+}
+
+// Guard exposes the live ResourceGuard so the status line and tests can
+// inspect it. Nil until the first Tick constructs it (needs CPU count).
+func (e *Engine) Guard() *ResourceGuard { return e.guard }
+
+// Calibrator exposes the confidence calibration table so the UI / post-mortem
+// can show "this bottleneck has precision X over N past incidents." Returns
+// nil on engines that were constructed without calibration (tests).
+func (e *Engine) Calibrator() *ConfidenceCalibrator { return e.calibrator }
+
+// Runbooks exposes the in-memory runbook library so the UI can fetch the
+// full markdown body for a matched runbook (which isn't carried on the
+// AnalysisResult to keep it small).
+func (e *Engine) Runbooks() *RunbookLibrary { return e.runbooks }
+
+// AttachFleetClient wires a fleet push client into the engine. Called once at
+// startup by cmd/root.go when --fleet-hub is configured. Hostname and version
+// are captured once since they never change at runtime.
+func (e *Engine) AttachFleetClient(fc *FleetClient, version string) {
+	e.fleet = fc
+	e.fleetVersion = version
+	h, _ := os.Hostname()
+	e.fleetHostname = h
 }
 
 // Close shuts down all engine resources (sentinel probes, security watchdog, collector connections).
 // Cleanup runs in parallel with a 2-second hard timeout so quit is never slow.
 func (e *Engine) Close() {
+	// Stop the memory-relief goroutine cleanly so it doesn't outlive the
+	// engine in tests or in a graceful daemon shutdown.
+	if e.memReliefQuit != nil {
+		select {
+		case <-e.memReliefQuit:
+		default:
+			close(e.memReliefQuit)
+		}
+	}
 	done := make(chan struct{})
 	go func() {
 		var wg sync.WaitGroup
@@ -218,6 +663,14 @@ func (e *Engine) Close() {
 		if e.registry != nil {
 			wg.Add(1)
 			go func() { defer wg.Done(); e.registry.CloseAll() }()
+		}
+		if e.fleet != nil {
+			wg.Add(1)
+			go func() { defer wg.Done(); e.fleet.Close() }()
+		}
+		if e.deepScan != nil {
+			wg.Add(1)
+			go func() { defer wg.Done(); e.deepScan.Stop() }()
 		}
 		wg.Wait()
 		close(done)

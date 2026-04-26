@@ -1,8 +1,8 @@
 # Maintainer: ftahirops <ftahirops@github>
 pkgname=xtop
-pkgver=0.37.4
+pkgver=0.46.1
 pkgrel=1
-pkgdesc="Real-time Linux server diagnostics with automatic root cause analysis and eBPF probes"
+pkgdesc="Incident-first root-cause analysis console for Linux — multi-host fleet hub, RCA engine, eBPF deep probes"
 arch=('x86_64')
 url="https://github.com/ftahirops/xtop"
 license=('MIT')
@@ -11,6 +11,8 @@ makedepends=('go>=1.21')
 optdepends=(
   'nvidia-utils: GPU monitoring via nvidia-smi'
   'docker: container name resolution'
+  'postgresql: required for running "xtop hub" as a fleet aggregator'
+  'journalctl: improves app-log correlation fallback for systemd-managed services'
 )
 source=("${pkgname}-${pkgver}.tar.gz::https://github.com/ftahirops/xtop/archive/refs/tags/v${pkgver}.tar.gz")
 sha256sums=('SKIP')
@@ -25,4 +27,7 @@ package() {
   cd "${pkgname}-${pkgver}"
   install -Dm755 xtop "${pkgdir}/usr/local/bin/xtop"
   install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  # Starter runbook library — users copy to ~/.xtop/runbooks/ at first run.
+  install -dm755 "${pkgdir}/usr/share/${pkgname}/runbooks"
+  install -m644 packaging/runbooks/*.md "${pkgdir}/usr/share/${pkgname}/runbooks/"
 }

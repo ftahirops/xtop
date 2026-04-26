@@ -1,0 +1,14 @@
+Package: xtop
+Version: 0.43.0-1
+Section: admin
+Priority: optional
+Architecture: amd64
+Depends: libc6
+Recommends: postgresql, journalctl
+Installed-Size: 23550
+Maintainer: Farhan Tahir <farhan.003@gmail.com>
+Homepage: https://github.com/ftahirops/xtop
+Description: Incident-first root-cause analysis console for Linux
+ v0.43.0 stops phantom-incident flooding: agents require 3 sustained ticks
+ above quality bar (peak>=30, confidence>=40) before announcing an incident.
+ Hub drops 0%/0% payloads and dedupes same (agent,sig,type) within 30s.

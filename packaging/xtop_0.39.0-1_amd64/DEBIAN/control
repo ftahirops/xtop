@@ -1,0 +1,17 @@
+Package: xtop
+Version: 0.39.0-1
+Section: admin
+Priority: optional
+Architecture: amd64
+Depends: libc6
+Recommends: journalctl, docker-compose, postgresql-client
+Installed-Size: 23240
+Maintainer: Farhan Tahir <farhan.003@gmail.com>
+Homepage: https://github.com/ftahirops/xtop
+Description: Incident-first root-cause analysis console for Linux
+ xtop is a terminal-based system monitor with ranked root-cause hypotheses,
+ evidence scoring, and eBPF deep diagnostics. v0.39.0 adds a multi-host
+ fleet hub with embedded web dashboard, incident diff vs prior similar
+ events, auto-correlated config drift and app logs, a runbook library,
+ post-mortem tooling, VM right-sizing (xtop cost) and named utilization
+ baselines.

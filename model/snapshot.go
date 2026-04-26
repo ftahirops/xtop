@@ -361,8 +361,37 @@ type AnalysisResult struct {
 	// Impact quantification (v0.36.6)
 	ImpactSummary string `json:"impact_summary,omitempty"`
 
-	// Historical context — populated from past similar incidents
+	// Historical context — short human-readable summary from past similar incidents.
 	HistoryContext string `json:"history_context,omitempty"`
+
+	// IncidentDiff is a structured comparison of the current incident against
+	// the last N similar ones (same signature). Nil if no prior matches exist.
+	IncidentDiff *IncidentDiff `json:"incident_diff,omitempty"`
+
+	// Runbook is the best-matching operator runbook for this incident (if any
+	// were loaded from ~/.xtop/runbooks/). The engine populates this field;
+	// the UI reads it to show a "see runbook: <name>" hint and can load the
+	// full content via the engine's RunbookLibrary.Lookup(path).
+	Runbook *RunbookMatch `json:"runbook,omitempty"`
+
+	// Guard reports what the resource guard decided this tick (level, skip
+	// flags, reason). Populated only when XTOP_GUARD=1. Nil otherwise so
+	// status lines cleanly hide the indicator when it's off.
+	Guard *GuardStatus `json:"guard,omitempty"`
+
+	// TraceSamples are OpenTelemetry trace summaries that overlap the current
+	// incident window, loaded by the engine's TraceCorrelator from a simple
+	// JSONL feed. xtop never speaks OTLP directly — any existing OTel pipeline
+	// can be pointed at ~/.xtop/otel-samples.jsonl to enable correlation.
+	TraceSamples []TraceSample `json:"trace_samples,omitempty"`
+
+	// LogExcerpts are notable lines pulled from app log files during an
+	// incident. The engine's log tailer scans a small set of well-known paths
+	// (nginx/apache error logs, mysql/postgres logs, systemd journal of the
+	// culprit unit), filters for severity keywords, and attaches the top
+	// matches here so the UI can show "the RCA says mysql, and here's what
+	// mysql's error.log said at the same moment."
+	LogExcerpts []LogExcerpt `json:"log_excerpts,omitempty"`
 
 	// Set when UI is showing a pinned result after recovery (sticky RCA).
 	// Value is seconds since health returned to OK. 0 = live incident.
@@ -652,4 +681,93 @@ type GoldenSignalSummary struct {
 	// Saturation proxies
 	SaturationPct       float64          // max of: conntrack%, ephemeral%, runqueue ratio, PSI
 	SaturationBreakdown SaturationDetail // per-component saturation detail
+}
+
+// TraceSample is one OpenTelemetry trace summary correlated with an incident.
+// The engine reads a simple JSONL feed at ~/.xtop/otel-samples.jsonl — an
+// operator can produce it from their existing OTel collector via a
+// processor that emits just these fields. Fields are intentionally minimal:
+// everything needed to link to the full trace in whatever UI the operator
+// already uses (Jaeger/Tempo/etc) plus enough context to display inline.
+type TraceSample struct {
+	TraceID     string    `json:"trace_id"`
+	SpanID      string    `json:"span_id,omitempty"`
+	Service     string    `json:"service,omitempty"`
+	Operation   string    `json:"operation,omitempty"`
+	DurationMs  float64   `json:"duration_ms"`
+	StatusCode  string    `json:"status_code,omitempty"` // "OK", "ERROR", "UNSET"
+	StatusError string    `json:"status_error,omitempty"`
+	StartTime   time.Time `json:"start_time"`
+	URL         string    `json:"url,omitempty"` // optional deep-link into Jaeger/Tempo
+}
+
+// LogExcerpt is one notable line from an application log file, correlated
+// with a live incident. The engine fills these in when an incident is active
+// and the culprit matches a known app — so operators see the database's own
+// "ERROR: slow query" line beside xtop's "mysqld is the culprit" verdict.
+type LogExcerpt struct {
+	App       string    `json:"app"`                 // e.g. "mysql", "nginx"
+	Path      string    `json:"path"`                // source file
+	Line      string    `json:"line"`                // the matched line (trimmed)
+	Severity  string    `json:"severity,omitempty"`  // "ERROR", "WARN", "SLOW", "FATAL", "OOM"
+	Timestamp time.Time `json:"timestamp,omitempty"` // best-effort parse; zero if unparseable
+}
+
+// GuardStatus is the per-tick report from the engine's ResourceGuard. The
+// UI reads this to show a compact status strip when xtop is self-throttling:
+// "[GUARD L2: host load 4.1x] skipping log-tailer, traces, watchdog".
+type GuardStatus struct {
+	Level         int     `json:"level"` // 0 none, 1 caution, 2 degraded, 3 minimal
+	Reason        string  `json:"reason,omitempty"`
+	IntervalSec   int     `json:"interval_sec"`
+	OwnCPUPct     float64 `json:"own_cpu_pct"`
+	HostLoadRatio float64 `json:"host_load_ratio"`
+	Skipped       []string `json:"skipped,omitempty"` // human-readable list of what was skipped
+}
+
+// RunbookMatch is the lightweight reference to a matched runbook file. The
+// full markdown body stays in the engine's in-memory library and on disk —
+// only the preview + path + score travel with AnalysisResult so the payload
+// stays small and fleet-serializable.
+type RunbookMatch struct {
+	Name    string `json:"name"`
+	Path    string `json:"path"`
+	Score   int    `json:"score"`
+	Preview string `json:"preview,omitempty"`
+}
+
+// IncidentDiff is a structured comparison of the current incident against
+// recent similar ones. Populated by the engine's IncidentRecorder when at
+// least one past incident shares the same signature.
+//
+// What the fields mean:
+//   - MatchCount / FirstSeen / LastSeen: how often and how long we've seen this.
+//   - MedianPeakScore / MaxPeakScore: baseline severity; compare with current.
+//   - CurrentPeakScore / ScoreDeltaFromMedian: is THIS incident worse than usual?
+//   - MedianDurationSec: how long these typically last — sets expectations.
+//   - CulpritFrequency: "mysqld was the culprit 4/5 times" signals a repeat offender.
+//   - NewEvidence / MissingEvidence: evidence IDs firing now that weren't in prior
+//     incidents (or vice versa) — the most actionable signal: "this time it's
+//     different because X is also firing."
+//   - SameHourOfDay: count of past occurrences in the same hour-of-day — hints
+//     at scheduled causes (backups, cron jobs).
+//   - DriftHint: plain-English one-liner the UI can show inline.
+type IncidentDiff struct {
+	MatchCount            int       `json:"match_count"`
+	FirstSeen             time.Time `json:"first_seen,omitempty"`
+	LastSeen              time.Time `json:"last_seen,omitempty"`
+	MedianPeakScore       int       `json:"median_peak_score,omitempty"`
+	MaxPeakScore          int       `json:"max_peak_score,omitempty"`
+	CurrentPeakScore      int       `json:"current_peak_score,omitempty"`
+	ScoreDeltaFromMedian  int       `json:"score_delta_from_median,omitempty"`
+	MedianDurationSec     int       `json:"median_duration_sec,omitempty"`
+	CulpritFrequency      map[string]int `json:"culprit_frequency,omitempty"`
+	TopCulprit            string    `json:"top_culprit,omitempty"`
+	TopCulpritCount       int       `json:"top_culprit_count,omitempty"`
+	CurrentCulprit        string    `json:"current_culprit,omitempty"`
+	CulpritIsRepeat       bool      `json:"culprit_is_repeat,omitempty"`
+	NewEvidence           []string  `json:"new_evidence,omitempty"`
+	MissingEvidence       []string  `json:"missing_evidence,omitempty"`
+	SameHourOfDay         int       `json:"same_hour_of_day,omitempty"`
+	DriftHint             string    `json:"drift_hint,omitempty"`
 }

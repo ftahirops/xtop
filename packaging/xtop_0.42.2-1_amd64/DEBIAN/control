@@ -1,0 +1,15 @@
+Package: xtop
+Version: 0.42.2-1
+Section: admin
+Priority: optional
+Architecture: amd64
+Depends: libc6
+Recommends: postgresql, journalctl
+Installed-Size: 23500
+Maintainer: Farhan Tahir <farhan.003@gmail.com>
+Homepage: https://github.com/ftahirops/xtop
+Description: Incident-first root-cause analysis console for Linux
+ v0.42.2 fixes a browser-caching bug: the hub previously served /static/*
+ with "Cache-Control: max-age=31536000, immutable", pinning stale JS for
+ a year. Now uses no-cache/must-revalidate + per-build cache-bust query
+ strings so every hub upgrade instantly pushes new assets.

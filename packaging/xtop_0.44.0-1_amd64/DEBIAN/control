@@ -1,0 +1,19 @@
+Package: xtop
+Version: 0.44.0-1
+Section: admin
+Priority: optional
+Architecture: amd64
+Depends: libc6
+Recommends: postgresql, journalctl
+Installed-Size: 23700
+Maintainer: Farhan Tahir <farhan.003@gmail.com>
+Homepage: https://github.com/ftahirops/xtop
+Description: Incident-first root-cause analysis console for Linux
+ v0.44.0 ships Guardian v2: per-collector cost attribution (EWMA mean,
+ p95, alloc bytes), automatic disable of any collector that exceeds its
+ budget for 3 consecutive ticks, soft+hard heap budgets per mode with
+ cache-flush escalation and self-restart-via-systemd as last resort,
+ audit log at ~/.xtop/guardian.log, and per-host self-resource fields
+ (xtop CPU%, RSS MB, guard level, mode) on every fleet heartbeat.
+ The web dashboard renders these as compact green/red chips on each
+ host card so operators can audit "is xtop the problem?" at a glance.

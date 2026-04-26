@@ -1,6 +1,6 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/xtop-v0.37.4-00d4aa?style=for-the-badge&logo=linux&logoColor=white" alt="version"/>
-  <img src="https://img.shields.io/badge/Go-1.21+-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="go"/>
+  <img src="https://img.shields.io/badge/xtop-v0.46.1-00d4aa?style=for-the-badge&logo=linux&logoColor=white" alt="version"/>
+  <img src="https://img.shields.io/badge/Go-1.25+-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="go"/>
   <img src="https://img.shields.io/badge/eBPF-Powered-ff6600?style=for-the-badge&logo=linux&logoColor=white" alt="ebpf"/>
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="license"/>
   <img src="https://img.shields.io/badge/Platform-Linux-FCC624?style=for-the-badge&logo=linux&logoColor=black" alt="platform"/>
@@ -36,6 +36,28 @@
   <a href="#installation">Full Install Guide</a> &nbsp;&bull;&nbsp;
   <a href="#documentation">Docs</a>
 </p>
+
+---
+
+## What's new in v0.46.1
+
+- **Startup performance** — collectors now run concurrently, `DiagCollector` skips heavy subprocesses on first tick, and `SecurityCollector` `w` command has a 2s timeout. Fixes 10-second hangs on overloaded servers (load 500+).
+- **Module profiles** — `xtop modules` subcommand with presets (minimal/standard/sre/investigation) and per-collector toggles.
+- **Resource Guardian** — self-throttling and memory-pressure protection with automatic collector skip.
+- **eBPF security watchdogs** — TC ingress classifiers for TLS fingerprinting, DNS tunneling, and C2 beacon detection.
+
+## What's new in v0.39.1
+
+- **Multi-host fleet hub** with live web dashboard at `http://hub:9898/` (`xtop hub`)
+- **Fleet TUI** — browse every host's RCA from one terminal (`xtop fleet`)
+- **Post-mortem reports** per incident (`xtop pm @1`)
+- **VM right-sizing** report (`xtop cost`) + named **baselines** (`xtop baseline`)
+- **Runbook library** — drop markdown files in `~/.xtop/runbooks/` and xtop shows the matching one inline
+- **Auto-correlation** in every incident: config drift, app logs, OTel traces, past-incident diff
+- **Kubernetes pod-aware** cgroup view (auto-detects `kubepods.slice`)
+- **Confidence calibration** — RCA learns from incident outcomes
+
+Full change log: [`docs/CHANGES-v0.39.1.md`](docs/CHANGES-v0.39.1.md) · Complete usage guide: [`docs/USAGE.md`](docs/USAGE.md)
 
 ---
 
@@ -150,7 +172,7 @@ The heart of xtop. Four parallel bottleneck detectors continuously score system 
 
 **Trust Gating:** A bottleneck is only reported when **2+ independent evidence groups** confirm it. This eliminates false positives from single-metric spikes. Confidence scales from 30% (2 groups) to 98% (5+ groups).
 
-### RCA Decision Engine (v0.37.4)
+### RCA Decision Engine (v0.39.1)
 
 Beyond raw signals, xtop's **decision engine** tells you EXACTLY what's wrong, why, what caused it, and what to do:
 
@@ -165,7 +187,7 @@ Beyond raw signals, xtop's **decision engine** tells you EXACTLY what's wrong, w
 Press `e` (Explain) to see the full ROOT CAUSE → EVIDENCE → IMPACT → TEMPORAL CAUSALITY → TOP OFFENDERS breakdown.
 Press `Y` to see per-application health diagnostics with deep metrics.
 
-### Statistical RCA Intelligence (v0.37.4)
+### Statistical RCA Intelligence (v0.39.1)
 
 xtop doesn't just check thresholds — it **learns your system's normal behavior** and detects anomalies that static rules would miss. Eight statistical modules run continuously with zero configuration:
 
@@ -590,12 +612,12 @@ xtop -cron-install
 
 ```bash
 # Ubuntu/Debian (amd64)
-wget https://github.com/ftahirops/xtop/releases/download/v0.37.4/xtop_0.37.4-1_amd64.deb
-sudo dpkg -i xtop_0.37.4-1_amd64.deb
+wget https://github.com/ftahirops/xtop/releases/download/v0.46.1/xtop_0.46.1-1_amd64.deb
+sudo dpkg -i xtop_0.46.1-1_amd64.deb
 
 # RHEL/Rocky/Fedora (x86_64)
-wget https://github.com/ftahirops/xtop/releases/download/v0.37.4/xtop-0.37.4-1.x86_64.rpm
-sudo rpm -i xtop-0.37.4-1.x86_64.rpm
+wget https://github.com/ftahirops/xtop/releases/download/v0.46.1/xtop-0.46.1-1.x86_64.rpm
+sudo rpm -i xtop-0.46.1-1.x86_64.rpm
 
 # Arch Linux
 git clone https://github.com/ftahirops/xtop.git
@@ -607,7 +629,7 @@ cd xtop/packaging/archlinux && makepkg -si
 ```bash
 git clone https://github.com/ftahirops/xtop.git
 cd xtop
-CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.37.4" -o xtop .
+CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.46.1" -o xtop .
 sudo install -m 755 xtop /usr/local/bin/xtop
 ```
 
@@ -639,15 +661,15 @@ sudo xtop -json | jq   # JSON for scripting
 ### From .deb Package (Ubuntu 22.04/24.04, Debian)
 
 ```bash
-wget https://github.com/ftahirops/xtop/releases/download/v0.37.4/xtop_0.37.4-1_amd64.deb
-sudo dpkg -i xtop_0.37.4-1_amd64.deb
+wget https://github.com/ftahirops/xtop/releases/download/v0.46.1/xtop_0.46.1-1_amd64.deb
+sudo dpkg -i xtop_0.46.1-1_amd64.deb
 ```
 
 ### From .rpm Package (Rocky Linux, RHEL, AlmaLinux, Fedora)
 
 ```bash
-wget https://github.com/ftahirops/xtop/releases/download/v0.37.4/xtop-0.37.4-1.x86_64.rpm
-sudo rpm -i xtop-0.37.4-1.x86_64.rpm
+wget https://github.com/ftahirops/xtop/releases/download/v0.46.1/xtop-0.46.1-1.x86_64.rpm
+sudo rpm -i xtop-0.46.1-1.x86_64.rpm
 ```
 
 ### Arch Linux (PKGBUILD)
@@ -669,7 +691,7 @@ Builds from source automatically. Optional dependencies: `nvidia-utils` (GPU mon
 ```bash
 git clone https://github.com/ftahirops/xtop.git
 cd xtop
-CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.37.4" -o xtop .
+CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.46.1" -o xtop .
 sudo install -m 755 xtop /usr/local/bin/xtop
 ```
 

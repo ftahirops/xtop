@@ -124,11 +124,334 @@ func renderAppsPage(snap *model.Snapshot, selectedIdx int, detailMode bool,
 
 	sb.WriteString(boxBot(iw) + "\n")
 
+	// ── Resource Share panel (SRE view) ───────────────────────────────────
+	// Each dimension is reported independently (no composite score) with
+	// rank + capacity share + headroom. When an incident is firing, the
+	// bottleneck dimension's column shows each app's contribution share.
+	sb.WriteString(renderAppsResourceShare(snap, iw))
+
 	// Service probes section (merged from Services page)
 	sb.WriteString(renderAppsServiceProbes(snap, iw))
 
 	sb.WriteString(pageFooter("j/k:Navigate  Enter:Details  Y:Apps"))
 	return sb.String()
+}
+
+// renderAppsResourceShare renders the per-app resource breakdown table plus
+// the "top 5 consumers per dimension" block and, when an incident is active,
+// the contribution-to-bottleneck highlight.
+func renderAppsResourceShare(snap *model.Snapshot, iw int) string {
+	apps := snap.Global.Apps.Instances
+	if len(apps) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("\n")
+	sb.WriteString(titleStyle.Render("RESOURCE SHARE"))
+	sb.WriteString(dimStyle.Render("   per-dimension rank · capacity share · headroom  (no composite % — each dim is independent)"))
+	sb.WriteString("\n\n")
+
+	// Detect active bottleneck from the first app's Share.BottleneckDimension
+	// (the enrichment pass sets the same dim on every app).
+	activeDim := ""
+	for i := range apps {
+		if apps[i].Share.BottleneckDimension != "" {
+			activeDim = apps[i].Share.BottleneckDimension
+			break
+		}
+	}
+
+	// Banner when an incident is firing.
+	if activeDim != "" {
+		banner := fmt.Sprintf("  %s %s is the active bottleneck — BOTTLENECK column shows each app's contribution",
+			warnStyle.Render("⚠"), strings.ToUpper(activeDim))
+		sb.WriteString(warnStyle.Render(banner))
+		sb.WriteString("\n\n")
+	}
+
+	// ── Per-app table ────────────────────────────────────────────────────
+	colApp := 18
+	colImpact := 8
+	colCPU := 18   // "2.80/4c  (70%)"
+	colMem := 18   // "12.3/32G (38%)"
+	colIO := 14    // "45 MB/s (37%)"
+	colConn := 8
+	colRank := 18  // "CPU#1 MEM#2 IO#3"
+	colBottle := 0
+	if activeDim != "" {
+		colBottle = 10 // "72%"
+	}
+
+	sep := dimStyle.Render(" │ ")
+	header := fmt.Sprintf("  %s%s%s%s%s%s%s%s%s%s%s%s%s",
+		styledPad(dimStyle.Render("App"), colApp), sep,
+		styledPad(dimStyle.Render("Impact"), colImpact), sep,
+		styledPad(dimStyle.Render("CPU (cores/%)"), colCPU), sep,
+		styledPad(dimStyle.Render("Mem (RSS/%)"), colMem), sep,
+		styledPad(dimStyle.Render("IO MB/s"), colIO), sep,
+		styledPad(dimStyle.Render("Conns"), colConn), sep,
+		styledPad(dimStyle.Render("Ranks"), colRank))
+	if activeDim != "" {
+		header += sep + styledPad(warnStyle.Render("Bottleneck%"), colBottle)
+	}
+
+	sb.WriteString(boxTop(iw) + "\n")
+	sb.WriteString(boxRow(header, iw) + "\n")
+	sb.WriteString(boxMid(iw) + "\n")
+
+	for i := range apps {
+		a := &apps[i]
+		sh := a.Share
+
+		name := a.DisplayName
+		if len(name) > colApp-2 {
+			name = name[:colApp-2]
+		}
+
+		cpuCell := fmt.Sprintf("%.2fc (%s)",
+			sh.CPUCoresUsed, colorPctOfCapacity(sh.CPUPctOfSystem))
+		memCell := fmt.Sprintf("%s (%s)",
+			appFmtMem(float64(sh.MemRSSBytes)/1024/1024),
+			colorPctOfCapacity(sh.MemPctOfSystem))
+		ioCell := fmt.Sprintf("%.1f", sh.ReadMBs+sh.WriteMBs)
+		if sh.IOPctOfBusiest > 0.5 {
+			ioCell += fmt.Sprintf(" (%s)", colorPctOfCapacity(sh.IOPctOfBusiest))
+		}
+		connCell := fmt.Sprintf("%d", sh.NetConns)
+		impactCell := impactScoreCell(sh.Impact)
+		rankCell := fmtRankQuad(sh.RankCPU, sh.RankMem, sh.RankIO, sh.RankNet)
+
+		row := fmt.Sprintf("  %s%s%s%s%s%s%s%s%s%s%s%s%s",
+			styledPad(valueStyle.Render(name), colApp), sep,
+			styledPad(impactCell, colImpact), sep,
+			styledPad(cpuCell, colCPU), sep,
+			styledPad(memCell, colMem), sep,
+			styledPad(ioCell, colIO), sep,
+			styledPad(valueStyle.Render(connCell), colConn), sep,
+			styledPad(rankCell, colRank))
+		if activeDim != "" {
+			var bottle string
+			if sh.BottleneckSharePct >= 1 {
+				bottle = colorBottleneckShare(sh.BottleneckSharePct)
+			} else {
+				bottle = dimStyle.Render("—")
+			}
+			row += sep + styledPad(bottle, colBottle)
+		}
+		sb.WriteString(boxRow(row, iw) + "\n")
+	}
+	sb.WriteString(boxBot(iw) + "\n")
+
+	// ── Top-5-per-dimension panel ────────────────────────────────────────
+	// "Who are the top consumers on each axis?" — the single most-asked
+	// question in an incident room, answered at a glance.
+	sb.WriteString(renderTopConsumersPanel(apps, iw))
+	return sb.String()
+}
+
+// renderTopConsumersPanel renders a 4-column mini-table inside a proper box,
+// with vertical separators between dimensions and a tight per-cell width so
+// wide terminals don't produce huge whitespace gaps. Each cell shows
+// "#N name  value" — rank first so the eye picks up the ordering.
+func renderTopConsumersPanel(apps []model.AppInstance, iw int) string {
+	var sb strings.Builder
+	sb.WriteString("\n")
+	sb.WriteString(titleStyle.Render("  TOP 5 CONSUMERS PER DIMENSION"))
+	sb.WriteString("\n")
+
+	// Build the four rank lists. Each value is a plain string — colors live
+	// on the main resource-share table, not here, to keep this compact.
+	cpuTop := topBy(apps, 5, func(a *model.AppInstance) float64 { return a.Share.CPUCoresUsed },
+		func(a *model.AppInstance) (string, string) {
+			return truncName(a.DisplayName, 14),
+				fmt.Sprintf("%.2fc %.0f%%", a.Share.CPUCoresUsed, a.Share.CPUPctOfSystem)
+		})
+	memTop := topBy(apps, 5, func(a *model.AppInstance) float64 { return float64(a.Share.MemRSSBytes) },
+		func(a *model.AppInstance) (string, string) {
+			return truncName(a.DisplayName, 14),
+				fmt.Sprintf("%s %.0f%%", appFmtMem(float64(a.Share.MemRSSBytes)/1024/1024), a.Share.MemPctOfSystem)
+		})
+	ioTop := topBy(apps, 5, func(a *model.AppInstance) float64 { return a.Share.ReadMBs + a.Share.WriteMBs },
+		func(a *model.AppInstance) (string, string) {
+			return truncName(a.DisplayName, 14),
+				fmt.Sprintf("%.1f MB/s", a.Share.ReadMBs+a.Share.WriteMBs)
+		})
+	netTop := topBy(apps, 5, func(a *model.AppInstance) float64 { return float64(a.Share.NetConns) },
+		func(a *model.AppInstance) (string, string) {
+			return truncName(a.DisplayName, 14),
+				fmt.Sprintf("%d conns", a.Share.NetConns)
+		})
+
+	// Each column shows: "#N  <14-char name>  <12-char value>" → 2+1+14+2+12 = 31 chars
+	// Four columns + 3 " │ " separators + leading "  " → 31*4 + 9 + 2 = 135 chars total.
+	// We stay well inside the standard iw (160+ common), and gracefully
+	// truncate names for narrower terminals.
+	const (
+		rankW  = 3  // "#1 "
+		nameW  = 14
+		valueW = 12
+		cellW  = rankW + nameW + 1 + valueW // 30
+	)
+
+	sep := dimStyle.Render(" │ ")
+	sb.WriteString(boxTop(iw) + "\n")
+
+	// Header row
+	header := fmt.Sprintf("  %s%s%s%s%s%s%s",
+		styledPad(titleStyle.Render("CPU"), cellW), sep,
+		styledPad(titleStyle.Render("Memory"), cellW), sep,
+		styledPad(titleStyle.Render("IO"), cellW), sep,
+		styledPad(titleStyle.Render("Network"), cellW))
+	sb.WriteString(boxRow(header, iw) + "\n")
+	sb.WriteString(boxMid(iw) + "\n")
+
+	maxRows := max4(len(cpuTop), len(memTop), len(ioTop), len(netTop))
+	for i := 0; i < maxRows; i++ {
+		cpu := fmtRankedCell(cpuTop, i, rankW, nameW, valueW)
+		mem := fmtRankedCell(memTop, i, rankW, nameW, valueW)
+		io := fmtRankedCell(ioTop, i, rankW, nameW, valueW)
+		net := fmtRankedCell(netTop, i, rankW, nameW, valueW)
+		row := fmt.Sprintf("  %s%s%s%s%s%s%s",
+			styledPad(cpu, cellW), sep,
+			styledPad(mem, cellW), sep,
+			styledPad(io, cellW), sep,
+			styledPad(net, cellW))
+		sb.WriteString(boxRow(row, iw) + "\n")
+	}
+	sb.WriteString(boxBot(iw) + "\n")
+	return sb.String()
+}
+
+// fmtRankedCell renders one "#N  name  value" cell, or a blank spacer when
+// the rank row doesn't exist for this dimension (fewer consumers than max).
+// `padRight` comes from ui/components.go — we reuse it for plain strings;
+// rank number is pre-styled and padded with styledPad so its ANSI escapes
+// don't distort the measured width.
+func fmtRankedCell(rows []rankedRow, i, rankW, nameW, valueW int) string {
+	if i >= len(rows) {
+		return strings.Repeat(" ", rankW+nameW+1+valueW)
+	}
+	r := rows[i]
+	rank := styledPad(dimStyle.Render(fmt.Sprintf("#%d", i+1)), rankW)
+	name := valueStyle.Render(padRight(r.name, nameW))
+	value := valueStyle.Render(padRight(r.value, valueW))
+	return fmt.Sprintf("%s %s %s", rank, name, value)
+}
+
+// rankedRow is a (name, value) pair fed to the top-N consumer panel.
+type rankedRow struct {
+	name  string
+	value string
+}
+
+// ── Small helpers local to the Resource Share view ──────────────────────────
+
+// colorPctOfCapacity picks a color based on 0..100 share of total capacity.
+// The ramp is deliberately conservative — we don't want "yellow" for a
+// well-behaved app at 30% of system CPU.
+func colorPctOfCapacity(pct float64) string {
+	switch {
+	case pct >= 80:
+		return critStyle.Render(fmt.Sprintf("%.0f%%", pct))
+	case pct >= 50:
+		return warnStyle.Render(fmt.Sprintf("%.0f%%", pct))
+	case pct >= 20:
+		return valueStyle.Render(fmt.Sprintf("%.0f%%", pct))
+	default:
+		return dimStyle.Render(fmt.Sprintf("%.0f%%", pct))
+	}
+}
+
+// colorBottleneckShare is more aggressive — during an active bottleneck, an
+// app contributing 40%+ is a smoking-gun culprit.
+func colorBottleneckShare(pct float64) string {
+	switch {
+	case pct >= 50:
+		return critStyle.Render(fmt.Sprintf("%.0f%%", pct))
+	case pct >= 25:
+		return warnStyle.Render(fmt.Sprintf("%.0f%%", pct))
+	default:
+		return valueStyle.Render(fmt.Sprintf("%.0f%%", pct))
+	}
+}
+
+func impactScoreCell(score float64) string {
+	if score <= 0 {
+		return dimStyle.Render("—")
+	}
+	switch {
+	case score >= 70:
+		return critStyle.Render(fmt.Sprintf("%.0f", score))
+	case score >= 40:
+		return warnStyle.Render(fmt.Sprintf("%.0f", score))
+	default:
+		return valueStyle.Render(fmt.Sprintf("%.0f", score))
+	}
+}
+
+// fmtRankQuad renders compact per-dim ranks like "C#1 M#2 I#— N#3". Unranked
+// dimensions render as "—" to avoid confusing them with "rank zero."
+func fmtRankQuad(c, m, io, n int) string {
+	fmtOne := func(r int) string {
+		if r == 0 {
+			return "—"
+		}
+		return fmt.Sprintf("#%d", r)
+	}
+	return fmt.Sprintf("C%s M%s I%s N%s",
+		fmtOne(c), fmtOne(m), fmtOne(io), fmtOne(n))
+}
+
+// topBy returns the top-N apps by a picker function, rendered as (name,
+// value) pairs. Apps with value <= 0 are excluded so the panel never shows
+// padding rows masquerading as data.
+func topBy(apps []model.AppInstance, n int,
+	pick func(*model.AppInstance) float64,
+	render func(*model.AppInstance) (string, string)) []rankedRow {
+	type idxVal struct {
+		a *model.AppInstance
+		v float64
+	}
+	pairs := make([]idxVal, 0, len(apps))
+	for i := range apps {
+		v := pick(&apps[i])
+		if v <= 0 {
+			continue
+		}
+		pairs = append(pairs, idxVal{a: &apps[i], v: v})
+	}
+	sort.Slice(pairs, func(a, b int) bool { return pairs[a].v > pairs[b].v })
+	if len(pairs) > n {
+		pairs = pairs[:n]
+	}
+	out := make([]rankedRow, len(pairs))
+	for i := range pairs {
+		name, val := render(pairs[i].a)
+		out[i] = rankedRow{name: name, value: val}
+	}
+	return out
+}
+
+func truncName(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n-1] + "…"
+}
+
+func max4(a, b, c, d int) int {
+	m := a
+	if b > m {
+		m = b
+	}
+	if c > m {
+		m = c
+	}
+	if d > m {
+		m = d
+	}
+	return m
 }
 
 // ── Generic App Detail ─────────────────────────────────────────────────

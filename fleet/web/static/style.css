@@ -1,0 +1,223 @@
+:root {
+  --bg:        #282a36;
+  --bg-alt:   #1e2029;
+  --panel:    #333544;
+  --border:   #44475a;
+  --fg:       #f8f8f2;
+  --muted:    #6272a4;
+  --dim:      #8c8ea8;
+  --cyan:     #8be9fd;
+  --green:    #50fa7b;
+  --purple:   #bd93f9;
+  --pink:     #ff79c6;
+  --orange:   #ffb86c;
+  --red:      #ff5555;
+  --yellow:   #f1fa8c;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0; padding: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+}
+
+header {
+  display: flex; align-items: baseline; justify-content: space-between;
+  padding: 12px 24px;
+  background: var(--bg-alt);
+  border-bottom: 1px solid var(--border);
+}
+
+header h1 { margin: 0; font-size: 18px; font-weight: 600; }
+.brand { color: var(--purple); }
+.muted { color: var(--muted); }
+.sep { color: var(--border); margin: 0 8px; }
+
+.status { color: var(--dim); font-size: 13px; }
+.dot {
+  display: inline-block;
+  width: 8px; height: 8px; border-radius: 50%;
+  vertical-align: middle; margin-right: 6px;
+}
+.dot-green { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.dot-red   { background: var(--red);   box-shadow: 0 0 6px var(--red); }
+.dot-gray  { background: var(--muted); }
+
+main { padding: 20px 24px 40px; max-width: 1600px; margin: 0 auto; }
+
+section { margin-bottom: 36px; }
+
+.section-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 12px;
+}
+.section-head h2 {
+  margin: 0; font-size: 15px; font-weight: 600;
+  color: var(--cyan); text-transform: uppercase; letter-spacing: 0.05em;
+}
+
+.filters { display: flex; align-items: center; gap: 16px; }
+.filters input[type="search"] {
+  padding: 6px 10px; font: inherit;
+  background: var(--panel); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 4px;
+  min-width: 280px;
+}
+.filters label { color: var(--dim); font-size: 13px; }
+
+select#inc-window {
+  padding: 4px 8px; font: inherit;
+  background: var(--panel); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 4px;
+}
+
+/* Host grid ─────────────────────────────────────────────── */
+.host-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 12px;
+}
+
+.host-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px 14px;
+  cursor: pointer;
+  transition: border-color 0.15s, transform 0.05s;
+}
+.host-card:hover { border-color: var(--purple); }
+.host-card:active { transform: translateY(1px); }
+
+.host-card.h-ok       { border-left: 4px solid var(--green); }
+.host-card.h-degraded { border-left: 4px solid var(--yellow); }
+.host-card.h-critical { border-left: 4px solid var(--red); }
+.host-card.h-inc      { border-left: 4px solid var(--orange); }
+.host-card.h-expired  { border-left: 4px solid var(--muted); opacity: 0.55; }
+
+.host-head {
+  display: flex; justify-content: space-between; align-items: baseline;
+  margin-bottom: 8px;
+}
+.host-name { font-weight: 600; font-size: 15px; }
+.host-badge {
+  font-size: 11px; padding: 2px 8px; border-radius: 10px;
+  font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
+}
+.badge-ok       { background: rgba(80,250,123,0.15); color: var(--green); }
+.badge-degraded { background: rgba(241,250,140,0.15); color: var(--yellow); }
+.badge-critical { background: rgba(255,85,85,0.15); color: var(--red); }
+.badge-inc      { background: rgba(255,184,108,0.15); color: var(--orange); }
+.badge-expired  { background: rgba(98,114,164,0.2); color: var(--dim); }
+
+.host-meta { color: var(--dim); font-size: 12px; }
+.host-bottleneck { color: var(--orange); font-weight: 500; }
+.host-culprit { color: var(--pink); }
+
+.metrics {
+  display: grid; grid-template-columns: repeat(4, 1fr);
+  gap: 8px; margin-top: 10px;
+  font-size: 12px;
+}
+.metric { text-align: center; }
+.metric-val { font-size: 14px; font-weight: 600; }
+.metric-label { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; }
+
+.m-warn { color: var(--yellow); }
+.m-crit { color: var(--red); }
+.m-ok   { color: var(--green); }
+.m-mute { color: var(--dim); }
+
+/* Fact chips — the compact hardware/version/tag row underneath the main
+   metrics, so healthy cards still carry signal. */
+.host-facts {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  margin-top: 10px;
+  font-size: 11px;
+}
+.chip {
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 7px;
+  display: inline-flex; gap: 5px; align-items: baseline;
+  line-height: 1.5;
+}
+.chip-mute { opacity: 0.7; }
+.chip-k { color: var(--muted); text-transform: uppercase; font-size: 9px; letter-spacing: 0.04em; }
+.chip-v { color: var(--fg); font-family: ui-monospace, SFMono-Regular, monospace; }
+
+/* Self-resource chips — surfaces xtop's own footprint per host so the
+   operator can audit "is the observability tool the problem?" at a glance.
+   chip-self is the calm green-tinted look for healthy values; chip-danger
+   takes over when xtop's own CPU/RSS or guard level hits a worrying band. */
+.host-facts-self { margin-top: 4px; }
+.chip-self { background: rgba(80,250,123,0.08); border-color: rgba(80,250,123,0.25); }
+.chip-self .chip-v { color: var(--green); }
+.chip-danger { background: rgba(255,85,85,0.12); border-color: rgba(255,85,85,0.4); }
+.chip-danger .chip-v { color: var(--red); }
+.chip-danger .chip-k { color: var(--red); }
+
+/* Incidents table ───────────────────────────────────────── */
+table.incidents {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+table.incidents th {
+  text-align: left; padding: 10px 14px;
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--muted); background: var(--bg-alt);
+  border-bottom: 1px solid var(--border);
+}
+table.incidents td {
+  padding: 9px 14px; border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+table.incidents tr:last-child td { border-bottom: none; }
+table.incidents tr.clickable { cursor: pointer; }
+table.incidents tr.clickable:hover { background: rgba(189,147,249,0.08); }
+
+.state-started   { color: var(--red); }
+.state-updated   { color: var(--orange); }
+.state-escalated { color: var(--pink); }
+.state-resolved  { color: var(--green); }
+
+/* Drawer ────────────────────────────────────────────────── */
+.drawer {
+  position: fixed; top: 0; right: 0;
+  width: min(540px, 100%); height: 100vh;
+  background: var(--bg-alt);
+  border-left: 1px solid var(--border);
+  box-shadow: -12px 0 32px rgba(0,0,0,0.4);
+  overflow-y: auto;
+  transition: transform 0.2s ease-out;
+  z-index: 100;
+}
+.drawer.hidden { transform: translateX(100%); }
+
+.drawer-head {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+.drawer-head h3 { margin: 0; color: var(--cyan); }
+#drawer-close {
+  background: none; border: none; color: var(--dim);
+  font-size: 26px; line-height: 1; cursor: pointer; padding: 0 6px;
+}
+#drawer-close:hover { color: var(--fg); }
+#drawer-body { padding: 18px 20px; }
+
+.kv { display: grid; grid-template-columns: 120px 1fr; gap: 6px 14px; margin-bottom: 20px; }
+.kv dt { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; }
+.kv dd { margin: 0; color: var(--fg); font-family: ui-monospace, SFMono-Regular, monospace; font-size: 13px; }
+
+.empty { color: var(--dim); padding: 24px; text-align: center; font-style: italic; }

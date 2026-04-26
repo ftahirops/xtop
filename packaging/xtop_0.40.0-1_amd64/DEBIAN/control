@@ -1,0 +1,20 @@
+Package: xtop
+Version: 0.40.0-1
+Section: admin
+Priority: optional
+Architecture: amd64
+Depends: libc6
+Recommends: journalctl, docker-compose, postgresql-client
+Installed-Size: 23300
+Maintainer: Farhan Tahir <farhan.003@gmail.com>
+Homepage: https://github.com/ftahirops/xtop
+Description: Incident-first root-cause analysis console for Linux
+ xtop is a terminal-based system monitor with ranked root-cause hypotheses,
+ evidence scoring, and eBPF deep diagnostics. v0.40.0 adds a full-filesystem
+ polite big-file scanner (ionice IDLE class + adaptive IO pacing, opt-in via
+ XTOP_DEEP_SCAN=1) plus elevated inode-usage visibility across the disk
+ section. Includes everything from 0.39.x: SRE Resource Share panel on Apps
+ page, multi-host fleet hub with web dashboard, incident diff, config drift,
+ app-log + OTel correlation, runbook library, postmortem tooling, VM cost
+ right-sizing, named baselines, Kubernetes pod-aware view, confidence
+ calibration, skew-aware CUSUM change-point detection.

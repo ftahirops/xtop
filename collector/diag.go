@@ -18,10 +18,11 @@ import (
 
 // DiagCollector runs per-service diagnostic analyzers.
 type DiagCollector struct {
-	interval time.Duration
-	mu       sync.Mutex
-	lastRun  time.Time
-	cached   model.DiagMetrics
+	interval  time.Duration
+	mu        sync.Mutex
+	lastRun   time.Time
+	cached    model.DiagMetrics
+	firstTick bool
 }
 
 func (d *DiagCollector) Name() string { return "diag" }
@@ -35,6 +36,16 @@ func (d *DiagCollector) Collect(snap *model.Snapshot) error {
 	defer d.mu.Unlock()
 
 	if time.Since(d.lastRun) < d.interval && len(d.cached.Services) > 0 {
+		snap.Global.Diagnostics = d.cached
+		return nil
+	}
+
+	// On the very first tick, skip the heavy diagnostic subprocesses so
+	// the UI can render basic system metrics immediately. The cache will
+	// warm on the next tick after the interval elapses.
+	if d.firstTick {
+		d.firstTick = false
+		d.lastRun = time.Now()
 		snap.Global.Diagnostics = d.cached
 		return nil
 	}
@@ -1170,4 +1181,3 @@ func DiagAll(target string) []model.ServiceDiag {
 	}
 	return results
 }
-

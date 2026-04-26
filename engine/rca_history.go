@@ -26,6 +26,12 @@ type RCAIncident struct {
 	RootCause      string    `json:"root_cause,omitempty"`
 	Evidence       []string  `json:"evidence,omitempty"`
 
+	// EvidenceIDs are the firing evidence IDs at incident peak — used by
+	// DiffAgainstHistory to compute which signals are new or missing this
+	// time around. Older history files may lack this field; diff gracefully
+	// degrades to using the narrative Evidence strings instead.
+	EvidenceIDs []string `json:"evidence_ids,omitempty"`
+
 	// Signature for similarity matching — stable hash of firing evidence IDs
 	Signature string `json:"signature"`
 
@@ -41,6 +47,22 @@ type IncidentRecorder struct {
 	path     string               // ~/.xtop/rca-history.jsonl
 	maxKeep  int                  // max history entries
 	signatureIndex map[string][]int // signature → list of history indices
+}
+
+// Active returns a copy of the currently active incident, or nil if the
+// system is healthy. Used by the confidence calibrator to detect incident
+// completions at the moment health flips back to OK.
+func (r *IncidentRecorder) Active() *RCAIncident {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.active == nil {
+		return nil
+	}
+	cp := *r.active
+	return &cp
 }
 
 // NewIncidentRecorder creates a recorder that persists to ~/.xtop/rca-history.jsonl.
@@ -132,6 +154,7 @@ func (r *IncidentRecorder) Record(result *model.AnalysisResult) *RCAIncident {
 			}
 			r.active.Evidence = append([]string(nil), result.Narrative.Evidence[:n]...)
 		}
+		r.active.EvidenceIDs = collectFiringEvidenceIDs(result)
 	} else {
 		// Update active incident with worst values seen
 		if result.PrimaryScore > r.active.PeakScore {
@@ -159,10 +182,40 @@ func (r *IncidentRecorder) Record(result *model.AnalysisResult) *RCAIncident {
 				r.active.RootCause = result.Narrative.RootCause
 				r.active.Pattern = result.Narrative.Pattern
 			}
+			r.active.EvidenceIDs = collectFiringEvidenceIDs(result)
+		} else {
+			// Same signature — refresh the snapshot of IDs so "new evidence"
+			// in DiffAgainstHistory reflects the incident at its current peak.
+			if ids := collectFiringEvidenceIDs(result); len(ids) > 0 {
+				r.active.EvidenceIDs = ids
+			}
 		}
 	}
 
 	return r.active
+}
+
+// collectFiringEvidenceIDs returns the evidence IDs currently firing (strength
+// > 0.35) for the primary bottleneck. Mirrors the set used by
+// signatureFromResult but keeps all firing IDs, not just the top 3.
+func collectFiringEvidenceIDs(result *model.AnalysisResult) []string {
+	if result == nil {
+		return nil
+	}
+	var ids []string
+	for _, rca := range result.RCA {
+		if rca.Bottleneck != result.PrimaryBottleneck {
+			continue
+		}
+		for _, ev := range rca.EvidenceV2 {
+			if ev.Strength > 0.35 && ev.ID != "" {
+				ids = append(ids, ev.ID)
+			}
+		}
+		break
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 // appendToHistory adds a completed incident to history and persists to disk.

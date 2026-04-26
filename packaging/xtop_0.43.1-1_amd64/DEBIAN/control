@@ -1,0 +1,17 @@
+Package: xtop
+Version: 0.43.1-1
+Section: admin
+Priority: optional
+Architecture: amd64
+Depends: libc6
+Recommends: postgresql, journalctl
+Installed-Size: 23600
+Maintainer: Farhan Tahir <farhan.003@gmail.com>
+Homepage: https://github.com/ftahirops/xtop
+Description: Incident-first root-cause analysis console for Linux
+ v0.43.1 introduces lean daemon mode: when started with --fleet-hub the
+ agent now uses a 9-collector essentials-only set, caps history ring at
+ 30 snapshots (down from 600), and runs a 5-minute memory-relief loop
+ that returns idle pages to the OS. Eliminates the multi-GB RSS growth
+ seen on long-running container hosts. Override with XTOP_DAEMON_RICH=1
+ to restore the legacy rich-collector behavior.

@@ -23,7 +23,7 @@ import (
 )
 
 // Version is set at build time via ldflags.
-var Version = "0.37.4"
+var Version = "0.46.1"
 
 // Config holds CLI configuration.
 type Config struct {
@@ -46,8 +46,8 @@ type Config struct {
 	DoctorMode    bool
 	AppDoctorMode bool
 	DiscoverMode  bool
-	CronMode     bool
-	AlertMode    bool
+	CronMode      bool
+	AlertMode     bool
 	// Forensics mode
 	ForensicsMode bool
 	// Diagnose mode
@@ -169,13 +169,23 @@ Subcommand Examples:
 
 // subcommands lists known subcommand names for pre-parse dispatch.
 var subcommands = map[string]func([]string) error{
-	"why":       runWhy,
-	"top":       runTop,
-	"proc":      runProc,
-	"incidents": runIncidents,
-	"incident":  runIncident,
-	"export":    runExport,
-	"flame":     runFlame,
+	"why":        runWhy,
+	"top":        runTop,
+	"proc":       runProc,
+	"incidents":  runIncidents,
+	"incident":   runIncident,
+	"export":     runExport,
+	"flame":      runFlame,
+	"hub":        runHubDispatcher,
+	"agent":      runAgent,
+	"setup":      runSetup,
+	"modules":    runModules,
+	"fleet":      runFleetView,
+	"postmortem": runPostmortem,
+	"pm":         runPostmortem, // short alias; "xtop pm @1"
+	"cost":       runCost,
+	"rightsize":  runCost, // descriptive alias
+	"baseline":   runBaseline,
 }
 
 // Run parses flags and starts the application.
@@ -253,6 +263,12 @@ func Run() error {
 	flag.BoolVar(&cfg.MaskIPs, "mask-ips", false, "Mask IP addresses in output (for demos/screenshots)")
 	var updateMode bool
 	flag.BoolVar(&updateMode, "update", false, "Check for latest release on GitHub and install it")
+	// Fleet (multi-host aggregation) flags
+	var fleetHub, fleetToken string
+	var fleetInsecure bool
+	flag.StringVar(&fleetHub, "fleet-hub", "", "xtop hub URL to push heartbeats/incidents to (e.g. https://hub:9200)")
+	flag.StringVar(&fleetToken, "fleet-token", "", "Auth token for the xtop hub")
+	flag.BoolVar(&fleetInsecure, "fleet-insecure", true, "Skip TLS verification for the fleet hub (default true for self-signed)")
 
 	flag.Usage = printUsage
 	flag.Parse()
@@ -401,6 +417,11 @@ func Run() error {
 
 	// --daemon mode
 	if cfg.DaemonMode {
+		// Resolve fleet config from CLI flags / env / file so the daemon
+		// pushes to the hub when the operator asked for it. Mirrors the
+		// path the foreground TUI takes below, just without instantiating
+		// the client outside RunDaemon's engine.
+		fleetCfg := resolveFleetAgentConfig(cfg.DataDir, fleetHub, fleetToken, fleetInsecure)
 		return engine.RunDaemon(engine.DaemonConfig{
 			DataDir:  cfg.DataDir,
 			Interval: cfg.Interval,
@@ -414,12 +435,21 @@ func Run() error {
 				TelegramBotToken: userCfg.Alerts.TelegramBotToken,
 				TelegramChatID:   userCfg.Alerts.TelegramChatID,
 			},
+			Fleet:   fleetCfg,
+			Version: Version,
 		})
 	}
 
 	// Create engine
 	eng := engine.NewEngine(cfg.HistorySize, intervalSec)
 	defer eng.Close()
+
+	// Attach fleet push client if configured (CLI flags override ~/.xtop/fleet.json)
+	if fc := buildFleetClient(cfg.DataDir, fleetHub, fleetToken, fleetInsecure); fc != nil {
+		eng.AttachFleetClient(fc, Version)
+		fmt.Fprintf(os.Stderr, "Fleet: pushing to %s as agent %s\n",
+			fc.HubURL(), fc.AgentID())
+	}
 
 	// -json mode: single snapshot to stdout
 	if cfg.JSONMode {

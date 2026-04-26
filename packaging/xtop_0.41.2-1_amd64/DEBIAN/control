@@ -1,0 +1,16 @@
+Package: xtop
+Version: 0.41.2-1
+Section: admin
+Priority: optional
+Architecture: amd64
+Depends: libc6
+Recommends: postgresql, journalctl
+Installed-Size: 23400
+Maintainer: Farhan Tahir <farhan.003@gmail.com>
+Homepage: https://github.com/ftahirops/xtop
+Description: Incident-first root-cause analysis console for Linux
+ v0.41.2 fixes two fleet-mode bugs: the embedded web dashboard no longer
+ returns 401 on /v1/hosts and /v1/incidents (hub now sets a cookie on the
+ HTML page and accepts either cookie or header on read endpoints); and
+ xtop --daemon --fleet-hub ... actually pushes to the hub now (previously
+ the daemon path skipped fleet-client initialization).

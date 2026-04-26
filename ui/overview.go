@@ -509,14 +509,18 @@ func extractSubsystems(snap *model.Snapshot, rates *model.RateSnapshot, result *
 		var worstMount string
 		var worstETA float64 = -1
 		var worstInodePct float64
+		var worstInodeMount string
 		for _, mr := range rates.MountRates {
 			if mr.FreePct < worstFreePct {
 				worstFreePct = mr.FreePct
 				worstMount = mr.MountPoint
 				worstETA = mr.ETASeconds
 			}
+			// Track the worst-inode mount separately — a mount can be 10% full
+			// of bytes but 95% full of inodes (e.g. Maildir, npm projects).
 			if mr.InodeUsedPct > worstInodePct {
 				worstInodePct = mr.InodeUsedPct
+				worstInodeMount = mr.MountPoint
 			}
 		}
 		usedPct := 100 - worstFreePct
@@ -554,10 +558,31 @@ func extractSubsystems(snap *model.Snapshot, rates *model.RateSnapshot, result *
 		if intermediate {
 			worstMountVal += " " + metricVerdict(usedPct, 80, 95)
 		}
+
+		// Elevate the worst inode mount to critical when either dimension is
+		// tight. The label includes the mount so "Inode usage: 95%" doesn't
+		// get confused with a different mount's byte usage.
 		inodeVal := fmt.Sprintf("%.0f%%", worstInodePct)
+		if worstInodeMount != "" && worstInodeMount != worstMount {
+			inodeVal = fmt.Sprintf("%.0f%% on %s", worstInodePct, worstInodeMount)
+		}
 		if intermediate {
 			inodeVal += " " + metricVerdict(worstInodePct, 80, 95)
 		}
+
+		// Promote Disk Space block to RED when inodes are critical even if
+		// bytes look fine — inode exhaustion causes the same "No space left
+		// on device" errors as byte exhaustion.
+		if worstInodePct > 90 && disk.Status != "RED" {
+			disk.Status = "RED"
+			disk.StatusStyle = critStyle
+			disk.PressureStr = "INODE CRITICAL"
+		} else if worstInodePct > 75 && disk.Status == "GREEN" {
+			disk.Status = "YELLOW"
+			disk.StatusStyle = warnStyle
+			disk.PressureStr = "INODE ELEVATED"
+		}
+
 		disk.Details = []kv{
 			{"Worst mount", worstMountVal},
 			{"Free", fmt.Sprintf("%.0f%%", worstFreePct)},

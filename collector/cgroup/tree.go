@@ -12,6 +12,9 @@ import (
 type Collector struct {
 	version Version
 	root    string
+	// kube is non-nil; it is cheap enough to always create even on non-k8s
+	// hosts (zero allocations until the first Resolve on a kubepods path).
+	kube *KubepodsResolver
 }
 
 // NewCollector creates a cgroup collector after detecting version and root.
@@ -19,6 +22,7 @@ func NewCollector() *Collector {
 	return &Collector{
 		version: DetectVersion(),
 		root:    CgroupRoot(),
+		kube:    NewKubepodsResolver(),
 	}
 }
 
@@ -55,6 +59,23 @@ func (c *Collector) collectV2(root string) []model.CgroupMetrics {
 		cg.Name = filepath.Base(path)
 		if cg.Path == "/" {
 			cg.Name = "[root]"
+		}
+		if c.kube != nil {
+			if pod := c.kube.Resolve(relPath); !pod.Empty() {
+				cg.PodName = pod.Name
+				cg.PodNamespace = pod.Namespace
+				cg.ContainerName = pod.Container
+				cg.PodQoS = pod.QoS
+				if pod.Name != "" {
+					// Display name prefers pod/container over the raw slice
+					// identifier, matching what kubectl users expect to see.
+					if pod.Container != "" {
+						cg.Name = pod.Namespace + "/" + pod.Name + ":" + pod.Container
+					} else {
+						cg.Name = pod.Namespace + "/" + pod.Name
+					}
+				}
+			}
 		}
 		results = append(results, cg)
 	})
@@ -100,6 +121,21 @@ func (c *Collector) collectV1() []model.CgroupMetrics {
 		}
 		if memRoot != "" {
 			readV1Memory(filepath.Join(memRoot, relPath), &cg)
+		}
+		if c.kube != nil {
+			if pod := c.kube.Resolve(relPath); !pod.Empty() {
+				cg.PodName = pod.Name
+				cg.PodNamespace = pod.Namespace
+				cg.ContainerName = pod.Container
+				cg.PodQoS = pod.QoS
+				if pod.Name != "" {
+					if pod.Container != "" {
+						cg.Name = pod.Namespace + "/" + pod.Name + ":" + pod.Container
+					} else {
+						cg.Name = pod.Namespace + "/" + pod.Name
+					}
+				}
+			}
 		}
 		results = append(results, cg)
 	})

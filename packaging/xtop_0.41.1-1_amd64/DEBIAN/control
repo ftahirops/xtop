@@ -1,0 +1,16 @@
+Package: xtop
+Version: 0.41.1-1
+Section: admin
+Priority: optional
+Architecture: amd64
+Depends: libc6
+Recommends: postgresql, journalctl
+Installed-Size: 23400
+Maintainer: Farhan Tahir <farhan.003@gmail.com>
+Homepage: https://github.com/ftahirops/xtop
+Description: Incident-first root-cause analysis console for Linux
+ xtop is a terminal-based system monitor with ranked root-cause hypotheses,
+ evidence scoring, and eBPF deep diagnostics. v0.41.1 polishes the setup
+ wizard: prompts for which interface to bind when multiple NICs are
+ present, prints one IP-based join URL per interface (labeled LAN / WAN /
+ container / wireguard), and drops the SSH-tunnel instructions.

@@ -18,6 +18,10 @@ type AppInstance struct {
 	FDs         int     `json:"fds"`
 	Connections int     `json:"connections"`
 
+	// Resource share — populated by engine.EnrichAppResourceShare() after all
+	// apps are collected. See docs/USAGE.md §6 for the SRE framing.
+	Share AppResourceShare `json:"share,omitempty"`
+
 	// Tier 2: deep metrics (needs credentials)
 	HasDeepMetrics bool              `json:"has_deep_metrics"`
 	DeepMetrics    map[string]string `json:"deep_metrics,omitempty"`
@@ -136,6 +140,52 @@ type AppDockerContainer struct {
 	StackName     string               `json:"stack_name"`     // compose project or "standalone"
 	StackType     string               `json:"stack_type"`     // compose/swarm/k8s/standalone
 	ImageSize     int64                `json:"image_size"`
+}
+
+// AppResourceShare is the SRE-actionable per-app resource view.
+//
+// Design principle: never collapse dimensions into a single composite score.
+// Each dimension is reported independently in capacity terms (cores, GB,
+// MB/s, #active conns) with a rank across apps and, when an incident is
+// firing, a contribution-share of the bottleneck dimension.
+//
+// All fields are derived from per-tick data — no historical state required
+// beyond what the rates snapshot already carries. Per-app baselines (7d Δ)
+// are a planned follow-up and will land on this struct later.
+type AppResourceShare struct {
+	// Absolute per-dimension usage
+	CPUCoresUsed float64 `json:"cpu_cores_used"`  // e.g. 2.80 (out of NumCPUs)
+	MemRSSBytes  uint64  `json:"mem_rss_bytes"`   // RSS in bytes
+	ReadMBs      float64 `json:"read_mbs"`        // disk read rate
+	WriteMBs     float64 `json:"write_mbs"`       // disk write rate
+	NetConns     int     `json:"net_conns"`       // established TCP/UDP connections
+
+	// Share-of-capacity (0..100) per dimension
+	CPUPctOfSystem float64 `json:"cpu_pct_of_system"` // (CoresUsed/NumCPUs)*100
+	MemPctOfSystem float64 `json:"mem_pct_of_system"` // (RSS/MemTotal)*100
+	IOPctOfBusiest float64 `json:"io_pct_of_busiest"` // app IO / worst disk MB/s
+
+	// Headroom — what's still available on THIS host after this app
+	CPUCoresHeadroom float64 `json:"cpu_cores_headroom"`
+	MemBytesHeadroom uint64  `json:"mem_bytes_headroom"`
+
+	// Rank across all apps (1 = highest consumer on that dimension).
+	// Zero = not ranked (fewer than N apps on that dimension).
+	RankCPU int `json:"rank_cpu,omitempty"`
+	RankMem int `json:"rank_mem,omitempty"`
+	RankIO  int `json:"rank_io,omitempty"`
+	RankNet int `json:"rank_net,omitempty"`
+
+	// Composite operator-ready impact score from process rates (0..100).
+	// Not a sum of dimensions — it's the engine's ImpactScore, already a
+	// well-calibrated "how much is this contributing to pain" measure.
+	Impact float64 `json:"impact"`
+
+	// BottleneckShare is the % contribution this app makes to the CURRENT
+	// primary bottleneck dimension. Populated only when an incident is
+	// active. Lets the UI answer "who's causing 72% of the IO pressure?"
+	BottleneckDimension string  `json:"bottleneck_dimension,omitempty"` // "cpu" | "memory" | "io" | "network"
+	BottleneckSharePct  float64 `json:"bottleneck_share_pct,omitempty"`
 }
 
 // AppMetrics holds all detected application instances.

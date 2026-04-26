@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ftahirops/xtop/api"
+	"github.com/ftahirops/xtop/collector"
 	"github.com/ftahirops/xtop/model"
 	"github.com/ftahirops/xtop/store"
 )
@@ -22,6 +23,11 @@ type DaemonConfig struct {
 	History  int
 	Metrics  *MetricsStore
 	Alerts   AlertConfig
+	// Fleet carries optional hub-push settings. When Fleet.HubURL is set
+	// and the engine detects it, the daemon pushes heartbeats + incidents
+	// to the hub alongside its local event/summary writes.
+	Fleet   model.FleetAgentConfig
+	Version string // baked-in build version, passed to fleet heartbeats
 }
 
 // compactSummary is a minimal per-tick record for the rolling log.
@@ -61,8 +67,30 @@ func RunDaemon(cfg DaemonConfig) error {
 	}
 	defer os.Remove(pidPath)
 
-	eng := NewEngine(cfg.History, int(cfg.Interval.Seconds()))
+	// Pick Lean mode when this daemon is pushing to a fleet hub — the hub
+	// keeps the long history and runs the heavy analytics, so the agent
+	// can drop the rich collector set + 30-min ring + per-tick app deep
+	// metrics. Operators who want the rich set anyway can override with
+	// XTOP_DAEMON_RICH=1 (audit/debug only — not recommended).
+	mode := collector.ModeRich
+	if cfg.Fleet.HubURL != "" && os.Getenv("XTOP_DAEMON_RICH") != "1" {
+		mode = collector.ModeLean
+		log.Printf("xtop daemon: lean mode (fleet hub set; collectors=essential, history<=30, mem-relief=on)")
+	}
+	eng := NewEngineMode(cfg.History, int(cfg.Interval.Seconds()), mode)
 	defer eng.Close()
+
+	// Attach a fleet push client when the daemon was started with a hub
+	// configured. Matches what the foreground TUI path does in cmd/root.go.
+	if cfg.Fleet.HubURL != "" {
+		if cfg.Fleet.QueuePath == "" {
+			cfg.Fleet.QueuePath = filepath.Join(cfg.DataDir, "fleet-queue.jsonl")
+		}
+		if fc := NewFleetClient(cfg.Fleet); fc != nil {
+			eng.AttachFleetClient(fc, cfg.Version)
+			log.Printf("fleet: pushing to %s", cfg.Fleet.HubURL)
+		}
+	}
 	engTicker := Ticker(eng)
 	if cfg.Metrics != nil {
 		engTicker = NewInstrumentedTicker(engTicker, cfg.Metrics)

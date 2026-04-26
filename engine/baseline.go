@@ -62,12 +62,59 @@ type cusumState struct {
 	H     float64 // decision threshold (typically 4-5 * sigma)
 }
 
+// CUSUMTuning controls change-point sensitivity. Expressed as multipliers of
+// the metric's stddev so the same config works across vastly different metric
+// magnitudes. KMul is the drift allowance; higher values ignore slow drifts.
+// HMul is the alarm threshold in sigma units; higher values demand a larger
+// cumulative deviation before firing.
+//
+// Defaults are Page/Hinkley textbook values (K=0.5σ, H=4σ). Right-skewed
+// metrics tolerate higher thresholds because their "normal" already includes
+// occasional spikes — otherwise we'd churn baselines on every packet drop.
+type CUSUMTuning struct {
+	KMul float64
+	HMul float64
+}
+
+// Module-level defaults: operators can override via environment at startup
+// (see init() below). The config is per-distribution so spiky signals don't
+// use the same thresholds as smooth CPU utilization.
+var (
+	cusumNormal      = CUSUMTuning{KMul: 0.5, HMul: 4.0}
+	cusumRightSkewed = CUSUMTuning{KMul: 1.0, HMul: 6.0}
+	cusumBimodal     = CUSUMTuning{KMul: 0.75, HMul: 5.0}
+)
+
+// cusumFor returns the tuning for a metric's classified distribution.
+func cusumFor(dist MetricDistribution) CUSUMTuning {
+	switch dist {
+	case DistRightSkewed:
+		return cusumRightSkewed
+	case DistBimodal:
+		return cusumBimodal
+	default:
+		return cusumNormal
+	}
+}
+
+// newCusumState constructs a state using the *normal-distribution* tuning.
+// Callers with a specific metric classification should prefer
+// newCusumStateForMetric to pick up the right K/H multipliers.
 func newCusumState(mean, sigma float64) cusumState {
+	return newCusumStateTuned(mean, sigma, cusumNormal)
+}
+
+// newCusumStateForMetric picks tuning based on the metric ID's classification.
+func newCusumStateForMetric(metricID string, mean, sigma float64) cusumState {
+	return newCusumStateTuned(mean, sigma, cusumFor(classifyDistribution(metricID)))
+}
+
+func newCusumStateTuned(mean, sigma float64, t CUSUMTuning) cusumState {
 	return cusumState{
 		Mean:  mean,
 		Sigma: sigma,
-		K:     0.5 * sigma, // detect shifts of 1σ
-		H:     4.0 * sigma, // alarm threshold
+		K:     t.KMul * sigma,
+		H:     t.HMul * sigma,
 	}
 }
 
@@ -88,14 +135,15 @@ func (c *cusumState) Update(value float64) bool {
 
 // ewmaBaseline tracks a single metric's EWMA mean and variance using Welford's online algorithm.
 type ewmaBaseline struct {
-	Mean              float64
-	Variance          float64
-	Count             int64
-	Alpha             float64
-	OutliersRejected  int  // Item 13: count of rejected outliers during warmup
+	MetricID            string // used to pick distribution-aware CUSUM tuning
+	Mean                float64
+	Variance            float64
+	Count               int64
+	Alpha               float64
+	OutliersRejected    int  // Item 13: count of rejected outliers during warmup
 	ChangePointDetected bool // Item 20: set when CUSUM detects a shift
-	cusum             cusumState
-	cusumInitialized  bool
+	cusum               cusumState
+	cusumInitialized    bool
 }
 
 // isWarmedUp checks if this individual baseline has enough stable samples (Item 4).
@@ -154,11 +202,17 @@ func (b *ewmaBaseline) update(v float64) {
 	b.Mean += b.Alpha * diff
 	b.Variance = (1 - b.Alpha) * (b.Variance + b.Alpha*diff*diff)
 
-	// Item 20: initialize CUSUM after warmup completes
+	// Item 20: initialize CUSUM after warmup completes, with distribution-
+	// aware tuning so right-skewed metrics (packet drops, OOM kills) aren't
+	// constantly tripping change-points on their natural spikes.
 	if b.isWarmedUp() && !b.cusumInitialized {
 		sd := b.stddev()
 		if sd > 1e-9 {
-			b.cusum = newCusumState(b.Mean, sd)
+			if b.MetricID != "" {
+				b.cusum = newCusumStateForMetric(b.MetricID, b.Mean, sd)
+			} else {
+				b.cusum = newCusumState(b.Mean, sd)
+			}
 			b.cusumInitialized = true
 		}
 	}
@@ -206,7 +260,7 @@ func (bt *BaselineTracker) Update(id string, value float64) {
 	defer bt.mu.Unlock()
 	b, ok := bt.baselines[id]
 	if !ok {
-		b = &ewmaBaseline{Mean: value, Variance: 0, Count: 0, Alpha: bt.alpha}
+		b = &ewmaBaseline{MetricID: id, Mean: value, Variance: 0, Count: 0, Alpha: bt.alpha}
 		bt.baselines[id] = b
 	}
 	b.update(value)

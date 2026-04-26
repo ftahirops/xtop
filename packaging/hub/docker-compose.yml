@@ -1,0 +1,42 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: xtop-hub-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: xtop
+      POSTGRES_PASSWORD: ${XTOP_PG_PASSWORD:-change-me}
+      POSTGRES_DB: xtopfleet
+    volumes:
+      - xtop-pg-data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U xtop -d xtopfleet"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  hub:
+    image: xtop-hub:latest
+    container_name: xtop-hub
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # The hub reads all of these on startup.
+      XTOP_HUB_LISTEN: ":${XTOP_HUB_PORT:-9898}"
+      XTOP_HUB_TOKEN: ${XTOP_HUB_TOKEN:-change-me}
+      XTOP_HUB_POSTGRES: postgres://xtop:${XTOP_PG_PASSWORD:-change-me}@postgres:5432/xtopfleet?sslmode=disable
+    command: ["xtop", "hub"]
+    ports:
+      # Host port is bound to whatever XTOP_HUB_PORT is set to (default 9898);
+      # inside the container we listen on the same port for simplicity.
+      - "${XTOP_HUB_PORT:-9898}:${XTOP_HUB_PORT:-9898}"
+    volumes:
+      - xtop-hub-data:/root/.xtop
+
+volumes:
+  xtop-pg-data:
+  xtop-hub-data:

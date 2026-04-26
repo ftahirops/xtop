@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>xtop fleet</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1><span class="brand">xtop</span> <span class="muted">fleet</span></h1>
+  <div class="status">
+    <span id="conn-indicator" class="dot dot-gray" title="stream status"></span>
+    <span id="conn-text">connecting…</span>
+    <span class="sep">·</span>
+    <span id="host-count">0 hosts</span>
+    <span class="sep">·</span>
+    <span id="last-update">—</span>
+  </div>
+</header>
+
+<main>
+  <section>
+    <div class="section-head">
+      <h2>Hosts</h2>
+      <div class="filters">
+        <input type="search" id="filter" placeholder="filter by hostname, tag, bottleneck…">
+        <label><input type="checkbox" id="only-unhealthy"> unhealthy only</label>
+      </div>
+    </div>
+    <div id="hosts" class="host-grid"></div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <h2>Recent Incidents</h2>
+      <select id="inc-window">
+        <option value="1">last hour</option>
+        <option value="6">last 6h</option>
+        <option value="24" selected>last 24h</option>
+        <option value="168">last 7d</option>
+      </select>
+    </div>
+    <table id="incidents" class="incidents">
+      <thead>
+        <tr><th>host</th><th>bottleneck</th><th>peak</th><th>conf</th><th>culprit</th><th>started</th><th>state</th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </section>
+</main>
+
+<aside id="host-drawer" class="drawer hidden">
+  <div class="drawer-head">
+    <h3 id="drawer-title">host</h3>
+    <button id="drawer-close" aria-label="close">×</button>
+  </div>
+  <div id="drawer-body"></div>
+</aside>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

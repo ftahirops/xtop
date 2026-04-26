@@ -79,6 +79,37 @@ func (h *History) Len() int {
 	return h.size
 }
 
+// FlushOlderThan keeps only the N most recent snapshots and zeros the rest
+// of the ring so Go's GC can reclaim the underlying memory. Called by the
+// Guardian when heap usage exceeds the hard budget — preserves enough
+// state for RCA (just needs current+previous tick) while dropping the
+// long-tail history that's only useful for TUI scrollback.
+func (h *History) FlushOlderThan(keep int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.size <= keep {
+		return
+	}
+	// Keep the last `keep` entries; zero the rest.
+	for i := 0; i < h.cap; i++ {
+		// Distance from head-1 (most recent), going backwards in ring order.
+		dist := ((h.head - 1 - i) + h.cap) % h.cap
+		_ = dist
+	}
+	// Simpler: build a fresh buffer with only the recent entries, drop the rest.
+	newBuf := make([]model.Snapshot, h.cap)
+	newRate := make([]model.RateSnapshot, h.cap)
+	for i := 0; i < keep; i++ {
+		idx := ((h.head - 1 - i) + h.cap) % h.cap
+		newBuf[keep-1-i] = h.buf[idx]
+		newRate[keep-1-i] = h.rateBuf[idx]
+	}
+	h.buf = newBuf
+	h.rateBuf = newRate
+	h.size = keep
+	h.head = keep % h.cap
+}
+
 // Latest returns a copy of the most recent snapshot.
 func (h *History) Latest() *model.Snapshot {
 	h.mu.RLock()

@@ -473,7 +473,9 @@ func (m *redisModule) Collect(app *DetectedApp, secrets *AppSecrets) model.AppIn
 
 // redisINFO connects to Redis and runs the INFO command using raw RESP protocol.
 func redisINFO(host string, port int, password string) map[string]string {
-	addr := fmt.Sprintf("%s:%d", host, port)
+	// net.JoinHostPort wraps bare IPv6 addresses in brackets and keeps IPv4
+	// / hostnames unchanged; safer than fmt.Sprintf("%s:%d").
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
 	if err != nil {
 		return nil
@@ -537,7 +539,9 @@ type slowlogEntry struct {
 
 // redisSLOWLOG fetches recent slow queries via SLOWLOG GET N.
 func redisSLOWLOG(host string, port int, password string, count int) []slowlogEntry {
-	addr := fmt.Sprintf("%s:%d", host, port)
+	// net.JoinHostPort wraps bare IPv6 addresses in brackets and keeps IPv4
+	// / hostnames unchanged; safer than fmt.Sprintf("%s:%d").
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
 	if err != nil {
 		return nil
