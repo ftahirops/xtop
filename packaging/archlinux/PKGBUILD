@@ -1,6 +1,6 @@
 # Maintainer: ftahirops <ftahirops@github>
 pkgname=xtop
-pkgver=0.46.2
+pkgver=0.46.3
 pkgrel=1
 pkgdesc="Incident-first root-cause analysis console for Linux — multi-host fleet hub, RCA engine, eBPF deep probes"
 arch=('x86_64')

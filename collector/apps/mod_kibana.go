@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -61,7 +62,19 @@ func (m *kibanaModule) Detect(processes []model.ProcessMetrics) []DetectedApp {
 			continue
 		}
 		cmdline := readProcCmdline(p.PID)
-		if !strings.Contains(cmdline, "kibana") {
+		matched := false
+		if strings.Contains(cmdline, "kibana") {
+			matched = true
+		}
+		// Fallback: check cwd for kibana path
+		if !matched {
+			if cwd, err := os.Readlink(fmt.Sprintf("/proc/%d/cwd", p.PID)); err == nil {
+				if strings.Contains(cwd, "kibana") {
+					matched = true
+				}
+			}
+		}
+		if !matched {
 			continue
 		}
 		// Skip workers — child of another node/kibana

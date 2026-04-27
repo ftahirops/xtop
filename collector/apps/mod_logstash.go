@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -26,9 +27,9 @@ type logstashModule struct {
 
 type logstashPrev struct {
 	events struct {
-		in   int64
-		out  int64
-		flt  int64
+		in  int64
+		out int64
+		flt int64
 	}
 	at time.Time
 }
@@ -63,13 +64,33 @@ func (m *logstashModule) Detect(processes []model.ProcessMetrics) []DetectedApp 
 			continue
 		}
 		cmdline := readProcCmdline(p.PID)
-		if !strings.Contains(cmdline, "org.logstash.Logstash") && !strings.Contains(cmdline, "logstash") {
+		matched := false
+		if strings.Contains(cmdline, "org.logstash.Logstash") || strings.Contains(cmdline, "logstash") {
+			matched = true
+		}
+		// Fallback: check exe symlink
+		if !matched {
+			if exe, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", p.PID)); err == nil {
+				if strings.Contains(exe, "logstash") {
+					matched = true
+				}
+			}
+		}
+		// Fallback: check cwd
+		if !matched {
+			if cwd, err := os.Readlink(fmt.Sprintf("/proc/%d/cwd", p.PID)); err == nil {
+				if strings.Contains(cwd, "logstash") {
+					matched = true
+				}
+			}
+		}
+		if !matched {
 			continue
 		}
 		// Skip if parent is logstash (child worker)
 		if p.PPID > 2 {
 			pc := readProcCmdline(p.PPID)
-			if strings.Contains(pc, "org.logstash.Logstash") {
+			if strings.Contains(pc, "org.logstash.Logstash") || strings.Contains(pc, "logstash") {
 				continue
 			}
 		}

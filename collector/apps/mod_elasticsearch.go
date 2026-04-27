@@ -49,8 +49,33 @@ func (m *esModule) Detect(processes []model.ProcessMetrics) []DetectedApp {
 			continue
 		}
 
+		matched := false
 		cmdline := readProcCmdline(p.PID)
-		if !strings.Contains(cmdline, "elasticsearch") && !strings.Contains(cmdline, "org.elasticsearch") {
+
+		// Method 1: cmdline contains elasticsearch reference
+		if strings.Contains(cmdline, "elasticsearch") || strings.Contains(cmdline, "org.elasticsearch") {
+			matched = true
+		}
+
+		// Method 2: /proc/PID/exe points to an Elasticsearch JDK path
+		if !matched {
+			if exe, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", p.PID)); err == nil {
+				if strings.Contains(exe, "elasticsearch") {
+					matched = true
+				}
+			}
+		}
+
+		// Method 3: /proc/PID/cwd is inside an Elasticsearch install dir
+		if !matched {
+			if cwd, err := os.Readlink(fmt.Sprintf("/proc/%d/cwd", p.PID)); err == nil {
+				if strings.Contains(cwd, "elasticsearch") {
+					matched = true
+				}
+			}
+		}
+
+		if !matched {
 			continue
 		}
 
@@ -88,13 +113,17 @@ func (m *esModule) Detect(processes []model.ProcessMetrics) []DetectedApp {
 }
 
 // isContainerized checks if a process runs inside a container.
-// Uses multiple detection methods: cgroup path, PID namespace, /proc/1/environ.
+// Uses multiple detection methods: cgroup path, PID namespace.
+// NOTE: On some VMs (XCP-ng), cgroup paths may contain "lxc" or other
+// strings even for non-containerized processes. We only skip if the
+// evidence is strong (docker/containerd/kubepods namespace mismatch).
 func isContainerized(pid int) bool {
-	// Method 1: cgroup path contains docker/containerd/lxc/kubepods
+	// Method 1: cgroup path contains docker/containerd/kubepods
+	// (deliberately NOT "lxc" — many VMs have lxc-lib in cgroup path)
 	if data, err := os.ReadFile(fmt.Sprintf("/proc/%d/cgroup", pid)); err == nil {
 		s := string(data)
 		if strings.Contains(s, "docker") || strings.Contains(s, "containerd") ||
-			strings.Contains(s, "lxc") || strings.Contains(s, "kubepods") {
+			strings.Contains(s, "kubepods") || strings.Contains(s, "cri-o") {
 			return true
 		}
 	}

@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
 )
 
 // countTCPConnections counts established TCP connections to a given local port.
@@ -194,6 +193,9 @@ func readProcFDs(pid int) int {
 }
 
 // readProcCmdline reads /proc/PID/cmdline as a single string.
+// Reads up to 4096 bytes to handle long Java classpaths where the
+// class name (e.g. org.elasticsearch.bootstrap.Elasticsearch) is at
+// the very end.
 func readProcCmdline(pid int) string {
 	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
 	if err != nil {
@@ -201,8 +203,8 @@ func readProcCmdline(pid int) string {
 	}
 	// Replace null bytes with spaces
 	s := strings.ReplaceAll(string(data), "\x00", " ")
-	if len(s) > 512 {
-		s = s[:512]
+	if len(s) > 4096 {
+		s = s[:4096]
 	}
 	return strings.TrimSpace(s)
 }
