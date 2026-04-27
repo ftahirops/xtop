@@ -9,6 +9,14 @@ import (
 	"github.com/ftahirops/xtop/model"
 )
 
+// Package-level optional components for advanced RCA.
+// Set by Engine during initialization; nil disables the feature.
+var (
+	adaptiveThresholdDB      *AdaptiveThresholdDB
+	probabilisticCausalGraph *ProbabilisticCausalGraph
+	topologyCorrelator       *TopologyCorrelator
+)
+
 const (
 	BottleneckIO      = "IO Starvation"
 	BottleneckMemory  = "Memory Pressure"
@@ -331,6 +339,38 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History, 
 		result.Confidence = rcaHealthOKConfidence
 	}
 
+	// Phase 5: App Health Bridge — if any detected app is critically degraded
+	// and its bottleneck aligns with the primary domain, elevate system health.
+	for _, app := range curr.Global.Apps.Instances {
+		if app.HealthScore >= 50 {
+			continue
+		}
+		if app.DeepMetrics == nil || len(app.HealthIssues) == 0 {
+			continue
+		}
+		aligned := false
+		switch result.PrimaryBottleneck {
+		case BottleneckIO:
+			aligned = app.AppType == "mysql" || app.AppType == "mariadb" || app.AppType == "mongodb" || app.AppType == "elasticsearch"
+		case BottleneckMemory:
+			aligned = app.AppType == "redis" || app.AppType == "mysql" || app.AppType == "mariadb" || app.AppType == "mongodb" || app.AppType == "elasticsearch" || app.AppType == "memcached"
+		case BottleneckCPU:
+			aligned = app.AppType == "mysql" || app.AppType == "mariadb" || app.AppType == "mongodb" || app.AppType == "postgresql" || app.AppType == "php-fpm"
+		case BottleneckNetwork:
+			aligned = app.AppType == "nginx" || app.AppType == "mysql" || app.AppType == "mariadb" || app.AppType == "redis" || app.AppType == "elasticsearch"
+		}
+		if aligned && result.Health < model.HealthDegraded {
+			result.Health = model.HealthDegraded
+			result.Confidence = max(result.Confidence, 70)
+			result.Warnings = append(result.Warnings, model.Warning{
+				Signal:   "app_health_critical",
+				Severity: "warn",
+				Detail:   fmt.Sprintf("%s critically degraded (score=%d)", app.DisplayName, app.HealthScore),
+				Value:    fmt.Sprintf("%d", app.HealthScore),
+			})
+		}
+	}
+
 	// Alert state machine: apply sustained-threshold filtering
 	if hist != nil && hist.alert != nil {
 		hasCritEvidence := false
@@ -387,23 +427,46 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History, 
 		result.NextRisk = fmt.Sprintf("%s trend (%s)", w.Signal, w.Value)
 	}
 
-	// Causal chain — v2 DAG
+	// Causal chain — v2 DAG (probabilistic graph when available)
 	if result.PrimaryScore > 0 && len(result.RCA) > 0 && result.RCA[0].EvidenceGroups >= minEvidenceGroups {
 		var learner *CausalLearner
 		if hist != nil {
 			learner = hist.CausalLearner
 		}
-		if dag := buildCausalDAG(result, learner); dag != nil {
+		var dag *model.CausalDAG
+		if probabilisticCausalGraph != nil && len(probabilisticCausalGraph.history) >= 50 {
+			dag = BuildProbabilisticDAG(result, probabilisticCausalGraph, learner)
+		} else {
+			dag = buildCausalDAG(result, learner)
+		}
+		if dag != nil {
 			result.CausalDAG = dag
 			result.CausalChain = dag.LinearChain
+		}
+		// Throttled observation: only learn when health is not OK
+		// (saves ~0.1ms CPU per tick during normal operation)
+		if probabilisticCausalGraph != nil && result.Health != model.HealthOK {
+			fired := make(map[string]float64)
+			for _, rca := range result.RCA {
+				for _, e := range rca.EvidenceV2 {
+					if e.Strength >= 0.35 {
+						if existing, ok := fired[e.ID]; !ok || e.Strength > existing {
+							fired[e.ID] = e.Strength
+						}
+					}
+				}
+			}
+			if len(fired) >= 2 {
+				probabilisticCausalGraph.Observe(fired)
+			}
 		}
 	}
 
 	// Anomaly tracking
 	trackAnomaly(result, hist)
 
-	// Hidden latency detection: metrics look fine but threads are waiting
-	detectHiddenLatency(curr, rates, result)
+	// Hidden latency detection: use scheduler metrics when available
+	DetectHiddenLatencyV2(curr, rates, result)
 
 	// Actions
 	result.Actions = SuggestActions(result)
@@ -843,36 +906,36 @@ func runStatisticalAnalysis(result *model.AnalysisResult, curr *model.Snapshot, 
 	//
 	// Critical thresholds match those used by the analyzers above.
 	forecastCritThresholds := map[string]float64{
-		"cpu.psi":              20.0,
-		"cpu.busy":             90.0,
-		"cpu.runqueue":         2.0,
-		"mem.psi":              20.0,
-		"mem.available.low":    95.0, // used%
-		"mem.reclaim.direct":   500.0,
-		"mem.swap.in":          30.0,
-		"io.disk.util":         90.0,
-		"io.disk.latency":      100.0,
-		"io.psi":               20.0,
-		"net.conntrack":        90.0, // %
-		"net.drops":            100.0,
-		"net.tcp.retrans":      200.0,
+		"cpu.psi":            20.0,
+		"cpu.busy":           90.0,
+		"cpu.runqueue":       2.0,
+		"mem.psi":            20.0,
+		"mem.available.low":  95.0, // used%
+		"mem.reclaim.direct": 500.0,
+		"mem.swap.in":        30.0,
+		"io.disk.util":       90.0,
+		"io.disk.latency":    100.0,
+		"io.psi":             20.0,
+		"net.conntrack":      90.0, // %
+		"net.drops":          100.0,
+		"net.tcp.retrans":    200.0,
 	}
 
 	// Display labels for ForecastWarning
 	forecastLabels := map[string]string{
-		"cpu.psi":              "CPU stall",
-		"cpu.busy":             "CPU busy",
-		"cpu.runqueue":         "CPU run queue",
-		"mem.psi":              "Memory stall",
-		"mem.available.low":    "Memory",
-		"mem.reclaim.direct":   "Memory reclaim",
-		"mem.swap.in":          "Swap in",
-		"io.disk.util":         "Disk utilization",
-		"io.disk.latency":      "Disk latency",
-		"io.psi":               "IO stall",
-		"net.conntrack":        "Conntrack table",
-		"net.drops":            "Network drops",
-		"net.tcp.retrans":      "TCP retransmits",
+		"cpu.psi":            "CPU stall",
+		"cpu.busy":           "CPU busy",
+		"cpu.runqueue":       "CPU run queue",
+		"mem.psi":            "Memory stall",
+		"mem.available.low":  "Memory",
+		"mem.reclaim.direct": "Memory reclaim",
+		"mem.swap.in":        "Swap in",
+		"io.disk.util":       "Disk utilization",
+		"io.disk.latency":    "Disk latency",
+		"io.psi":             "IO stall",
+		"net.conntrack":      "Conntrack table",
+		"net.drops":          "Network drops",
+		"net.tcp.retrans":    "TCP retransmits",
 	}
 
 	// Collection interval determines steps-to-seconds conversion
@@ -885,9 +948,9 @@ func runStatisticalAnalysis(result *model.AnalysisResult, curr *model.Snapshot, 
 	}
 
 	const (
-		forecastMaxSteps    = 120  // cap ETA at this many steps
-		forecastWarnSteps30 = 30   // ~30s window → score boost +10
-		forecastWarnSteps60 = 60   // ~60s window → score boost +5
+		forecastMaxSteps    = 120 // cap ETA at this many steps
+		forecastWarnSteps30 = 30  // ~30s window → score boost +10
+		forecastWarnSteps60 = 60  // ~60s window → score boost +5
 	)
 
 	var bestForecastID string

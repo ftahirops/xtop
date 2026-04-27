@@ -20,11 +20,11 @@ type History struct {
 	mu           sync.RWMutex
 
 	// Statistical intelligence
-	Baselines     *BaselineTracker
-	ZScores       *ZScoreTracker
-	Correlator    *Correlator
-	Forecaster    *HoltForecaster
-	Seasonal      *SeasonalTracker
+	Baselines      *BaselineTracker
+	ZScores        *ZScoreTracker
+	Correlator     *Correlator
+	Forecaster     *HoltForecaster
+	Seasonal       *SeasonalTracker
 	CausalLearner  *CausalLearner
 	ProcessHistory *ProcessHistory
 }
@@ -36,19 +36,28 @@ func NewHistory(capacity, intervalSec int) *History {
 		intervalSec = 3
 	}
 	return &History{
-		buf:          make([]model.Snapshot, capacity),
-		rateBuf:      make([]model.RateSnapshot, capacity),
-		cap:          capacity,
-		anomaly:      &AnomalyState{},
-		alert:        NewAlertState(intervalSec),
-		signalOnsets:  make(map[string]time.Time),
-		Baselines:     NewBaselineTracker(0.03),
-		ZScores:       NewZScoreTracker(60),
-		Correlator:    NewCorrelator(),
-		Forecaster:    NewHoltForecaster(0.3, 0.1),
-		Seasonal:      NewSeasonalTracker(0.02),
+		buf:            make([]model.Snapshot, capacity),
+		rateBuf:        make([]model.RateSnapshot, capacity),
+		cap:            capacity,
+		anomaly:        &AnomalyState{},
+		alert:          NewAlertState(intervalSec),
+		signalOnsets:   make(map[string]time.Time),
+		Baselines:      NewBaselineTracker(0.03),
+		ZScores:        NewZScoreTracker(60),
+		Correlator:     NewCorrelator(),
+		Forecaster:     NewHoltForecaster(0.3, 0.1),
+		Seasonal:       NewSeasonalTracker(0.02),
 		CausalLearner:  NewCausalLearner(),
 		ProcessHistory: NewProcessHistory(100),
+	}
+}
+
+// SetNoHysteresis disables the sustained-threshold alert state machine.
+func (h *History) SetNoHysteresis(v bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.alert != nil {
+		h.alert.NoHysteresis = v
 	}
 }
 

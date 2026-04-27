@@ -190,44 +190,59 @@ func (r *Registry) CollectAll(snap *model.Snapshot) []error {
 		}
 	}
 
-	// Phase 1: run all non-security collectors concurrently.
-	var wg sync.WaitGroup
-	var mu sync.Mutex
+	// Phase 1: run all non-security collectors concurrently with a bounded
+	// worker pool to avoid spawning 20+ goroutines every 3 seconds.
+	type job struct {
+		col  Collector
+		cost *CollectorCost
+	}
+	var jobs []job
 	for _, c := range r.collectors {
 		if c == security {
 			continue
 		}
 		name := c.Name()
 		cost := r.getOrCreateCost(name, c)
-
-		// Guardian skip: collector has been disabled after exceeding its
-		// budget too many ticks in a row. Stays skipped for the rest of
-		// the process lifetime — restart re-evaluates.
 		if cost.Skipped {
-			mu.Lock()
 			health.Succeeded++
-			mu.Unlock()
 			continue
 		}
+		jobs = append(jobs, job{col: c, cost: cost})
+	}
 
+	workers := 4
+	if len(jobs) < workers {
+		workers = len(jobs)
+	}
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	jobCh := make(chan job, len(jobs))
+	for _, j := range jobs {
+		jobCh <- j
+	}
+	close(jobCh)
+
+	for i := 0; i < workers; i++ {
 		wg.Add(1)
-		go func(col Collector, cost *CollectorCost) {
+		go func() {
 			defer wg.Done()
-			start := time.Now()
-			err := r.safeCollect(col, snap)
-			elapsed := float64(time.Since(start).Microseconds()) / 1000.0
+			for j := range jobCh {
+				start := time.Now()
+				err := r.safeCollect(j.col, snap)
+				elapsed := float64(time.Since(start).Microseconds()) / 1000.0
 
-			mu.Lock()
-			r.recordCost(cost, elapsed, 0) // skip alloc tracking in concurrent mode
-			totalLatencyMs += elapsed
-			if err != nil {
-				health.Failed++
-				errs = append(errs, err)
-			} else {
-				health.Succeeded++
+				mu.Lock()
+				r.recordCost(j.cost, elapsed, 0)
+				totalLatencyMs += elapsed
+				if err != nil {
+					health.Failed++
+					errs = append(errs, err)
+				} else {
+					health.Succeeded++
+				}
+				mu.Unlock()
 			}
-			mu.Unlock()
-		}(c, cost)
+		}()
 	}
 	wg.Wait()
 

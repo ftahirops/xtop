@@ -84,59 +84,54 @@ func analyzeIO(curr *model.Snapshot, rates *model.RateSnapshot, sp systemProfile
 	fsFull := worstFreePct < ioFsFullFreePct
 
 	// --- v2 evidence ---
-	w, c := threshold("io.psi", 5, 20)
+	w, c := thresholdAdaptive("io.psi", 5, 20, curr)
 	r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("io.psi", model.DomainIO,
 		ioSome*100, w, c, true, 0.9,
 		fmt.Sprintf("IO PSI some=%.1f%% full=%.1f%%", ioSome*100, ioFull*100), "avg10",
 		nil, nil))
-	w, c = threshold("io.dstate", 1, 10)
+	w, c = thresholdAdaptive("io.dstate", 1, 10, curr)
 	r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("io.dstate", model.DomainIO,
 		float64(dCount), w, c, true, 0.7,
 		fmt.Sprintf("%d D-state tasks", dCount), "1s",
 		nil, nil))
-	w, c = threshold("io.disk.latency", 20, 80)
+	w, c = thresholdAdaptive("io.disk.latency", 20, 80, curr)
 	r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("io.disk.latency", model.DomainIO,
 		worstAwait, w, c, true, 0.8, // measured=true: from /proc/diskstats
 		fmt.Sprintf("%s await=%.0fms", worstDev, worstAwait), "1s",
 		nil, map[string]string{"device": worstDev}))
-	w, c = threshold("io.disk.util", 70, 95)
+	w, c = thresholdAdaptive("io.disk.util", 70, 95, curr)
 	r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("io.disk.util", model.DomainIO,
-		worstUtil, w, c, true, 0.8, // measured=true: from /proc/diskstats
-		fmt.Sprintf("%s util=%.0f%%", worstDev, worstUtil), "1s",
-		nil, map[string]string{"device": worstDev}))
-
-	// Queue depth: saturation indicator (Gregg USE: Saturation for disk)
-	w, c = threshold("io.disk.queuedepth", 4, 16)
-	r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("io.disk.queuedepth", model.DomainIO,
-		float64(worstQueueDepth), w, c, true, 0.7,
-		fmt.Sprintf("%s queue=%d", worstQueueDev, worstQueueDepth), "1s",
-		nil, map[string]string{"device": worstQueueDev}))
-
-	w, c = threshold("io.writeback", 5, 20)
-	r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("io.writeback", model.DomainIO,
-		dirtyPct, w, c, false, 0.6,
-		fmt.Sprintf("dirty pages=%.1f%% of RAM", dirtyPct), "1s",
+		worstUtil, w, c, true, 0.85,
+		fmt.Sprintf("disk util=%.0f%%", worstUtil), "1s",
 		nil, nil))
-
-	// Filesystem full: gate by growth rate — static full disk with no writes is not urgent
-	fsUsedPct := 100 - worstFreePct
-	fsConf := 0.9
-	if fsUsedPct < fsFullUsedPctNoGrowth && worstGrowthBPS <= 0 {
-		fsConf = fsFullGrowthDampenConf // dampen confidence when not actively growing
+	w, c = thresholdAdaptive("io.disk.queuedepth", 4, 16, curr)
+	r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("io.disk.queuedepth", model.DomainIO,
+		float64(worstQueueDepth), w, c, true, 0.75,
+		fmt.Sprintf("queue depth=%d (%s)", worstQueueDepth, worstQueueDev), "1s",
+		nil, nil))
+	w, c = thresholdAdaptive("io.writeback", 5, 20, curr)
+	r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("io.writeback", model.DomainIO,
+		float64(mem.Writeback), w, c, true, 0.7,
+		fmt.Sprintf("writeback=%s", formatB(mem.Writeback)), "1s",
+		nil, nil))
+	// Filesystem full: only fire if there is actual growth (not just a large static FS)
+	if fsFull {
+		w, c = thresholdAdaptive("io.fsfull", 85, 95, curr)
+		conf := 0.9
+		if worstFreePct > fsFullUsedPctNoGrowth && worstGrowthBPS < 1024 {
+			conf = fsFullGrowthDampenConf // dampen if not actively growing
+		}
+		r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("io.fsfull", model.DomainIO,
+			100-worstFreePct, w, c, true, conf,
+			fmt.Sprintf("%s full (%.0f%% used, growth=%s/s)", worstMount, 100-worstFreePct, formatB(uint64(worstGrowthBPS))), "1s",
+			nil, nil))
 	}
-	w, c = threshold("io.fsfull", 85, 95)
-	r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("io.fsfull", model.DomainIO,
-		fsUsedPct, w, c, true, fsConf,
-		fmt.Sprintf("%s %.0f%% used", worstMount, fsUsedPct), "1s",
-		nil, map[string]string{"mount": worstMount}))
-
-	// Inode exhaustion: can cause "no space left" even with free disk space
 	if worstInodePct > 0 {
-		w, c = threshold("io.inode.pressure", 80, 95)
+		w, c = thresholdAdaptive("io.inode.pressure", 80, 95, curr)
 		r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("io.inode.pressure", model.DomainIO,
-			worstInodePct, w, c, true, 0.8,
-			fmt.Sprintf("%s inodes=%.0f%% used", worstInodeMount, worstInodePct), "1s",
-			nil, map[string]string{"mount": worstInodeMount}))
+			worstInodePct, w, c, true, 0.7,
+			fmt.Sprintf("inode pressure %s %.0f%%", worstInodeMount, worstInodePct), "1s",
+			nil, nil))
 	}
 
 	// FD exhaustion: per-process file descriptor pressure (causes ENOSPC on open, queue buildup)
@@ -157,6 +152,10 @@ func analyzeIO(curr *model.Snapshot, rates *model.RateSnapshot, sp systemProfile
 	}
 
 	// v2 switchover: weighted scoring replaces clamp-based
+	// Phase 1: app-aware evidence injection (zero-cost: reads existing snapshot data)
+	appInjector := NewAppEvidenceInjector()
+	appInjector.InjectIOEvidence(curr, &r)
+
 	v2Score := weightedDomainScore(r.EvidenceV2)
 	if !v2TrustGate(r.EvidenceV2) {
 		v2Score = 0

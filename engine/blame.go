@@ -26,11 +26,32 @@ func ComputeBlame(result *model.AnalysisResult, curr *model.Snapshot, rates *mod
 		entries = blameNetwork(result, rates, curr)
 	}
 
-	// Resolve application identity for all blame entries
-	if curr != nil && curr.Global.AppIdentities != nil {
+	// Resolve application identity and enrich with app-specific reasons
+	if curr != nil {
 		for i := range entries {
 			if id, ok := curr.Global.AppIdentities[entries[i].PID]; ok {
 				entries[i].AppName = id.DisplayName
+				// Look up app-specific deep metric reason by matching PID
+				for _, app := range curr.Global.Apps.Instances {
+					if app.DeepMetrics == nil || app.PID != entries[i].PID {
+						continue
+					}
+					var domain model.Domain
+					switch result.PrimaryBottleneck {
+					case BottleneckIO:
+						domain = model.DomainIO
+					case BottleneckMemory:
+						domain = model.DomainMemory
+					case BottleneckCPU:
+						domain = model.DomainCPU
+					case BottleneckNetwork:
+						domain = model.DomainNetwork
+					}
+					if reason := AppCulpritReason(app.AppType, app.DeepMetrics, domain); reason != "" {
+						entries[i].Metrics["reason"] = reason
+					}
+					break
+				}
 			}
 		}
 	}
@@ -56,12 +77,12 @@ func hasActiveEvidence(result *model.AnalysisResult, bottleneck, evidenceID stri
 
 func blameCPU(result *model.AnalysisResult, rates *model.RateSnapshot) []model.BlameEntry {
 	type agg struct {
-		comm       string
-		pid        int
-		cgroup     string
-		cpuPct     float64
-		threads    int
-		ctxsw      float64
+		comm    string
+		pid     int
+		cgroup  string
+		cpuPct  float64
+		threads int
+		ctxsw   float64
 	}
 
 	// Detect whether cpu.steal evidence is active — if so, the hypervisor is
@@ -78,12 +99,12 @@ func blameCPU(result *model.AnalysisResult, rates *model.RateSnapshot) []model.B
 			continue
 		}
 		procs = append(procs, agg{
-			comm:   p.Comm,
-			pid:    p.PID,
-			cgroup: p.CgroupPath,
-			cpuPct: p.CPUPct,
+			comm:    p.Comm,
+			pid:     p.PID,
+			cgroup:  p.CgroupPath,
+			cpuPct:  p.CPUPct,
 			threads: p.NumThreads,
-			ctxsw:  p.CtxSwitchRate,
+			ctxsw:   p.CtxSwitchRate,
 		})
 	}
 	sort.Slice(procs, func(i, j int) bool { return procs[i].cpuPct > procs[j].cpuPct })
@@ -441,4 +462,3 @@ func blameNetwork(result *model.AnalysisResult, rates *model.RateSnapshot, curr 
 	}
 	return entries
 }
-

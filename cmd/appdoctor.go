@@ -72,9 +72,9 @@ type appReport struct {
 	HealthTrend string // "stable", "degrading", "improving"
 	Issues      []string
 	// Deep metrics (latest)
-	Deep        map[string]string
+	Deep map[string]string
 	// Findings
-	Findings    []appDoctorFinding
+	Findings []appDoctorFinding
 }
 
 // appLatestInfo holds identity info from the latest snapshot.
@@ -111,6 +111,7 @@ func runAppDoctor(cfg Config) error {
 	// Phase 1: Discovery
 	fmt.Printf(" %s[1/4]%s Discovering applications...\n", B+FBCyn, R)
 	eng := engine.NewEngine(cfg.HistorySize, int(interval.Seconds()))
+	eng.SetNoHysteresis(cfg.NoHysteresis)
 	defer eng.Close()
 	ticker := engine.Ticker(eng)
 
@@ -158,14 +159,14 @@ func runAppDoctor(cfg Config) error {
 		B+FBCyn, R, cycles, time.Duration(cycles)*interval)
 
 	type sampleData struct {
-		cpuPct      float64
-		rssMB       float64
-		threads     int
-		fds         int
-		connections int
-		healthScore int
+		cpuPct       float64
+		rssMB        float64
+		threads      int
+		fds          int
+		connections  int
+		healthScore  int
 		healthIssues []string
-		deep        map[string]string
+		deep         map[string]string
 	}
 
 	// appID → []sampleData
@@ -194,12 +195,12 @@ func runAppDoctor(cfg Config) error {
 
 		for _, app := range snap.Global.Apps.Instances {
 			sd := sampleData{
-				cpuPct:      app.CPUPct,
-				rssMB:       app.RSSMB,
-				threads:     app.Threads,
-				fds:         app.FDs,
-				connections: app.Connections,
-				healthScore: app.HealthScore,
+				cpuPct:       app.CPUPct,
+				rssMB:        app.RSSMB,
+				threads:      app.Threads,
+				fds:          app.FDs,
+				connections:  app.Connections,
+				healthScore:  app.HealthScore,
 				healthIssues: app.HealthIssues,
 			}
 			if app.HasDeepMetrics {
@@ -1751,11 +1752,11 @@ func formatUptime(sec int64) string {
 
 // appDoctorJSONReport for JSON output mode.
 type appDoctorJSONReport struct {
-	Timestamp string                `json:"timestamp"`
-	Hostname  string                `json:"hostname"`
-	Version   string                `json:"version"`
-	Apps      []appDoctorJSONApp    `json:"applications"`
-	Summary   appDoctorJSONSummary  `json:"summary"`
+	Timestamp string               `json:"timestamp"`
+	Hostname  string               `json:"hostname"`
+	Version   string               `json:"version"`
+	Apps      []appDoctorJSONApp   `json:"applications"`
+	Summary   appDoctorJSONSummary `json:"summary"`
 }
 
 type appDoctorJSONApp struct {

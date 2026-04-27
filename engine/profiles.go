@@ -22,7 +22,7 @@ var Profiles = map[string]ThresholdProfile{
 		"io.disk.latency":   {Warn: 10, Crit: 40},
 		"io.disk.util":      {Warn: 60, Crit: 85},
 		"mem.available.low": {Warn: 75, Crit: 90},
-		"mem.swap.activity":  {Warn: 1, Crit: 20},
+		"mem.swap.activity": {Warn: 1, Crit: 20},
 	},
 	"network": {
 		"net.drops":       {Warn: 1, Crit: 50},
@@ -50,11 +50,32 @@ var Profiles = map[string]ThresholdProfile{
 }
 
 // threshold returns the warn/crit values for an evidence ID, checking
-// ActiveProfile first and falling back to the provided defaults.
+// ActiveProfile first, then adaptive thresholds (if DB and snapshot are
+// available), and falling back to the provided defaults.
 func threshold(id string, defaultWarn, defaultCrit float64) (float64, float64) {
 	if ActiveProfile != nil {
 		if ov, ok := ActiveProfile[id]; ok {
 			return ov.Warn, ov.Crit
+		}
+	}
+	return defaultWarn, defaultCrit
+}
+
+// thresholdAdaptive is like threshold but also checks the adaptive threshold
+// DB when a current snapshot is available. Callers from the domain detectors
+// should use this to get workload-aware thresholds.
+func thresholdAdaptive(id string, defaultWarn, defaultCrit float64, curr *model.Snapshot) (float64, float64) {
+	// Check static profile first
+	if ActiveProfile != nil {
+		if ov, ok := ActiveProfile[id]; ok {
+			return ov.Warn, ov.Crit
+		}
+	}
+	// Check adaptive DB
+	if adaptiveThresholdDB != nil && curr != nil {
+		w, c := AdaptiveThreshold(adaptiveThresholdDB, curr, id, defaultWarn, defaultCrit)
+		if w != defaultWarn || c != defaultCrit {
+			return w, c
 		}
 	}
 	return defaultWarn, defaultCrit

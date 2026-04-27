@@ -23,7 +23,7 @@ import (
 )
 
 // Version is set at build time via ldflags.
-var Version = "0.46.1"
+var Version = "0.46.2"
 
 // Config holds CLI configuration.
 type Config struct {
@@ -59,6 +59,8 @@ type Config struct {
 	CronInstall bool
 	// Privacy
 	MaskIPs bool
+	// RCA tuning
+	NoHysteresis bool // disable alert state machine sustained-threshold gating
 }
 
 // MaskIPs is a global flag accessible from UI and doctor rendering.
@@ -261,6 +263,8 @@ func Run() error {
 	flag.BoolVar(&cfg.CronInstall, "cron-install", false, "Print crontab line for automated health checks")
 	// Privacy
 	flag.BoolVar(&cfg.MaskIPs, "mask-ips", false, "Mask IP addresses in output (for demos/screenshots)")
+	// RCA tuning
+	flag.BoolVar(&cfg.NoHysteresis, "no-hysteresis", false, "Disable sustained-threshold alert gating (one-shot mode: score maps directly to health)")
 	var updateMode bool
 	flag.BoolVar(&updateMode, "update", false, "Check for latest release on GitHub and install it")
 	// Fleet (multi-host aggregation) flags
@@ -442,6 +446,7 @@ func Run() error {
 
 	// Create engine
 	eng := engine.NewEngine(cfg.HistorySize, intervalSec)
+	eng.SetNoHysteresis(cfg.NoHysteresis)
 	defer eng.Close()
 
 	// Attach fleet push client if configured (CLI flags override ~/.xtop/fleet.json)

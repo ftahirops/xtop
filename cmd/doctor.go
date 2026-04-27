@@ -53,11 +53,11 @@ type CheckResult struct {
 
 // DoctorReport holds the full health check output.
 type DoctorReport struct {
-	Timestamp   time.Time     `json:"timestamp"`
-	Hostname    string        `json:"hostname"`
-	Checks      []CheckResult `json:"checks"`
-	WorstStatus CheckStatus   `json:"worst_status"`
-	RCA         interface{}   `json:"rca,omitempty"`
+	Timestamp   time.Time           `json:"timestamp"`
+	Hostname    string              `json:"hostname"`
+	Checks      []CheckResult       `json:"checks"`
+	WorstStatus CheckStatus         `json:"worst_status"`
+	RCA         interface{}         `json:"rca,omitempty"`
 	Snap        *model.Snapshot     `json:"-"` // for diagnosis rendering
 	Rates       *model.RateSnapshot `json:"-"`
 }
@@ -65,6 +65,7 @@ type DoctorReport struct {
 // runDoctor performs all health checks and outputs the report.
 func runDoctor(cfg Config) error {
 	eng := engine.NewEngine(cfg.HistorySize, int(cfg.Interval.Seconds()))
+	eng.SetNoHysteresis(cfg.NoHysteresis)
 	defer eng.Close()
 	ticker := engine.Ticker(eng)
 
@@ -188,6 +189,7 @@ func runDoctorWatch(cfg Config) error {
 
 	// #18: Create engine once and reuse across iterations
 	eng := engine.NewEngine(cfg.HistorySize, int(cfg.Interval.Seconds()))
+	eng.SetNoHysteresis(cfg.NoHysteresis)
 	defer eng.Close()
 	ticker := engine.Ticker(eng)
 
@@ -1461,8 +1463,18 @@ func sendDoctorAlert(report DoctorReport, cfg Config) {
 	userCfg := xtopcfg.Load()
 
 	notifier := engine.NewNotifier(engine.AlertConfig{
-		Webhook:          func() string { if cfg.AlertWebhook != "" { return cfg.AlertWebhook }; return userCfg.Alerts.Webhook }(),
-		Command:          func() string { if cfg.AlertCommand != "" { return cfg.AlertCommand }; return userCfg.Alerts.Command }(),
+		Webhook: func() string {
+			if cfg.AlertWebhook != "" {
+				return cfg.AlertWebhook
+			}
+			return userCfg.Alerts.Webhook
+		}(),
+		Command: func() string {
+			if cfg.AlertCommand != "" {
+				return cfg.AlertCommand
+			}
+			return userCfg.Alerts.Command
+		}(),
 		Email:            userCfg.Alerts.Email,
 		SlackWebhook:     userCfg.Alerts.SlackWebhook,
 		TelegramBotToken: userCfg.Alerts.TelegramBotToken,

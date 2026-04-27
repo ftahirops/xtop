@@ -20,6 +20,11 @@ type AlertState struct {
 	recentHealthHistory [healthHistoryLen]model.HealthLevel
 	historyIdx          int
 	oscillationCount    int // transitions in recent history window
+
+	// NoHysteresis disables the sustained-threshold requirement.
+	// Use this for one-shot CLI/API mode where you want immediate health
+	// reflection of the current score.
+	NoHysteresis bool
 }
 
 // NewAlertState creates an AlertState calibrated for the given collection interval.
@@ -59,6 +64,13 @@ func (as *AlertState) Update(health model.HealthLevel, score int, hasCritEvidenc
 	// Entry: WARN at score>=25, exit WARN only when score<20
 	if as.current == model.HealthDegraded && score >= 20 {
 		health = model.HealthDegraded
+	}
+
+	// Bypass hysteresis for one-shot mode
+	if as.NoHysteresis {
+		as.current = health
+		as.trackHistory(health)
+		return as.current
 	}
 
 	// Check if health matches current candidate

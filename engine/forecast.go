@@ -17,12 +17,43 @@ type holtWintersState struct {
 	lastForecast float64
 	errorSum     float64
 	errorCount   int64
+
+	// Regime detection
+	recentErrors      []float64 // ring buffer of recent forecast errors
+	errPos            int
+	regime            ForecastRegime
+	regimeStableTicks int // how long we've been in current regime
 }
 
 const (
 	holtMinSamples = 10
 	holtGamma      = 0.1 // seasonal smoothing factor
 )
+
+// ForecastRegime describes the current behavior of a metric.
+type ForecastRegime int
+
+const (
+	RegimeStable   ForecastRegime = iota // low volatility, predictable
+	RegimeTrending                       // consistent directional movement
+	RegimeNoisy                          // high volatility, unpredictable
+	RegimeSpiky                          // mostly flat with occasional spikes
+)
+
+func (r ForecastRegime) String() string {
+	switch r {
+	case RegimeStable:
+		return "stable"
+	case RegimeTrending:
+		return "trending"
+	case RegimeNoisy:
+		return "noisy"
+	case RegimeSpiky:
+		return "spiky"
+	default:
+		return "unknown"
+	}
+}
 
 // HoltForecaster provides Holt-Winters triple exponential smoothing forecasting
 // with 24-hour seasonal cycle and accuracy tracking.
@@ -77,11 +108,24 @@ func (hf *HoltForecaster) UpdateWithHour(id string, value float64, hour int) {
 	if s.Ready && s.errorCount > 0 {
 		err := value - s.lastForecast
 		s.errorSum += err * err
+		// Track recent errors for regime detection
+		if len(s.recentErrors) == 0 {
+			s.recentErrors = make([]float64, 20)
+		}
+		s.recentErrors[s.errPos] = err
+		s.errPos = (s.errPos + 1) % len(s.recentErrors)
 	}
 	s.errorCount++
 
 	if !s.Ready && s.Count >= holtMinSamples {
 		s.Ready = true
+	}
+
+	// Regime detection: runs every 5 samples
+	if s.Ready && s.Count%5 == 0 && len(s.recentErrors) > 0 {
+		s.detectRegime()
+		// Dynamic parameter adjustment based on regime
+		hf.adjustParams(s)
 	}
 
 	// Deseasonalize if hour is provided
@@ -241,4 +285,109 @@ func (hf *HoltForecaster) ETAToThreshold(id string, threshold float64, maxSteps 
 		return -1
 	}
 	return steps
+}
+
+// detectRegime analyzes recent forecast errors to determine the metric's regime.
+func (s *holtWintersState) detectRegime() {
+	var errors []float64
+	for _, e := range s.recentErrors {
+		if e != 0 || len(errors) > 0 {
+			errors = append(errors, e)
+		}
+	}
+	if len(errors) < 10 {
+		return
+	}
+
+	// Compute statistics
+	var sum, absSum float64
+	for _, e := range errors {
+		sum += e
+		absSum += math.Abs(e)
+	}
+	meanErr := sum / float64(len(errors))
+	mae := absSum / float64(len(errors))
+
+	// Compute error variance
+	var varSum float64
+	for _, e := range errors {
+		diff := e - meanErr
+		varSum += diff * diff
+	}
+	stdErr := math.Sqrt(varSum / float64(len(errors)))
+
+	// Relative error (MAE / level)
+	relErr := 0.0
+	if s.Level != 0 {
+		relErr = mae / math.Abs(s.Level)
+	}
+
+	// Trend consistency: are errors trending in one direction?
+	trendingErrors := math.Abs(meanErr) > stdErr*0.5
+
+	// Spike detection: max error much larger than typical
+	maxErr := 0.0
+	for _, e := range errors {
+		if math.Abs(e) > maxErr {
+			maxErr = math.Abs(e)
+		}
+	}
+	spiky := maxErr > mae*4 && maxErr > stdErr*3
+
+	newRegime := s.regime
+	switch {
+	case relErr < 0.05 && !trendingErrors:
+		newRegime = RegimeStable
+	case trendingErrors && relErr < 0.15:
+		newRegime = RegimeTrending
+	case spiky && relErr < 0.2:
+		newRegime = RegimeSpiky
+	case relErr > 0.15:
+		newRegime = RegimeNoisy
+	}
+
+	if newRegime == s.regime {
+		s.regimeStableTicks++
+	} else {
+		s.regime = newRegime
+		s.regimeStableTicks = 0
+	}
+}
+
+// adjustParams dynamically adjusts alpha and beta based on detected regime.
+func (hf *HoltForecaster) adjustParams(s *holtWintersState) {
+	// Only adjust if regime has been stable for at least 2 detection cycles (10 ticks)
+	if s.regimeStableTicks < 2 {
+		return
+	}
+
+	switch s.regime {
+	case RegimeStable:
+		// Low alpha/beta: smooth out noise, trust the model
+		hf.alpha = 0.1
+		hf.beta = 0.01
+	case RegimeTrending:
+		// Higher beta to track trend, moderate alpha
+		hf.alpha = 0.2
+		hf.beta = 0.15
+	case RegimeNoisy:
+		// Low alpha to ignore noise, very low beta
+		hf.alpha = 0.05
+		hf.beta = 0.005
+	case RegimeSpiky:
+		// Moderate alpha to catch spikes quickly, low beta
+		hf.alpha = 0.3
+		hf.beta = 0.01
+	}
+}
+
+// Regime returns the current forecast regime for a metric.
+func (hf *HoltForecaster) Regime(id string) ForecastRegime {
+	hf.mu.RLock()
+	defer hf.mu.RUnlock()
+	s, ok := hf.state[id]
+	if !ok {
+		return RegimeStable
+	}
+	return s.regime
 }

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/xtop-v0.46.1-00d4aa?style=for-the-badge&logo=linux&logoColor=white" alt="version"/>
+  <img src="https://img.shields.io/badge/xtop-v0.46.2-00d4aa?style=for-the-badge&logo=linux&logoColor=white" alt="version"/>
   <img src="https://img.shields.io/badge/Go-1.25+-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="go"/>
   <img src="https://img.shields.io/badge/eBPF-Powered-ff6600?style=for-the-badge&logo=linux&logoColor=white" alt="ebpf"/>
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="license"/>
@@ -39,7 +39,7 @@
 
 ---
 
-## What's new in v0.46.1
+## What's new in v0.46.2
 
 - **Startup performance** — collectors now run concurrently, `DiagCollector` skips heavy subprocesses on first tick, and `SecurityCollector` `w` command has a 2s timeout. Fixes 10-second hangs on overloaded servers (load 500+).
 - **Module profiles** — `xtop modules` subcommand with presets (minimal/standard/sre/investigation) and per-collector toggles.
@@ -612,11 +612,11 @@ xtop -cron-install
 
 ```bash
 # Ubuntu/Debian (amd64)
-wget https://github.com/ftahirops/xtop/releases/download/v0.46.1/xtop_0.46.1-1_amd64.deb
+wget https://github.com/ftahirops/xtop/releases/download/v0.46.2/xtop_0.46.1-1_amd64.deb
 sudo dpkg -i xtop_0.46.1-1_amd64.deb
 
 # RHEL/Rocky/Fedora (x86_64)
-wget https://github.com/ftahirops/xtop/releases/download/v0.46.1/xtop-0.46.1-1.x86_64.rpm
+wget https://github.com/ftahirops/xtop/releases/download/v0.46.2/xtop-0.46.1-1.x86_64.rpm
 sudo rpm -i xtop-0.46.1-1.x86_64.rpm
 
 # Arch Linux
@@ -661,14 +661,14 @@ sudo xtop -json | jq   # JSON for scripting
 ### From .deb Package (Ubuntu 22.04/24.04, Debian)
 
 ```bash
-wget https://github.com/ftahirops/xtop/releases/download/v0.46.1/xtop_0.46.1-1_amd64.deb
+wget https://github.com/ftahirops/xtop/releases/download/v0.46.2/xtop_0.46.1-1_amd64.deb
 sudo dpkg -i xtop_0.46.1-1_amd64.deb
 ```
 
 ### From .rpm Package (Rocky Linux, RHEL, AlmaLinux, Fedora)
 
 ```bash
-wget https://github.com/ftahirops/xtop/releases/download/v0.46.1/xtop-0.46.1-1.x86_64.rpm
+wget https://github.com/ftahirops/xtop/releases/download/v0.46.2/xtop-0.46.1-1.x86_64.rpm
 sudo rpm -i xtop-0.46.1-1.x86_64.rpm
 ```
 

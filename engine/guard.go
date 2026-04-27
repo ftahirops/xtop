@@ -26,10 +26,10 @@ import (
 //
 // Four levels of response:
 //
-//   Level 0 (normal):      everything runs at full cadence
-//   Level 1 (caution):     skip app deep-metric probes + log tailer
-//   Level 2 (degraded):    also skip trace correlator + eBPF watchdog triggers
-//   Level 3 (minimal):     also skip deep scan; interval up to 2× base
+//	Level 0 (normal):      everything runs at full cadence
+//	Level 1 (caution):     skip app deep-metric probes + log tailer
+//	Level 2 (degraded):    also skip trace correlator + eBPF watchdog triggers
+//	Level 3 (minimal):     also skip deep scan; interval up to 2× base
 //
 // Hysteresis: we escalate after 3 consecutive ticks above threshold, and
 // de-escalate only after 10 consecutive ticks below. Prevents flapping
@@ -39,41 +39,41 @@ import (
 // off so existing deployments see no behavior change.
 type ResourceGuard struct {
 	// Config (set at construction, read-only thereafter)
-	enabled          bool
-	ownCPUBudgetPct  float64 // we consider ourselves "greedy" above this
-	loadWarnRatio    float64 // load/NumCPUs threshold for level 1
-	loadCritRatio    float64 // load/NumCPUs threshold for level 2
-	hostBusyWarnPct  float64 // host CPU-busy threshold for level 1
-	hostBusyCritPct  float64 // host CPU-busy threshold for level 2
-	baseIntervalSec  int
-	maxIntervalSec   int
-	numCPUs          int
+	enabled         bool
+	ownCPUBudgetPct float64 // we consider ourselves "greedy" above this
+	loadWarnRatio   float64 // load/NumCPUs threshold for level 1
+	loadCritRatio   float64 // load/NumCPUs threshold for level 2
+	hostBusyWarnPct float64 // host CPU-busy threshold for level 1
+	hostBusyCritPct float64 // host CPU-busy threshold for level 2
+	baseIntervalSec int
+	maxIntervalSec  int
+	numCPUs         int
 
 	// Live state
-	level          atomic.Int32 // 0..3
-	highTicks      atomic.Int32 // consecutive ticks above threshold (for escalation)
-	lowTicks       atomic.Int32 // consecutive ticks clean (for de-escalation)
-	intervalSec    atomic.Int32 // currently-recommended tick interval
+	level       atomic.Int32 // 0..3
+	highTicks   atomic.Int32 // consecutive ticks above threshold (for escalation)
+	lowTicks    atomic.Int32 // consecutive ticks clean (for de-escalation)
+	intervalSec atomic.Int32 // currently-recommended tick interval
 
 	// Self-measurement
-	lastSelfTickAt    time.Time
-	lastSelfCPUTicks  uint64
-	lastOwnCPUPct     float64
+	lastSelfTickAt   time.Time
+	lastSelfCPUTicks uint64
+	lastOwnCPUPct    float64
 }
 
 // GuardAdvice is the per-tick output consumed by Engine.Tick. Everything
 // the engine needs to decide what to skip lives on this struct.
 type GuardAdvice struct {
-	Level             int     // 0..3
-	Reason            string  // short, human-readable
-	IntervalSec       int     // suggested tick interval
-	SkipAppDeep       bool    // skip expensive app deep-metric probes
-	SkipLogTailer     bool    // skip app-log correlation (file IO)
-	SkipTraces        bool    // skip OTel trace correlator
-	SkipWatchdog      bool    // skip auto-triggering eBPF watchdogs
-	SkipDeepScan      bool    // pause the full-FS polite scanner
-	OwnCPUPct         float64 // our own CPU%, for display
-	HostLoadRatio     float64 // load/NumCPUs, for display
+	Level         int     // 0..3
+	Reason        string  // short, human-readable
+	IntervalSec   int     // suggested tick interval
+	SkipAppDeep   bool    // skip expensive app deep-metric probes
+	SkipLogTailer bool    // skip app-log correlation (file IO)
+	SkipTraces    bool    // skip OTel trace correlator
+	SkipWatchdog  bool    // skip auto-triggering eBPF watchdogs
+	SkipDeepScan  bool    // pause the full-FS polite scanner
+	OwnCPUPct     float64 // our own CPU%, for display
+	HostLoadRatio float64 // load/NumCPUs, for display
 }
 
 // NewResourceGuard constructs a guard with sensible defaults, then overlays
@@ -86,9 +86,9 @@ func NewResourceGuard(numCPUs, baseIntervalSec int) *ResourceGuard {
 	}
 	g := &ResourceGuard{
 		enabled:         os.Getenv("XTOP_GUARD") == "1",
-		ownCPUBudgetPct: 2.0,  // self-throttle when we exceed 2% of one core
-		loadWarnRatio:   1.5,  // load > 1.5 × NumCPUs → caution
-		loadCritRatio:   3.0,  // load > 3.0 × NumCPUs → degraded
+		ownCPUBudgetPct: 2.0, // self-throttle when we exceed 2% of one core
+		loadWarnRatio:   1.5, // load > 1.5 × NumCPUs → caution
+		loadCritRatio:   3.0, // load > 3.0 × NumCPUs → degraded
 		hostBusyWarnPct: 75,
 		hostBusyCritPct: 92,
 		baseIntervalSec: baseIntervalSec,
@@ -120,9 +120,9 @@ func (g *ResourceGuard) Advise(loadAvg1, hostBusyPct float64) GuardAdvice {
 
 	if !g.enabled {
 		return GuardAdvice{
-			Level:       0,
-			IntervalSec: g.baseIntervalSec,
-			OwnCPUPct:   ownCPU,
+			Level:         0,
+			IntervalSec:   g.baseIntervalSec,
+			OwnCPUPct:     ownCPU,
 			HostLoadRatio: loadAvg1 / float64(g.numCPUs),
 		}
 	}
@@ -236,6 +236,30 @@ func (g *ResourceGuard) CurrentIntervalSec() int {
 		return 0
 	}
 	return int(g.intervalSec.Load())
+}
+
+// AllowDeepAppAnalysis returns true when the system is calm enough to
+// afford expensive per-app deep diagnostics (subprocess spawns, HTTP
+// scrapes, etc.). This is stricter than SkipAppDeep: even at guard
+// level 0 we throttle deep analysis to once every 30s to avoid
+// persistent background load.
+func (g *ResourceGuard) AllowDeepAppAnalysis(lastRun time.Time) bool {
+	if g == nil {
+		return time.Since(lastRun) >= 30*time.Second
+	}
+	// Must have been at least 30s since last deep analysis
+	if time.Since(lastRun) < 30*time.Second {
+		return false
+	}
+	// If guard is enabled, only allow at level 0 (normal) or level 1 (caution)
+	// but not if we're already skipping app deep probes.
+	if g.enabled {
+		cur := int(g.level.Load())
+		if cur >= 1 {
+			return false
+		}
+	}
+	return true
 }
 
 // ── Self-measurement ────────────────────────────────────────────────────────

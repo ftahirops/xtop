@@ -97,11 +97,11 @@ func analyzeMemory(curr *model.Snapshot, rates *model.RateSnapshot, sp systemPro
 		reclaimConf = memReclaimNoPSIConf // much less confident without PSI confirmation
 	}
 
-	w, c := threshold("mem.psi", 5, 20)
-	w2, c2 := threshold("mem.available.low", availWarn, availCrit)
-	w3, c3 := threshold("mem.reclaim.direct", 10, 500)
-	w5, c5 := threshold("mem.major.faults", 10, 200)
-	w6, c6 := threshold("mem.oom.kills", 1, 1)
+	w, c := thresholdAdaptive("mem.psi", 5, 20, curr)
+	w2, c2 := thresholdAdaptive("mem.available.low", availWarn, availCrit, curr)
+	w3, c3 := thresholdAdaptive("mem.reclaim.direct", 10, 500, curr)
+	w5, c5 := thresholdAdaptive("mem.major.faults", 10, 200, curr)
+	w6, c6 := thresholdAdaptive("mem.oom.kills", 1, 1, curr)
 	r.EvidenceV2 = append(r.EvidenceV2,
 		emitEvidence("mem.psi", model.DomainMemory,
 			memSome*100, w, c, true, 0.9,
@@ -220,10 +220,19 @@ func analyzeMemory(curr *model.Snapshot, rates *model.RateSnapshot, sp systemPro
 		}
 	}
 
+	// Phase 1: app-aware evidence injection
+	appInjector := NewAppEvidenceInjector()
+	appInjector.InjectMemoryEvidence(curr, &r)
+
 	// v2 scoring
 	v2Score := weightedDomainScore(r.EvidenceV2)
 	if !v2TrustGate(r.EvidenceV2) {
 		v2Score = 0
+	}
+	r.Score = int(v2Score)
+	// Floor score when OOM detected + trust gate passes
+	if oomDetected && v2TrustGate(r.EvidenceV2) && r.Score < memOOMMinScore {
+		r.Score = memOOMMinScore
 	}
 	r.Score = int(v2Score)
 	if oomDetected && v2TrustGate(r.EvidenceV2) && r.Score < memOOMMinScore {

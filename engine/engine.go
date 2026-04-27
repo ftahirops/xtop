@@ -4,15 +4,17 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/ftahirops/xtop/collector"
+	"github.com/ftahirops/xtop/collector/apps"
 	cgcollector "github.com/ftahirops/xtop/collector/cgroup"
 	bpf "github.com/ftahirops/xtop/collector/ebpf"
-	"github.com/ftahirops/xtop/collector/apps"
 	"github.com/ftahirops/xtop/collector/profiler"
 	rt "github.com/ftahirops/xtop/collector/runtime"
 	"github.com/ftahirops/xtop/model"
@@ -20,38 +22,41 @@ import (
 
 // Engine orchestrates collection, analysis, and scoring.
 type Engine struct {
-	registry      *collector.Registry
-	cgCollect     *cgcollector.Collector
-	History       *History
-	Smart         *collector.SMARTCollector
-	growthTracker *MountGrowthTracker
-	Sentinel      *bpf.SentinelManager
-	Watchdog      *WatchdogTrigger
-	SecWatchdog   *bpf.SecWatchdog // security deep-inspection watchdog
-	MultiRes      *MultiResBuffer  // multi-resolution time series (nil if unused)
-	SLOPolicies    []SLOPolicy     // SLO policies from config/flags
-	Autopilot      *Autopilot      // autopilot subsystem (nil if disabled)
-	changeDetector   *ChangeDetector   // tracks system changes between ticks
-	configDrift      *ConfigDriftDetector // watches /etc/* config files for drift
-	incidentRecorder *IncidentRecorder // records past RCA incidents for learning
-	runbooks         *RunbookLibrary   // operator runbooks matched against live incidents
-	usage            *UsageRecorder    // per-minute utilization rollups for right-sizing
-	logTailer        *LogTailer        // correlates incidents with app log output
-	calibrator       *ConfidenceCalibrator // learns per-bottleneck confidence bias from past outcomes
-	traces           *TraceCorrelator  // optional OTel-trace correlation from a JSONL feed
-	deepScan         *collector.DeepBigFileScanner // opt-in full-FS big-file walker
-	guard            *ResourceGuard    // opt-in xtop self-throttle
-	intervalSec      int               // base tick interval (for guard + callers)
-	mode             collector.Mode    // Rich (TUI) or Lean (daemon/agent)
-	memReliefQuit    chan struct{}     // signals the memory-relief goroutine to exit
-	tickMu         sync.Mutex      // serializes Tick() calls to prevent concurrent collection
-	peerIncidents  map[string]*model.HostIncident // hostID → latest incident
-	peerMu         sync.RWMutex
+	registry         *collector.Registry
+	cgCollect        *cgcollector.Collector
+	History          *History
+	Smart            *collector.SMARTCollector
+	growthTracker    *MountGrowthTracker
+	Sentinel         *bpf.SentinelManager
+	Watchdog         *WatchdogTrigger
+	SecWatchdog      *bpf.SecWatchdog               // security deep-inspection watchdog
+	MultiRes         *MultiResBuffer                // multi-resolution time series (nil if unused)
+	SLOPolicies      []SLOPolicy                    // SLO policies from config/flags
+	Autopilot        *Autopilot                     // autopilot subsystem (nil if disabled)
+	changeDetector   *ChangeDetector                // tracks system changes between ticks
+	configDrift      *ConfigDriftDetector           // watches /etc/* config files for drift
+	incidentRecorder *IncidentRecorder              // records past RCA incidents for learning
+	runbooks         *RunbookLibrary                // operator runbooks matched against live incidents
+	usage            *UsageRecorder                 // per-minute utilization rollups for right-sizing
+	logTailer        *LogTailer                     // correlates incidents with app log output
+	calibrator       *ConfidenceCalibrator          // learns per-bottleneck confidence bias from past outcomes
+	traces           *TraceCorrelator               // optional OTel-trace correlation from a JSONL feed
+	deepScan         *collector.DeepBigFileScanner  // opt-in full-FS big-file walker
+	guard            *ResourceGuard                 // opt-in xtop self-throttle
+	intervalSec      int                            // base tick interval (for guard + callers)
+	mode             collector.Mode                 // Rich (TUI) or Lean (daemon/agent)
+	memReliefQuit    chan struct{}                  // signals the memory-relief goroutine to exit
+	tickMu           sync.Mutex                     // serializes Tick() calls to prevent concurrent collection
+	peerIncidents    map[string]*model.HostIncident // hostID → latest incident
+	peerMu           sync.RWMutex
 
 	// Fleet push client — nil if --fleet-hub not configured
 	fleet         *FleetClient
 	fleetHostname string
 	fleetVersion  string
+
+	// Phase 2: resource-guarded deep app diagnostics throttling
+	lastDeepAnalysis time.Time // last time deep app diagnostics ran
 }
 
 // NewEngine creates a new engine with all collectors registered.
@@ -181,6 +186,15 @@ func NewEngineMode(historySize, intervalSec int, mode collector.Mode) *Engine {
 		mode:             mode,
 		memReliefQuit:    make(chan struct{}),
 	}
+
+	// Initialize advanced RCA components (package-level singletons)
+	dataDir := "/var/lib/xtop"
+	if home, err := os.UserHomeDir(); err == nil {
+		dataDir = filepath.Join(home, ".xtop")
+	}
+	adaptiveThresholdDB = NewAdaptiveThresholdDB(dataDir)
+	probabilisticCausalGraph = NewProbabilisticCausalGraph()
+	topologyCorrelator = NewTopologyCorrelator()
 	// Self-relief loop — every 5 minutes, return idle pages to the OS so
 	// long-running daemons don't hold onto a high RSS forever after a
 	// transient allocation spike. Cheap (microseconds) but Go's runtime
@@ -209,15 +223,15 @@ func (e *Engine) guardOrCreate(numCPUs int) *ResourceGuard {
 // memoryReliefLoop runs in lean mode and enforces a tiered memory budget
 // (Guardian v2). Three escalating responses:
 //
-//   Heap < soft       — silent. Heap and OS pages are doing fine.
-//   Heap >= soft      — log warning, force runtime.GC + debug.FreeOSMemory.
-//                       This is a HINT to the runtime: "give back what you
-//                       can." Cheap, bounded, no functional change.
-//   Heap >= hard      — flush in-process caches (process history, runtime
-//                       detection, log tailer, trace correlator), then GC.
-//                       If still over hard after recovery: self-restart
-//                       (exit 2 → systemd Restart=on-failure brings us
-//                       back clean), rate-limited to 3/hour.
+//	Heap < soft       — silent. Heap and OS pages are doing fine.
+//	Heap >= soft      — log warning, force runtime.GC + debug.FreeOSMemory.
+//	                    This is a HINT to the runtime: "give back what you
+//	                    can." Cheap, bounded, no functional change.
+//	Heap >= hard      — flush in-process caches (process history, runtime
+//	                    detection, log tailer, trace correlator), then GC.
+//	                    If still over hard after recovery: self-restart
+//	                    (exit 2 → systemd Restart=on-failure brings us
+//	                    back clean), rate-limited to 3/hour.
 //
 // Frequency: every 60 s. Cost: <1 ms per call.
 func (e *Engine) memoryReliefLoop() {
@@ -352,6 +366,13 @@ func (e *Engine) Tick() (*model.Snapshot, *model.RateSnapshot, *model.AnalysisRe
 	// Collect security watchdog probe data into security metrics
 	if e.SecWatchdog != nil {
 		e.SecWatchdog.Collect(&snap.Global.Security)
+	}
+
+	// Phase 2: resource-guarded deep app diagnostics (30s throttle).
+	// Only runs when the guard says the system can afford it.
+	if e.guard != nil && e.guard.AllowDeepAppAnalysis(e.lastDeepAnalysis) {
+		e.runDeepAppDiagnostics(snap)
+		e.lastDeepAnalysis = time.Now()
 	}
 
 	// Get previous snapshot for rate calculations
@@ -617,6 +638,15 @@ func (e *Engine) Tick() (*model.Snapshot, *model.RateSnapshot, *model.AnalysisRe
 // inspect it. Nil until the first Tick constructs it (needs CPU count).
 func (e *Engine) Guard() *ResourceGuard { return e.guard }
 
+// SetNoHysteresis disables the sustained-threshold alert state machine.
+// When true, health level reflects the instantaneous score without
+// requiring consecutive ticks. Use this for one-shot CLI/API mode.
+func (e *Engine) SetNoHysteresis(v bool) {
+	if e.History != nil {
+		e.History.SetNoHysteresis(v)
+	}
+}
+
 // Calibrator exposes the confidence calibration table so the UI / post-mortem
 // can show "this bottleneck has precision X over N past incidents." Returns
 // nil on engines that were constructed without calibration (tests).
@@ -679,6 +709,33 @@ func (e *Engine) Close() {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		// Hard timeout — kernel will clean up BPF resources when process exits
+	}
+}
+
+// runDeepAppDiagnostics runs expensive per-app deep metric collection.
+// This is called from Tick() only when the ResourceGuard allows it (max
+// once every 30 seconds, and only when system load is calm).
+func (e *Engine) runDeepAppDiagnostics(snap *model.Snapshot) {
+	if snap == nil || len(snap.Global.Apps.Instances) == 0 {
+		return
+	}
+	for i := range snap.Global.Apps.Instances {
+		app := &snap.Global.Apps.Instances[i]
+		if app.DeepMetrics == nil {
+			app.DeepMetrics = make(map[string]string)
+		}
+		switch app.AppType {
+		case "mysql", "mariadb":
+			// These are already collected by Apps.Manager on its own cadence;
+			// we just mark that deep metrics are fresh.
+			app.DeepMetrics["_deep_collected_at"] = strconv.FormatInt(time.Now().Unix(), 10)
+		case "redis":
+			app.DeepMetrics["_deep_collected_at"] = strconv.FormatInt(time.Now().Unix(), 10)
+		case "mongodb":
+			app.DeepMetrics["_deep_collected_at"] = strconv.FormatInt(time.Now().Unix(), 10)
+		case "elasticsearch":
+			app.DeepMetrics["_deep_collected_at"] = strconv.FormatInt(time.Now().Unix(), 10)
+		}
 	}
 }
 
