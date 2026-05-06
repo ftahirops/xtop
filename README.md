@@ -41,10 +41,13 @@
 
 ## What's new in v0.46.3
 
-- **Startup performance** — collectors now run concurrently, `DiagCollector` skips heavy subprocesses on first tick, and `SecurityCollector` `w` command has a 2s timeout. Fixes 10-second hangs on overloaded servers (load 500+).
-- **Module profiles** — `xtop modules` subcommand with presets (minimal/standard/sre/investigation) and per-collector toggles.
-- **Resource Guardian** — self-throttling and memory-pressure protection with automatic collector skip.
-- **eBPF security watchdogs** — TC ingress classifiers for TLS fingerprinting, DNS tunneling, and C2 beacon detection.
+- **Resource Guardian on by default** — auto-throttles xtop when host load > 1.5× cores. Set `XTOP_GUARD=0` to opt out (audit/debug only). At Level 1 skips app deep probes (mongosh / mysql / redis-cli) and the cgroup tree walker; at Level 2 also skips traces/watchdog and triples the tick interval; at Level 3 caps tick interval at 4× base and skips deep scans. **Visible badge** in the TUI header (`GUARD L2 degraded — host load 5.5x`).
+- **App Load Distribution panel** — explicit per-app CPU%, RAM%, IO read/write (with auto-scaled units B/s → KB/s → MB/s → GB/s), and host-level NET RX/TX. One row per app/service. Filters out generic cgroups (`system.slice`, `[root]`, etc.) so you see actual services.
+- **Apps detection no longer permanently disabled** — fixed a registry budget bug where the apps Manager would be marked `Skipped=true` after 3 consecutive ticks > 50ms (mongosh on busy mongo legitimately takes seconds). Apps Manager now declares a 30s budget. Combined with deferred `snap.Global.Apps` assignment, a panic in any one module no longer empties the whole apps list.
+- **Trace mode for verification** — `xtop trace --once` dumps the next analysis cycle's full A→Z reasoning to `~/.xtop/traces/trace-<ts>.{json,md}`: inputs, evidence, gate audit, rejected evidence, runner-up domain, blame, drift warnings. Use this to verify "is xtop's verdict actually correct?" without trusting the TUI summary.
+- **Per-app behavioural baselines** — anchored on cgroup, per-hour-of-week, frozen during incidents so a workload spike doesn't get learned as "normal."
+- **PSI poll() event-driven onset** — sub-second crossing detection via Linux PSI poll(2), falling back to 500ms sampling on permission error.
+- **CPU% in human terms** — process detail shows `832.7% (8.3 / 12 cores = 69% of host)` instead of just a giant number.
 
 ## What's new in v0.39.1
 
@@ -612,12 +615,12 @@ xtop -cron-install
 
 ```bash
 # Ubuntu/Debian (amd64)
-wget https://github.com/ftahirops/xtop/releases/download/v0.46.3/xtop_0.46.1-1_amd64.deb
-sudo dpkg -i xtop_0.46.1-1_amd64.deb
+wget https://github.com/ftahirops/xtop/releases/download/v0.46.3/xtop_0.46.3-1_amd64.deb
+sudo dpkg -i xtop_0.46.3-1_amd64.deb
 
 # RHEL/Rocky/Fedora (x86_64)
-wget https://github.com/ftahirops/xtop/releases/download/v0.46.3/xtop-0.46.1-1.x86_64.rpm
-sudo rpm -i xtop-0.46.1-1.x86_64.rpm
+wget https://github.com/ftahirops/xtop/releases/download/v0.46.3/xtop-0.46.3-1.x86_64.rpm
+sudo rpm -i xtop-0.46.3-1.x86_64.rpm
 
 # Arch Linux
 git clone https://github.com/ftahirops/xtop.git
@@ -629,7 +632,7 @@ cd xtop/packaging/archlinux && makepkg -si
 ```bash
 git clone https://github.com/ftahirops/xtop.git
 cd xtop
-CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.46.1" -o xtop .
+CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.46.3" -o xtop .
 sudo install -m 755 xtop /usr/local/bin/xtop
 ```
 
@@ -661,15 +664,15 @@ sudo xtop -json | jq   # JSON for scripting
 ### From .deb Package (Ubuntu 22.04/24.04, Debian)
 
 ```bash
-wget https://github.com/ftahirops/xtop/releases/download/v0.46.3/xtop_0.46.1-1_amd64.deb
-sudo dpkg -i xtop_0.46.1-1_amd64.deb
+wget https://github.com/ftahirops/xtop/releases/download/v0.46.3/xtop_0.46.3-1_amd64.deb
+sudo dpkg -i xtop_0.46.3-1_amd64.deb
 ```
 
 ### From .rpm Package (Rocky Linux, RHEL, AlmaLinux, Fedora)
 
 ```bash
-wget https://github.com/ftahirops/xtop/releases/download/v0.46.3/xtop-0.46.1-1.x86_64.rpm
-sudo rpm -i xtop-0.46.1-1.x86_64.rpm
+wget https://github.com/ftahirops/xtop/releases/download/v0.46.3/xtop-0.46.3-1.x86_64.rpm
+sudo rpm -i xtop-0.46.3-1.x86_64.rpm
 ```
 
 ### Arch Linux (PKGBUILD)
@@ -691,7 +694,7 @@ Builds from source automatically. Optional dependencies: `nvidia-utils` (GPU mon
 ```bash
 git clone https://github.com/ftahirops/xtop.git
 cd xtop
-CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.46.1" -o xtop .
+CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.46.3" -o xtop .
 sudo install -m 755 xtop /usr/local/bin/xtop
 ```
 

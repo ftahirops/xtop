@@ -35,6 +35,11 @@ import (
 // de-escalate only after 10 consecutive ticks below. Prevents flapping
 // when load is noisy.
 //
+// Self-attribution: when our own CPU climbs above ownCPUBudgetPct AND the
+// host is loaded, we're a contributor — force the level higher than the
+// host signals alone would suggest. This closes the "xtop made it worse"
+// feedback loop that an early version of this code shipped with.
+//
 // Opt-in: must be enabled via XTOP_GUARD=1 (or explicit Enable()). Default
 // off so existing deployments see no behavior change.
 type ResourceGuard struct {
@@ -84,15 +89,24 @@ func NewResourceGuard(numCPUs, baseIntervalSec int) *ResourceGuard {
 	if numCPUs <= 0 {
 		numCPUs = 1
 	}
+	// Guardian is now ON BY DEFAULT. The whole point of a safety net that
+	// throttles xtop on busy hosts is to be there *before* the operator
+	// thinks to enable it — by the time someone runs `xtop` on a thrashing
+	// box, they don't have time to remember an env var. Set XTOP_GUARD=0
+	// to opt out (audit / debugging only).
+	enabled := true
+	if v := os.Getenv("XTOP_GUARD"); v == "0" || v == "off" || v == "false" {
+		enabled = false
+	}
 	g := &ResourceGuard{
-		enabled:         os.Getenv("XTOP_GUARD") == "1",
+		enabled:         enabled,
 		ownCPUBudgetPct: 2.0, // self-throttle when we exceed 2% of one core
 		loadWarnRatio:   1.5, // load > 1.5 × NumCPUs → caution
 		loadCritRatio:   3.0, // load > 3.0 × NumCPUs → degraded
 		hostBusyWarnPct: 75,
 		hostBusyCritPct: 92,
 		baseIntervalSec: baseIntervalSec,
-		maxIntervalSec:  baseIntervalSec * 2,
+		maxIntervalSec:  baseIntervalSec * 4, // L3 = "stop running so often"
 		numCPUs:         numCPUs,
 	}
 	overlayEnvFloat("XTOP_GUARD_OWN_CPU_PCT", &g.ownCPUBudgetPct)
@@ -153,13 +167,21 @@ func (g *ResourceGuard) Advise(loadAvg1, hostBusyPct float64) GuardAdvice {
 		g.lowTicks.Store(0)
 	}
 
-	// Interval: base at L0/L1, extend at L2, double at L3.
+	// Interval: base at L0; double at L1; triple at L2; cap (default 4×) at L3.
+	// Earlier values were too gentle — on a 16-core box thrashing at load
+	// 80, going from 3s ticks to 4.5s isn't a meaningful relief. The point
+	// of guarding is "stop running so often when the host is in pain."
 	interval := g.baseIntervalSec
 	switch cur {
+	case 1:
+		interval = g.baseIntervalSec * 2
 	case 2:
-		interval = g.baseIntervalSec * 3 / 2
+		interval = g.baseIntervalSec * 3
 	case 3:
-		interval = g.maxIntervalSec
+		interval = g.maxIntervalSec // default = base × 4 (we'll bump below)
+		if interval < g.baseIntervalSec*4 {
+			interval = g.baseIntervalSec * 4
+		}
 	}
 	g.intervalSec.Store(int32(interval))
 

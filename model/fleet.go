@@ -112,6 +112,14 @@ type FleetIncident struct {
 
 	// Update type — lets hub distinguish new incidents from updates
 	UpdateType IncidentUpdateType `json:"update_type"`
+
+	// Lifecycle (Phase 1 of RCA overhaul; Phase 5 of TODOs adds hub schema).
+	// State: "suspected" | "confirmed" | "resolved" | "" (legacy).
+	// Hubs that don't know these fields ignore them; they live in JSONB too.
+	State              string               `json:"state,omitempty"`
+	ConfirmedAt        time.Time            `json:"confirmed_at,omitempty"`
+	ChangesAtConfirm   []SystemChange       `json:"changes_at_confirm,omitempty"`
+	FleetPeersAtConfirm string              `json:"fleet_peers_at_confirm,omitempty"`
 }
 
 // IncidentUpdateType signals what kind of update the hub is receiving.

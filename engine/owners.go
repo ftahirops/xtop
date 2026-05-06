@@ -72,6 +72,15 @@ func topMemOwners(snap *model.Snapshot, rates *model.RateSnapshot) []model.Owner
 func topIOOwners(rates *model.RateSnapshot) []model.Owner {
 	cgs := make([]model.CgroupRate, len(rates.CgroupRates))
 	copy(cgs, rates.CgroupRates)
+
+	// Compute total IO MB/s across ALL cgroups so each owner gets a real
+	// share-of-total-IO percentage. (Pct field was previously left at 0,
+	// which made it useless to the UI.)
+	var totalIO float64
+	for _, c := range cgs {
+		totalIO += c.IORateMBs + c.IOWRateMBs
+	}
+
 	sort.Slice(cgs, func(i, j int) bool {
 		return (cgs[i].IORateMBs + cgs[i].IOWRateMBs) > (cgs[j].IORateMBs + cgs[j].IOWRateMBs)
 	})
@@ -82,9 +91,14 @@ func topIOOwners(rates *model.RateSnapshot) []model.Owner {
 		if i >= topN || totalMBs < 0.001 {
 			break
 		}
+		var pct float64
+		if totalIO > 0 {
+			pct = totalMBs / totalIO * 100
+		}
 		owners = append(owners, model.Owner{
 			Name:   cg.Name,
 			CgPath: cg.Path,
+			Pct:    pct,
 			Value:  fmt.Sprintf("%.1f MB/s (R:%.1f W:%.1f)", totalMBs, cg.IORateMBs, cg.IOWRateMBs),
 		})
 	}
@@ -92,9 +106,17 @@ func topIOOwners(rates *model.RateSnapshot) []model.Owner {
 }
 
 func topNetOwners(rates *model.RateSnapshot) []model.Owner {
-	// Network ownership is best-effort: use top processes by name
+	// "Network ownership" approximated from per-process disk read+write,
+	// which is the closest signal in /proc — proper per-process net
+	// counters need eBPF. Pct field is share-of-total-IO across processes.
 	procs := make([]model.ProcessRate, len(rates.ProcessRates))
 	copy(procs, rates.ProcessRates)
+
+	var totalIO float64
+	for _, p := range procs {
+		totalIO += p.ReadMBs + p.WriteMBs
+	}
+
 	sort.Slice(procs, func(i, j int) bool {
 		return (procs[i].ReadMBs + procs[i].WriteMBs) > (procs[j].ReadMBs + procs[j].WriteMBs)
 	})
@@ -105,15 +127,21 @@ func topNetOwners(rates *model.RateSnapshot) []model.Owner {
 		if len(owners) >= topN {
 			break
 		}
-		if seen[p.Comm] || (p.ReadMBs+p.WriteMBs) < 0.001 {
+		mbs := p.ReadMBs + p.WriteMBs
+		if seen[p.Comm] || mbs < 0.001 {
 			continue
 		}
 		seen[p.Comm] = true
+		var pct float64
+		if totalIO > 0 {
+			pct = mbs / totalIO * 100
+		}
 		owners = append(owners, model.Owner{
 			Name:   p.Comm,
 			PID:    p.PID,
 			CgPath: p.CgroupPath,
-			Value:  fmt.Sprintf("%.1f MB/s IO", p.ReadMBs+p.WriteMBs),
+			Pct:    pct,
+			Value:  fmt.Sprintf("%.1f MB/s IO", mbs),
 		})
 	}
 	return owners

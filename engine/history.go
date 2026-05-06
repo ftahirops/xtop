@@ -27,6 +27,10 @@ type History struct {
 	Seasonal       *SeasonalTracker
 	CausalLearner  *CausalLearner
 	ProcessHistory *ProcessHistory
+
+	// FastPulse provides sub-second PSI onset tracking. Optional; nil disables.
+	// Set by NewEngine when XTOP_FASTPULSE != "0".
+	FastPulse *FastPulse
 }
 
 // NewHistory creates a ring buffer with the given capacity.

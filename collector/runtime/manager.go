@@ -1,12 +1,22 @@
 package runtime
 
 import (
+	"sync/atomic"
 	"time"
 
 	"github.com/ftahirops/xtop/model"
 )
 
 const scanInterval = 30 * time.Second
+
+// skipDetection is flipped by the engine when the resource guard says
+// scanning every PID's /proc/*/maps for runtime fingerprints is too
+// expensive. While set, Collect returns nothing (no fresh detections,
+// no per-PID metric pulls).
+var skipDetection atomic.Bool
+
+// SetSkipDetection lets the engine flip the skip flag once per tick.
+func SetSkipDetection(v bool) { skipDetection.Store(v) }
 
 // Manager is a collector that manages all runtime detection modules.
 // It implements collector.Collector so it can be registered with the engine.
@@ -31,6 +41,9 @@ func (m *Manager) Name() string { return "runtime" }
 // Collect runs detection (every 30s) and collection (every tick for active modules).
 // It populates snap.Global.Runtimes and maintains backward compat with snap.Global.DotNet.
 func (m *Manager) Collect(snap *model.Snapshot) error {
+	if skipDetection.Load() {
+		return nil
+	}
 	// Run detection scan every 30s
 	if time.Since(m.lastScan) >= scanInterval {
 		for _, mod := range m.modules {

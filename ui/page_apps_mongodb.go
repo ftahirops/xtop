@@ -13,6 +13,7 @@ import (
 )
 
 // mongoRate returns "value (rate/s)" or just "value" if no rate.
+// Kept for back-compat; new panels prefer mongoRateOnly + mongoTotal.
 func mongoRate(dm map[string]string, key string) string {
 	v := dm[key]
 	if v == "" {
@@ -22,22 +23,79 @@ func mongoRate(dm map[string]string, key string) string {
 	if r == "" || r == "0.0" {
 		return v
 	}
-	// Format rate nicely
 	rf, _ := strconv.ParseFloat(r, 64)
-	var rs string
+	return v + " (" + mongoFormatRateNumber(rf) + "/s)"
+}
+
+// mongoRateOnly returns just the rate string ("9.8K/s") without the giant
+// lifetime total. Used when the section header already says "(/s)".
+func mongoRateOnly(dm map[string]string, key string) string {
+	r := dm[key+"_rate"]
+	if r == "" {
+		return "0/s"
+	}
+	rf, _ := strconv.ParseFloat(r, 64)
+	if rf <= 0 {
+		return "0/s"
+	}
+	return mongoFormatRateNumber(rf) + "/s"
+}
+
+// mongoTotal returns the lifetime total formatted with thousands separators.
+// Used in CONNECTIONS where "Total Created" is a counter, not a gauge.
+func mongoTotal(dm map[string]string, key string) string {
+	v := dm[key]
+	if v == "" {
+		return "0"
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return v
+	}
+	return mongoCommas(n)
+}
+
+func mongoCommas(n int64) string {
+	if n < 0 {
+		return "-" + mongoCommas(-n)
+	}
+	if n < 1000 {
+		return strconv.FormatInt(n, 10)
+	}
+	return mongoCommas(n/1000) + "," + fmt.Sprintf("%03d", n%1000)
+}
+
+func mongoFormatRateNumber(rf float64) string {
 	switch {
 	case rf >= 1e9:
-		rs = fmt.Sprintf("%.1fB", rf/1e9)
+		return fmt.Sprintf("%.1fB", rf/1e9)
 	case rf >= 1e6:
-		rs = fmt.Sprintf("%.1fM", rf/1e6)
+		return fmt.Sprintf("%.1fM", rf/1e6)
 	case rf >= 1e3:
-		rs = fmt.Sprintf("%.1fK", rf/1e3)
+		return fmt.Sprintf("%.1fK", rf/1e3)
 	case rf >= 1:
-		rs = fmt.Sprintf("%.0f", rf)
+		return fmt.Sprintf("%.0f", rf)
 	default:
-		rs = fmt.Sprintf("%.1f", rf)
+		return fmt.Sprintf("%.1f", rf)
 	}
-	return v + " (" + rs + "/s)"
+}
+
+// mongoColorThreshold colors a rate-or-int value green/yellow/red against
+// (warn, crit) cutoffs. Empty input → dim "—".
+func mongoColorThreshold(text string, value, warn, crit float64) string {
+	if text == "" {
+		return dimStyle.Render("—")
+	}
+	switch {
+	case value >= crit:
+		return critStyle.Render(text)
+	case value >= warn:
+		return warnStyle.Render(text)
+	case value > 0:
+		return okStyle.Render(text)
+	default:
+		return dimStyle.Render(text)
+	}
 }
 
 func renderMongoDBDeepMetrics(app model.AppInstance, iw int) string {
@@ -271,75 +329,225 @@ func renderMongoDBDeepMetrics(app model.AppInstance, iw int) string {
 	}
 	sb.WriteString(boxBot(iw) + "\n")
 
-	// ── CONNECTIONS + OPERATIONS (side by side) ────────────────────────
-	sb.WriteString("  " + titleStyle.Render("CONNECTIONS") + strings.Repeat(" ", halfW-12) + titleStyle.Render("OPERATIONS (/s)") + "\n")
+	// ── CONNECTIONS (gauges + 1 counter) + OPERATIONS (/s rates) ──────
+	// Left column: current state of the connection pool (gauges).
+	// Right column: per-second op rates only — section header says "(/s)"
+	//   so we don't drag the lifetime total into each cell. Colors
+	//   green/yellow/red against contextual thresholds.
+	sb.WriteString("  " + titleStyle.Render("CONNECTIONS") +
+		strings.Repeat(" ", halfW-12) +
+		titleStyle.Render("OPERATIONS (per second)") + "\n")
 	sb.WriteString(boxTop(iw) + "\n")
+
+	// Connection pool sizing for color thresholds.
+	connCurrentF, _ := strconv.ParseFloat(dm["conn_current"], 64)
+	connAvailF, _ := strconv.ParseFloat(dm["conn_available"], 64)
+	connCap := connCurrentF + connAvailF
+	if connCap < 1 {
+		connCap = 1
+	}
+	connUtil := connCurrentF / connCap * 100 // %
+
+	rejected, _ := strconv.ParseFloat(dm["conn_rejected"], 64)
+	slowOpsF, _ := strconv.ParseFloat(dm["slow_ops"], 64)
+	createdRate, _ := strconv.ParseFloat(dm["conn_total_created_rate"], 64)
+	activeRead, _ := strconv.ParseFloat(dm["active_readers"], 64)
+	activeWrite, _ := strconv.ParseFloat(dm["active_writers"], 64)
+
 	lCol := []kv{
-		{Key: "Current", Val: dm["conn_current"]},
-		{Key: "Available", Val: dm["conn_available"]},
-		{Key: "Total Created", Val: mongoRate(dm, "conn_total_created")},
-		{Key: "Active", Val: dm["conn_active"]},
-		{Key: "Rejected", Val: dm["conn_rejected"]},
-		{Key: "Active Read", Val: dm["active_readers"]},
-		{Key: "Active Write", Val: dm["active_writers"]},
+		{Key: "Used / Pool",
+			Val: mongoColorThreshold(
+				fmt.Sprintf("%.0f / %.0f  (%.0f%%)", connCurrentF, connCap, connUtil),
+				connUtil, 70, 90)},
+		{Key: "Active now",
+			Val: mongoColorThreshold(
+				fmt.Sprintf("%.0f", connCurrentF),
+				connCurrentF, connCap*0.7, connCap*0.9)},
+		{Key: "New conns/s",
+			Val: mongoColorThreshold(
+				mongoFormatRateNumber(createdRate)+"/s",
+				createdRate, 50, 200)},
+		{Key: "Lifetime created",
+			Val: dimStyle.Render(mongoTotal(dm, "conn_total_created"))},
+		{Key: "Rejected (total)",
+			Val: mongoColorThreshold(
+				mongoTotal(dm, "conn_rejected"), rejected, 1, 100)},
+		{Key: "Active reads",
+			Val: mongoColorThreshold(
+				fmt.Sprintf("%.0f", activeRead), activeRead, 50, 200)},
+		{Key: "Active writes",
+			Val: mongoColorThreshold(
+				fmt.Sprintf("%.0f", activeWrite), activeWrite, 50, 200)},
 	}
+
+	// Right column — pure rates, color-coded against rough busy thresholds.
+	queryR, _ := strconv.ParseFloat(dm["op_query_rate"], 64)
+	insertR, _ := strconv.ParseFloat(dm["op_insert_rate"], 64)
+	updateR, _ := strconv.ParseFloat(dm["op_update_rate"], 64)
+	deleteR, _ := strconv.ParseFloat(dm["op_delete_rate"], 64)
+	getmoreR, _ := strconv.ParseFloat(dm["op_getmore_rate"], 64)
+	commandR, _ := strconv.ParseFloat(dm["op_command_rate"], 64)
+
 	rCol := []kv{
-		{Key: "Queries", Val: mongoRate(dm, "op_query")},
-		{Key: "Inserts", Val: mongoRate(dm, "op_insert")},
-		{Key: "Updates", Val: mongoRate(dm, "op_update")},
-		{Key: "Deletes", Val: mongoRate(dm, "op_delete")},
-		{Key: "GetMore", Val: mongoRate(dm, "op_getmore")},
-		{Key: "Commands", Val: mongoRate(dm, "op_command")},
-		{Key: "Slow (>5s)", Val: dm["slow_ops"]},
+		{Key: "Queries", Val: mongoColorThreshold(mongoRateOnly(dm, "op_query"), queryR, 5000, 20000)},
+		{Key: "Inserts", Val: mongoColorThreshold(mongoRateOnly(dm, "op_insert"), insertR, 1000, 5000)},
+		{Key: "Updates", Val: mongoColorThreshold(mongoRateOnly(dm, "op_update"), updateR, 1000, 5000)},
+		{Key: "Deletes", Val: mongoColorThreshold(mongoRateOnly(dm, "op_delete"), deleteR, 200, 1000)},
+		{Key: "GetMore", Val: mongoColorThreshold(mongoRateOnly(dm, "op_getmore"), getmoreR, 1000, 5000)},
+		{Key: "Commands", Val: mongoColorThreshold(mongoRateOnly(dm, "op_command"), commandR, 1000, 5000)},
+		{Key: "Slow (>5s)", Val: mongoColorThreshold(dm["slow_ops"], slowOpsF, 1, 10)},
 	}
 	mongoRenderDualCol(&sb, lCol, rCol, iw, halfW, lw)
 	sb.WriteString(boxBot(iw) + "\n")
 
-	// ── MEMORY/CACHE + WT ENGINE (side by side) ────────────────────────
-	sb.WriteString("  " + titleStyle.Render("MEMORY & CACHE") + strings.Repeat(" ", halfW-15) + titleStyle.Render("WIREDTIGER") + "\n")
+	// ── MEMORY (gauges) + WIREDTIGER (rates + tickets) ────────────────
+	// Left column = mongod's process & cache memory state — gauges, units
+	// converted to GB so the eye can compare to host RAM at a glance.
+	// Right column = WiredTiger engine activity: tickets (concurrency
+	// gauges) and per-second IO rates. Page faults shown as both total &
+	// rate since growing fast = bad.
+	sb.WriteString("  " + titleStyle.Render("MEMORY & CACHE") +
+		strings.Repeat(" ", halfW-15) +
+		titleStyle.Render("WIREDTIGER (per second + tickets)") + "\n")
 	sb.WriteString(boxTop(iw) + "\n")
-	lCol = []kv{
-		{Key: "Resident MB", Val: dm["mem_resident_mb"]},
-		{Key: "Virtual MB", Val: dm["mem_virtual_mb"]},
-		{Key: "Cache Used MB", Val: dm["cache_used_mb"]},
-		{Key: "Cache Max MB", Val: dm["cache_max_mb"]},
-		{Key: "Cache Usage%", Val: dm["cache_usage_pct"]},
-		{Key: "Cache Dirty MB", Val: dm["cache_dirty_mb"]},
+
+	residentMB, _ := strconv.ParseFloat(dm["mem_resident_mb"], 64)
+	virtualMB, _ := strconv.ParseFloat(dm["mem_virtual_mb"], 64)
+	cacheUsedMB, _ := strconv.ParseFloat(dm["cache_used_mb"], 64)
+	cacheMaxMB, _ := strconv.ParseFloat(dm["cache_max_mb"], 64)
+	cacheUsagePct, _ := strconv.ParseFloat(dm["cache_usage_pct"], 64)
+	cacheDirtyMB, _ := strconv.ParseFloat(dm["cache_dirty_mb"], 64)
+
+	cacheDirtyPct := 0.0
+	if cacheUsedMB > 0 {
+		cacheDirtyPct = cacheDirtyMB / cacheUsedMB * 100
 	}
+
+	formatGB := func(mb float64) string {
+		if mb <= 0 {
+			return "—"
+		}
+		if mb >= 1024 {
+			return fmt.Sprintf("%.2f GB", mb/1024)
+		}
+		return fmt.Sprintf("%.0f MB", mb)
+	}
+
+	lCol = []kv{
+		{Key: "RSS (resident)", Val: valueStyle.Render(formatGB(residentMB))},
+		{Key: "VSZ (virtual)", Val: dimStyle.Render(formatGB(virtualMB))},
+		{Key: "Cache used / max",
+			Val: mongoColorThreshold(
+				fmt.Sprintf("%s / %s", formatGB(cacheUsedMB), formatGB(cacheMaxMB)),
+				cacheUsagePct, 80, 95)},
+		{Key: "Cache fill %",
+			Val: mongoColorThreshold(
+				fmt.Sprintf("%.1f%%", cacheUsagePct),
+				cacheUsagePct, 80, 95)},
+		{Key: "Dirty cache",
+			Val: mongoColorThreshold(
+				fmt.Sprintf("%s  (%.1f%% of cache)", formatGB(cacheDirtyMB), cacheDirtyPct),
+				cacheDirtyPct, 5, 20)},
+	}
+
+	cacheReadR, _ := strconv.ParseFloat(dm["cache_reads_rate"], 64)
+	cacheWriteR, _ := strconv.ParseFloat(dm["cache_writes_rate"], 64)
+	pageFaultR, _ := strconv.ParseFloat(dm["page_faults_rate"], 64)
+	pageFaultTot, _ := strconv.ParseFloat(dm["page_faults"], 64)
+
 	rCol = []kv{
-		{Key: "Read Tickets", Val: mongoFmtTicket(dm["wt_read_avail"], dm["wt_read_out"])},
-		{Key: "Write Tickets", Val: mongoFmtTicket(dm["wt_write_avail"], dm["wt_write_out"])},
-		{Key: "Cache Reads", Val: mongoRate(dm, "cache_reads")},
-		{Key: "Cache Writes", Val: mongoRate(dm, "cache_writes")},
-		{Key: "Page Faults", Val: dm["page_faults"]},
-		{Key: "Engine", Val: dm["storage_engine"]},
+		{Key: "Read tickets",
+			Val: mongoFmtTicket(dm["wt_read_avail"], dm["wt_read_out"])},
+		{Key: "Write tickets",
+			Val: mongoFmtTicket(dm["wt_write_avail"], dm["wt_write_out"])},
+		{Key: "Cache reads/s",
+			Val: mongoColorThreshold(mongoRateOnly(dm, "cache_reads"), cacheReadR, 1000, 10000)},
+		{Key: "Cache writes/s",
+			Val: mongoColorThreshold(mongoRateOnly(dm, "cache_writes"), cacheWriteR, 1000, 10000)},
+		{Key: "Page faults/s",
+			Val: mongoColorThreshold(mongoFormatRateNumber(pageFaultR)+"/s", pageFaultR, 10, 100)},
+		{Key: "Page faults (tot)",
+			Val: mongoColorThreshold(mongoCommas(int64(pageFaultTot)), pageFaultTot, 1000, 100000)},
+		{Key: "Engine", Val: dimStyle.Render(dm["storage_engine"])},
 	}
 	mongoRenderDualCol(&sb, lCol, rCol, iw, halfW, lw)
 	sb.WriteString(boxBot(iw) + "\n")
 
-	// ── DOCUMENTS + QUERY PERFORMANCE (side by side) ──────────────────
-	sb.WriteString("  " + titleStyle.Render("DOCUMENTS & NETWORK (/s)") + strings.Repeat(" ", halfW-24) + titleStyle.Render("QUERY PERFORMANCE") + "\n")
+	// ── DOCUMENTS (rates) + QUERY PERFORMANCE (latency + scan rates) ──
+	// Left = per-second document & network throughput (rates only).
+	// Right = query efficiency — latency gauges + how aggressively queries
+	// are scanning the data. High scan rates with no index = scans of doom.
+	sb.WriteString("  " + titleStyle.Render("DOCUMENTS & NETWORK (per second)") +
+		strings.Repeat(" ", halfW-32) +
+		titleStyle.Render("QUERY PERFORMANCE") + "\n")
 	sb.WriteString(boxTop(iw) + "\n")
-	lCol = []kv{
-		{Key: "Inserted", Val: mongoRate(dm, "doc_inserted")},
-		{Key: "Returned", Val: mongoRate(dm, "doc_returned")},
-		{Key: "Updated", Val: mongoRate(dm, "doc_updated")},
-		{Key: "Deleted", Val: mongoRate(dm, "doc_deleted")},
-		{Key: "Net In", Val: mongoFmtBytes(dm["net_bytes_in"])},
-		{Key: "Net Out", Val: mongoFmtBytes(dm["net_bytes_out"])},
-		{Key: "Net Requests", Val: mongoRate(dm, "net_num_requests")},
+
+	insR, _ := strconv.ParseFloat(dm["doc_inserted_rate"], 64)
+	retR, _ := strconv.ParseFloat(dm["doc_returned_rate"], 64)
+	updR, _ := strconv.ParseFloat(dm["doc_updated_rate"], 64)
+	delR, _ := strconv.ParseFloat(dm["doc_deleted_rate"], 64)
+	netReqR, _ := strconv.ParseFloat(dm["net_num_requests_rate"], 64)
+
+	netInB, _ := strconv.ParseFloat(dm["net_bytes_in_rate"], 64)
+	netOutB, _ := strconv.ParseFloat(dm["net_bytes_out_rate"], 64)
+	formatNetRate := func(bps float64) string {
+		if bps >= 1024*1024*1024 {
+			return fmt.Sprintf("%.2f GB/s", bps/(1024*1024*1024))
+		}
+		if bps >= 1024*1024 {
+			return fmt.Sprintf("%.1f MB/s", bps/(1024*1024))
+		}
+		if bps >= 1024 {
+			return fmt.Sprintf("%.0f KB/s", bps/1024)
+		}
+		return fmt.Sprintf("%.0f B/s", bps)
 	}
-	// Compute avg latencies for display
+
+	lCol = []kv{
+		{Key: "Inserted/s",
+			Val: mongoColorThreshold(mongoRateOnly(dm, "doc_inserted"), insR, 1000, 5000)},
+		{Key: "Returned/s",
+			Val: mongoColorThreshold(mongoRateOnly(dm, "doc_returned"), retR, 5000, 50000)},
+		{Key: "Updated/s",
+			Val: mongoColorThreshold(mongoRateOnly(dm, "doc_updated"), updR, 1000, 5000)},
+		{Key: "Deleted/s",
+			Val: mongoColorThreshold(mongoRateOnly(dm, "doc_deleted"), delR, 200, 1000)},
+		{Key: "Net In",
+			Val: mongoColorThreshold(formatNetRate(netInB), netInB, 100*1024*1024, 500*1024*1024)},
+		{Key: "Net Out",
+			Val: mongoColorThreshold(formatNetRate(netOutB), netOutB, 100*1024*1024, 500*1024*1024)},
+		{Key: "Net req/s",
+			Val: mongoColorThreshold(mongoRateOnly(dm, "net_num_requests"), netReqR, 5000, 50000)},
+	}
+
 	avgRdLat := mongoFmtLatency(mongoParseI64(dm["avg_read_latency_us"]))
 	avgWrLat := mongoFmtLatency(mongoParseI64(dm["avg_write_latency_us"]))
+	rdLatUS := float64(mongoParseI64(dm["avg_read_latency_us"]))
+	wrLatUS := float64(mongoParseI64(dm["avg_write_latency_us"]))
+
+	scanKeysR, _ := strconv.ParseFloat(dm["scanned_keys_rate"], 64)
+	scanObjsR, _ := strconv.ParseFloat(dm["scanned_objects_rate"], 64)
+	collScansR, _ := strconv.ParseFloat(dm["collection_scans_rate"], 64)
+	openCur, _ := strconv.ParseFloat(dm["cursor_open"], 64)
+	killR, _ := strconv.ParseFloat(dm["killed_disconnect_rate"], 64)
+
 	rCol = []kv{
-		{Key: "Avg Read Lat", Val: avgRdLat},
-		{Key: "Avg Write Lat", Val: avgWrLat},
-		{Key: "Scanned Keys", Val: mongoRate(dm, "scanned_keys")},
-		{Key: "Scanned Objs", Val: mongoRate(dm, "scanned_objects")},
-		{Key: "Coll Scans", Val: mongoRate(dm, "collection_scans")},
-		{Key: "Open Cursors", Val: dm["cursor_open"]},
-		{Key: "Killed(disc)", Val: mongoRate(dm, "killed_disconnect")},
+		{Key: "Avg read lat",
+			// 1 ms warn, 10 ms crit (microseconds → ms)
+			Val: mongoColorThreshold(avgRdLat, rdLatUS, 1000, 10000)},
+		{Key: "Avg write lat",
+			Val: mongoColorThreshold(avgWrLat, wrLatUS, 5000, 50000)},
+		{Key: "Scanned keys/s",
+			Val: mongoColorThreshold(mongoRateOnly(dm, "scanned_keys"), scanKeysR, 5000, 50000)},
+		{Key: "Scanned objs/s",
+			Val: mongoColorThreshold(mongoRateOnly(dm, "scanned_objects"), scanObjsR, 5000, 50000)},
+		{Key: "Coll scans/s",
+			// ANY collection scan rate is suspicious — usually missing index.
+			Val: mongoColorThreshold(mongoRateOnly(dm, "collection_scans"), collScansR, 0.1, 1)},
+		{Key: "Open cursors",
+			Val: mongoColorThreshold(fmt.Sprintf("%.0f", openCur), openCur, 100, 1000)},
+		{Key: "Killed (disc)/s",
+			Val: mongoColorThreshold(mongoFormatRateNumber(killR)+"/s", killR, 1, 10)},
 	}
 	mongoRenderDualCol(&sb, lCol, rCol, iw, halfW, lw)
 	sb.WriteString(boxBot(iw) + "\n")
@@ -836,19 +1044,44 @@ func renderMongoDBCollections(dm map[string]string, iw int) string {
 }
 
 // mongoRenderDualCol renders two kv columns side by side in a box (no top/bot).
+//
+// Filters out empty/dash cells from each column INDEPENDENTLY before
+// pairing them up, so a missing right-side metric (e.g. wt_read_avail
+// not in dm) doesn't leave the row's right half blank. Result: both
+// columns are dense, no rows with one half empty.
 func mongoRenderDualCol(sb *strings.Builder, lCol, rCol []kv, iw, halfW, lw int) {
+	isEmptyCell := func(v string) bool {
+		// Strip ANSI to check the visible content. A cell that styled-rendered
+		// to "—" or "" is effectively empty for layout purposes.
+		t := stripANSILite(v)
+		t = strings.TrimSpace(t)
+		return t == "" || t == "—" || t == "-"
+	}
+	compact := func(in []kv) []kv {
+		out := make([]kv, 0, len(in))
+		for _, k := range in {
+			if isEmptyCell(k.Val) {
+				continue
+			}
+			out = append(out, k)
+		}
+		return out
+	}
+	lCol = compact(lCol)
+	rCol = compact(rCol)
+
 	maxR := len(lCol)
 	if len(rCol) > maxR {
 		maxR = len(rCol)
 	}
 	for i := 0; i < maxR; i++ {
 		var left, right string
-		if i < len(lCol) && lCol[i].Val != "" {
+		if i < len(lCol) {
 			left = fmt.Sprintf("%s %s",
 				styledPad(dimStyle.Render(lCol[i].Key+":"), lw),
 				valueStyle.Render(lCol[i].Val))
 		}
-		if i < len(rCol) && rCol[i].Val != "" {
+		if i < len(rCol) {
 			right = fmt.Sprintf("%s %s",
 				styledPad(dimStyle.Render(rCol[i].Key+":"), lw),
 				valueStyle.Render(rCol[i].Val))
@@ -856,6 +1089,28 @@ func mongoRenderDualCol(sb *strings.Builder, lCol, rCol []kv, iw, halfW, lw int)
 		row := fmt.Sprintf("  %s%s", styledPad(left, halfW), right)
 		sb.WriteString(boxRow(row, iw) + "\n")
 	}
+}
+
+// stripANSI strips ANSI escape sequences so cell content can be checked
+// for "is this effectively empty?" regardless of styling wrappers.
+func stripANSILite(s string) string {
+	var b strings.Builder
+	inEsc := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == 0x1b {
+			inEsc = true
+			continue
+		}
+		if inEsc {
+			if c == 'm' {
+				inEsc = false
+			}
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
 }
 
 // mongoFmtTicket formats available/used ticket pair.

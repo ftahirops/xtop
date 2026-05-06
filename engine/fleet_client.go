@@ -564,6 +564,17 @@ func buildIncident(snap *model.Snapshot, result *model.AnalysisResult, agentID, 
 		inc.CulpritApp = result.PrimaryAppName
 		inc.Signature = fleetSignatureFromResult(result)
 		inc.Diff = result.IncidentDiff
+		// Lifecycle (TODO #5): populated from result echo of recorder state.
+		inc.State = result.IncidentState
+		inc.ConfirmedAt = result.IncidentConfirmedAt
+		if len(result.Changes) > 0 {
+			n := len(result.Changes)
+			if n > 20 {
+				n = 20
+			}
+			inc.ChangesAtConfirm = append([]model.SystemChange(nil), result.Changes[:n]...)
+		}
+		inc.FleetPeersAtConfirm = result.CrossHostCorrelation
 		if result.Narrative != nil {
 			inc.RootCause = result.Narrative.RootCause
 			inc.Impact = result.Narrative.Impact

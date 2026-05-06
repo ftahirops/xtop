@@ -163,6 +163,31 @@ func (s *Store) Migrate() error {
 			top_pid INTEGER,
 			top_comm TEXT
 		)`,
+
+		// Phase 4 baselines + Phase 5 drift trackers — Welford state survives
+		// process restarts. Schema is the raw Welford fields (count, mean, m2);
+		// stats are derived on read.
+		`CREATE TABLE IF NOT EXISTS app_baselines (
+			app          TEXT NOT NULL,
+			metric       TEXT NOT NULL,
+			hour_of_week INTEGER NOT NULL,
+			count        INTEGER NOT NULL,
+			mean         REAL NOT NULL,
+			m2           REAL NOT NULL,
+			updated_at   DATETIME NOT NULL,
+			PRIMARY KEY (app, metric, hour_of_week)
+		)`,
+
+		`CREATE TABLE IF NOT EXISTS drift_trackers (
+			metric     TEXT NOT NULL,
+			window     TEXT NOT NULL CHECK (window IN ('short','long','ref')),
+			count      INTEGER NOT NULL,
+			mean       REAL NOT NULL,
+			m2         REAL NOT NULL,
+			ref_set    INTEGER NOT NULL DEFAULT 0,
+			updated_at DATETIME NOT NULL,
+			PRIMARY KEY (metric, window)
+		)`,
 	}
 
 	for _, stmt := range stmts {
@@ -367,4 +392,126 @@ func scanIncidents(rows *sql.Rows) ([]IncidentRecord, error) {
 		records = append(records, r)
 	}
 	return records, rows.Err()
+}
+
+// AppBaselineRow is one persisted Welford bucket. Lives in store/ to keep the
+// engine→store import direction clean.
+type AppBaselineRow struct {
+	App         string
+	Metric      string
+	HourOfWeek  int
+	Count       int64
+	Mean        float64
+	M2          float64
+}
+
+// DriftTrackerRow is one persisted Welford bucket within a drift window.
+type DriftTrackerRow struct {
+	Metric  string
+	Window  string // "short" | "long" | "ref"
+	Count   int64
+	Mean    float64
+	M2      float64
+	RefSet  bool
+}
+
+// SaveAppBaselines upserts all rows in one transaction.
+func (s *Store) SaveAppBaselines(rows []AppBaselineRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`INSERT OR REPLACE INTO app_baselines
+		(app, metric, hour_of_week, count, mean, m2, updated_at)
+		VALUES (?,?,?,?,?,?,?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	now := time.Now().UTC()
+	for _, r := range rows {
+		if _, err := stmt.Exec(r.App, r.Metric, r.HourOfWeek, r.Count, r.Mean, r.M2, now); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// LoadAppBaselines reads every persisted baseline back. Caller seeds its
+// in-memory store from the result.
+func (s *Store) LoadAppBaselines() ([]AppBaselineRow, error) {
+	rows, err := s.db.Query(`SELECT app, metric, hour_of_week, count, mean, m2 FROM app_baselines`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []AppBaselineRow
+	for rows.Next() {
+		var r AppBaselineRow
+		if err := rows.Scan(&r.App, &r.Metric, &r.HourOfWeek, &r.Count, &r.Mean, &r.M2); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// SaveDriftTrackers upserts all rows in one transaction.
+func (s *Store) SaveDriftTrackers(rows []DriftTrackerRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`INSERT OR REPLACE INTO drift_trackers
+		(metric, window, count, mean, m2, ref_set, updated_at)
+		VALUES (?,?,?,?,?,?,?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	now := time.Now().UTC()
+	for _, r := range rows {
+		refSet := 0
+		if r.RefSet {
+			refSet = 1
+		}
+		if _, err := stmt.Exec(r.Metric, r.Window, r.Count, r.Mean, r.M2, refSet, now); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// LoadDriftTrackers reads every persisted drift tracker back.
+func (s *Store) LoadDriftTrackers() ([]DriftTrackerRow, error) {
+	rows, err := s.db.Query(`SELECT metric, window, count, mean, m2, ref_set FROM drift_trackers`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []DriftTrackerRow
+	for rows.Next() {
+		var r DriftTrackerRow
+		var refSet int
+		if err := rows.Scan(&r.Metric, &r.Window, &r.Count, &r.Mean, &r.M2, &refSet); err != nil {
+			return nil, err
+		}
+		r.RefSet = refSet != 0
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }

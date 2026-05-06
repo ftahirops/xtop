@@ -12,7 +12,7 @@ import (
 
 // renderAppsDetailCompact renders the summary/compact view of an app detail page.
 // Shows a one-line verdict at top, then collapsible sections with one-line summaries.
-func renderAppsDetailCompact(app model.AppInstance, iw int) string {
+func renderAppsDetailCompact(app model.AppInstance, nCPU int, iw int) string {
 	var sb strings.Builder
 
 	// Header with health badge
@@ -30,7 +30,7 @@ func renderAppsDetailCompact(app model.AppInstance, iw int) string {
 	sb.WriteString(boxBot(iw) + "\n\n")
 
 	// ── Process & Resources (always shown, compact) ──
-	sb.WriteString(renderAppInfoResourceBox(app, iw))
+	sb.WriteString(renderAppInfoResourceBox(app, nCPU, iw))
 
 	// ── Deep metrics summary sections ──
 	if app.HasDeepMetrics && len(app.DeepMetrics) > 0 {

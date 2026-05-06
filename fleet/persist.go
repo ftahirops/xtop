@@ -71,17 +71,30 @@ func (h *Hub) persistIncident(inc *model.FleetIncident) {
 		ts = time.Now().UTC()
 	}
 
+	// confirmedAt: pass NULL when zero so old rows / Suspected-only updates
+	// don't claim a fake confirmation time.
+	var confirmedAt interface{}
+	if !inc.ConfirmedAt.IsZero() {
+		confirmedAt = inc.ConfirmedAt
+	}
+	var stateCol interface{}
+	if inc.State != "" {
+		stateCol = inc.State
+	}
+
 	if _, err := h.pg.ExecContext(ctx, `
 		INSERT INTO fleet_incidents
 			(incident_id, update_type, agent_id, hostname,
 			 started_at, resolved_at, ts,
-			 bottleneck, peak_score, confidence, health, culprit, signature, data)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+			 bottleneck, peak_score, confidence, health, culprit, signature,
+			 state, confirmed_at, data)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
 		ON CONFLICT (incident_id, update_type, ts) DO NOTHING`,
 		inc.IncidentID, string(inc.UpdateType), inc.AgentID, inc.Hostname,
 		inc.StartedAt, inc.ResolvedAt, ts,
 		inc.Bottleneck, inc.PeakScore, inc.Confidence, inc.Health.String(),
-		inc.Culprit, inc.Signature, raw,
+		inc.Culprit, inc.Signature,
+		stateCol, confirmedAt, raw,
 	); err != nil {
 		log.Printf("hub: persist incident pg: %v", err)
 	}

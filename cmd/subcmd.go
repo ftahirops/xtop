@@ -2,37 +2,48 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/ftahirops/xtop/api"
+	"github.com/ftahirops/xtop/collector"
 	"github.com/ftahirops/xtop/engine"
 	"github.com/ftahirops/xtop/model"
 )
 
-// collectOrQuery tries daemon API first, falls back to direct 2-tick collection.
+// collectOrQuery returns a snapshot+rates+result for one-shot subcommands
+// (xtop why, top, proc). Always uses direct collection — the daemon API
+// doesn't expose a full-snapshot endpoint, so the previous "try daemon
+// first" path was a no-op that just printed a misleading message.
 func collectOrQuery(intervalSec int) (*model.Snapshot, *model.RateSnapshot, *model.AnalysisResult) {
-	// Try daemon API first (instant, no wait)
-	client := api.TryConnect()
-	if client != nil {
-		fmt.Fprintf(os.Stderr, "Connected to daemon API\n")
-		// For now, fall through to direct collection since API returns
-		// StatusResponse, not full Snapshot/RateSnapshot.
-		// TODO: add full snapshot endpoint in API
-	}
+	_ = api.TryConnect // keep the import alive; reserved for future full-snapshot endpoint
 	return directCollect(intervalSec)
 }
 
-// directCollect creates an engine, runs 2 ticks with a sleep between, and returns results.
+// directCollect runs two engine ticks and returns the second's analysis.
+//
+// Rate computation needs two samples; we use a short fixed delay between
+// them (250 ms) regardless of the operator's --interval. Over 250 ms,
+// counter deltas are still well-resolved (jiffies@HZ=1000 → 250 ticks of
+// resolution), kernel PSI is still smooth (PSI avg10/avg60 are kernel-side
+// averages, tick-interval independent), and the user doesn't wait 3
+// seconds for a one-shot answer.
+//
+// intervalSec is forwarded to the engine ONLY for AlertState calibration
+// inside the engine; it does not gate this function's wait time.
 func directCollect(intervalSec int) (*model.Snapshot, *model.RateSnapshot, *model.AnalysisResult) {
 	if intervalSec <= 0 {
 		intervalSec = 3
 	}
-	eng := engine.NewEngine(60, intervalSec)
+	// One-shot subcommands run in ModeLean: only the essential collectors
+	// (PSI, /proc/stat, processes, key /proc/* files). Skips the heavy
+	// rich-mode set (cgroup tree walk, app deep diagnostics, profiler
+	// audit, eBPF sentinel) which are pointless for a one-shot question.
+	// Cuts the per-tick cost from ~2 s to ~50 ms on a busy host.
+	eng := engine.NewEngineMode(60, intervalSec, collector.ModeLean)
 	defer eng.Close()
-	eng.Tick() // first tick: baseline
-	time.Sleep(time.Duration(intervalSec) * time.Second)
+	eng.Tick() // first tick: baseline for rate diff
+	time.Sleep(250 * time.Millisecond)
 	snap, rates, result := eng.Tick()
 	return snap, rates, result
 }

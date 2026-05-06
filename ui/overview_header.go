@@ -2,9 +2,11 @@ package ui
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ftahirops/xtop/model"
 )
@@ -62,6 +64,22 @@ func renderHeader(snap *model.Snapshot, rates *model.RateSnapshot, result *model
 		sb.WriteString(critStyle.Render(fmt.Sprintf(" — Incident %s", fmtDuration(result.AnomalyStartedAgo))))
 	} else if result.StableSince > 60 {
 		sb.WriteString(dimStyle.Render(fmt.Sprintf(" | Stable %s", fmtDuration(result.StableSince))))
+	}
+
+	// Guardian badge — shown when the resource guard has elevated above
+	// level 0. Tells the operator at a glance "xtop is throttling itself
+	// because the host is loaded; some panels will be sparse on purpose".
+	if result.Guard != nil && result.Guard.Level > 0 {
+		var badge string
+		switch result.Guard.Level {
+		case 1:
+			badge = warnStyle.Render(fmt.Sprintf(" GUARD L1 caution (host load %.1fx)", result.Guard.HostLoadRatio))
+		case 2:
+			badge = critStyle.Render(fmt.Sprintf(" GUARD L2 degraded (host load %.1fx) — deep probes off", result.Guard.HostLoadRatio))
+		case 3:
+			badge = critStyle.Render(fmt.Sprintf(" GUARD L3 minimal (host load %.1fx, own CPU %.1f%%)", result.Guard.HostLoadRatio, result.Guard.OwnCPUPct))
+		}
+		sb.WriteString(badge)
 	}
 
 	sb.WriteString(dimStyle.Render(" | "))
@@ -201,8 +219,34 @@ func renderOverviewAppsSummary(snap *model.Snapshot, width int) string {
 	title := fmt.Sprintf(" %s ", titleStyle.Render("Apps"))
 	sb.WriteString(boxTopTitle(title, innerW) + "\n")
 
-	if snap == nil || len(snap.Global.Apps.Instances) == 0 {
-		sb.WriteString(boxRow(dimStyle.Render("  no applications detected"), innerW) + "\n")
+	if snap == nil {
+		sb.WriteString(boxRow(dimStyle.Render("  collecting..."), innerW) + "\n")
+		sb.WriteString(boxBot(innerW) + "\n")
+		return sb.String()
+	}
+	// DEBUG (XTOP_DEBUG_APPS_TUI=1): log every render's view of apps so we
+	// can verify whether snap.Global.Apps.Instances reaches the TUI panel.
+	if os.Getenv("XTOP_DEBUG_APPS_TUI") == "1" {
+		if f, err := os.OpenFile("/tmp/xtop_tui_apps.log",
+			os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
+			fmt.Fprintf(f, "[%s] render: snap=%p ident=%d apps=%d\n",
+				time.Now().Format("15:04:05"), snap,
+				len(snap.Global.AppIdentities),
+				len(snap.Global.Apps.Instances))
+			if len(snap.Global.Apps.Instances) > 0 {
+				for _, a := range snap.Global.Apps.Instances {
+					fmt.Fprintf(f, "  -> %s pid=%d cpu=%.1f rss=%.0fMB\n",
+						a.DisplayName, a.PID, a.CPUPct, a.RSSMB)
+				}
+			}
+			f.Close()
+		}
+	}
+	if len(snap.Global.Apps.Instances) == 0 {
+		identCount := len(snap.Global.AppIdentities)
+		hint := fmt.Sprintf("  no apps detected yet (process IDs scanned: %d)", identCount)
+		sb.WriteString(boxRow(dimStyle.Render(hint), innerW) + "\n")
+		sb.WriteString(boxRow(dimStyle.Render("  see App Load Distribution panel above for live data"), innerW) + "\n")
 		sb.WriteString(boxBot(innerW) + "\n")
 		return sb.String()
 	}

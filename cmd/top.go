@@ -40,7 +40,6 @@ func runTop(args []string) error {
 		}
 	}
 
-	fmt.Fprintf(os.Stderr, "Collecting metrics (%ds)...\n", intervalSec)
 	snap, rates, result := collectOrQuery(intervalSec)
 
 	if snap == nil || rates == nil {

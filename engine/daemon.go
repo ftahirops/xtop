@@ -67,15 +67,23 @@ func RunDaemon(cfg DaemonConfig) error {
 	}
 	defer os.Remove(pidPath)
 
-	// Pick Lean mode when this daemon is pushing to a fleet hub — the hub
-	// keeps the long history and runs the heavy analytics, so the agent
-	// can drop the rich collector set + 30-min ring + per-tick app deep
-	// metrics. Operators who want the rich set anyway can override with
-	// XTOP_DAEMON_RICH=1 (audit/debug only — not recommended).
-	mode := collector.ModeRich
-	if cfg.Fleet.HubURL != "" && os.Getenv("XTOP_DAEMON_RICH") != "1" {
-		mode = collector.ModeLean
-		log.Printf("xtop daemon: lean mode (fleet hub set; collectors=essential, history<=30, mem-relief=on)")
+	// Default daemon mode is Lean: long-running daemons should not be a
+	// noisy neighbor on the host they're monitoring. Lean drops heavy
+	// collectors (apps deep diagnostics, profiler audit, eBPF sentinel,
+	// the cgroup tree walk), clamps the history ring to 30 entries, and
+	// turns on the memory-relief loop with hard caps (300 MB).
+	//
+	// Operators who specifically need the rich collector set in daemon
+	// mode (audit, debugging, single-host TUI replacement) can override
+	// with XTOP_DAEMON_RICH=1.
+	mode := collector.ModeLean
+	if os.Getenv("XTOP_DAEMON_RICH") == "1" {
+		mode = collector.ModeRich
+		log.Printf("xtop daemon: rich mode (XTOP_DAEMON_RICH=1; resource budget loosened)")
+	} else if cfg.Fleet.HubURL != "" {
+		log.Printf("xtop daemon: lean mode (fleet hub set; hub holds long history)")
+	} else {
+		log.Printf("xtop daemon: lean mode (default; XTOP_DAEMON_RICH=1 to override)")
 	}
 	eng := NewEngineMode(cfg.History, int(cfg.Interval.Seconds()), mode)
 	defer eng.Close()
@@ -112,6 +120,36 @@ func RunDaemon(cfg DaemonConfig) error {
 		db = st
 		defer db.Close()
 		log.Printf("SQLite incident store: %s", dbPath)
+
+		// TODO #1: load persisted Welford state for app baselines + drift
+		// trackers before the first Tick. Save periodically + on shutdown.
+		if err := eng.LoadBaselineState(db); err != nil {
+			log.Printf("baseline state load: %v", err)
+		} else {
+			log.Printf("baseline state loaded from %s", dbPath)
+		}
+		// Periodic save: every 10 min so a crash loses at most that.
+		go func() {
+			t := time.NewTicker(10 * time.Minute)
+			defer t.Stop()
+			for {
+				select {
+				case <-t.C:
+					if err := eng.SaveBaselineState(db); err != nil {
+						log.Printf("baseline state save: %v", err)
+					}
+				case <-eng.memReliefQuit:
+					return
+				}
+			}
+		}()
+		// Best-effort flush on shutdown — defer order: SaveBaselineState
+		// runs before db.Close() because LIFO.
+		defer func() {
+			if err := eng.SaveBaselineState(db); err != nil {
+				log.Printf("baseline state final save: %v", err)
+			}
+		}()
 	}
 
 	// Enable multi-resolution buffer on the engine

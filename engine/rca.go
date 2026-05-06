@@ -192,6 +192,12 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History, 
 		analyzeNetwork(curr, rates, sp),
 	}
 
+	// Stamp sustained-duration on every fired Evidence using History.signalOnsets.
+	// Must run BEFORE health decision so confirmedTrustGate / lifecycle promotion
+	// can consult SustainedForSec. Read-only against history; end-of-tick
+	// UpdateSignalOnsets handles the write side.
+	stampSustainedDurations(result, hist)
+
 	// Compute v2 domain confidence for each entry
 	for i := range result.RCA {
 		result.RCA[i].DomainConf = domainConfidence(result.RCA[i].EvidenceV2)

@@ -25,10 +25,11 @@ func renderAppsPage(snap *model.Snapshot, selectedIdx int, detailMode bool,
 		if app.AppType == "docker" {
 			return renderDockerDetail(app, stackCursor, stackExpanded, containerIdx, iw)
 		}
+		nCPU := snap.Global.CPU.NumCPUs
 		if viewCompact {
-			return renderAppsDetailCompact(app, iw)
+			return renderAppsDetailCompact(app, nCPU, iw)
 		}
-		return renderAppsDetail(app, iw)
+		return renderAppsDetail(app, nCPU, iw)
 	}
 
 	// ── List View ──────────────────────────────────────────────────────────
@@ -456,7 +457,7 @@ func max4(a, b, c, d int) int {
 
 // ── Generic App Detail ─────────────────────────────────────────────────
 
-func renderAppsDetail(app model.AppInstance, iw int) string {
+func renderAppsDetail(app model.AppInstance, nCPU int, iw int) string {
 	var sb strings.Builder
 
 	sb.WriteString(appDetailHeader(app))
@@ -466,7 +467,7 @@ func renderAppsDetail(app model.AppInstance, iw int) string {
 		sb.WriteString(renderCredsNotice(app, iw))
 	}
 
-	sb.WriteString(renderAppInfoResourceBox(app, iw))
+	sb.WriteString(renderAppInfoResourceBox(app, nCPU, iw))
 
 	if app.HasDeepMetrics && len(app.DeepMetrics) > 0 {
 		sb.WriteString(renderAppDeepMetrics(app, iw))
@@ -1872,7 +1873,7 @@ func appDetailHeader(app model.AppInstance) string {
 }
 
 // renderAppInfoResourceBox renders PROCESS INFO + RESOURCE USAGE as a compact 2-column box.
-func renderAppInfoResourceBox(app model.AppInstance, iw int) string {
+func renderAppInfoResourceBox(app model.AppInstance, nCPU int, iw int) string {
 	var sb strings.Builder
 	sb.WriteString("  " + titleStyle.Render("PROCESS & RESOURCES") + "\n")
 	sb.WriteString(boxTop(iw) + "\n")
@@ -1885,12 +1886,22 @@ func renderAppInfoResourceBox(app model.AppInstance, iw int) string {
 		{Key: "Version", Val: appFmtDash(app.Version)},
 		{Key: "Config", Val: app.ConfigPath},
 	}
-	cpuStr := fmt.Sprintf("%.1f%%", app.CPUPct)
-	if app.CPUPct > 80 {
+	// CPU% in Linux convention: 100% = one full core. On a multi-core box
+	// processes can exceed 100%. Translate to "X cores out of N" + "Y% of host"
+	// so it's not just a giant number.
+	if nCPU < 1 {
+		nCPU = 1
+	}
+	cores := app.CPUPct / 100.0
+	hostPct := app.CPUPct / float64(nCPU)
+	cpuStr := fmt.Sprintf("%.1f%%  (%.1f / %d cores  =  %.0f%% of host)",
+		app.CPUPct, cores, nCPU, hostPct)
+	switch {
+	case hostPct > 80:
 		cpuStr = critStyle.Render(cpuStr)
-	} else if app.CPUPct > 50 {
+	case hostPct > 50:
 		cpuStr = warnStyle.Render(cpuStr)
-	} else {
+	default:
 		cpuStr = okStyle.Render(cpuStr)
 	}
 	rCol := []kv{

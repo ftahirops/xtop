@@ -350,6 +350,15 @@ type AnalysisResult struct {
 	Correlations      []MetricCorrelation // Discovered metric correlations
 	ZScoreAnomalies   []ZScoreAnomaly     // Statistically unusual values vs recent window
 	ProcessAnomalies  []ProcessAnomaly    // Processes deviating from learned profile
+	AppAnomalies      []AppBehaviorAnomaly `json:"app_anomalies,omitempty"` // Phase 4: per-app baseline deviations
+	ProbeResults      []ProbeResult        `json:"probe_results,omitempty"` // Phase 6: active investigation captures
+
+	// Lifecycle echo from the incident recorder. Populated each tick by the
+	// engine after IncidentRecorder.Record so downstream consumers (fleet
+	// client, trace dump) don't need to plumb the recorder through.
+	// IncidentState is one of "" (no incident), "suspected", "confirmed", "resolved".
+	IncidentState       string    `json:"incident_state,omitempty"`
+	IncidentConfirmedAt time.Time `json:"incident_confirmed_at,omitempty"`
 	GoldenSignals     *GoldenSignalSummary // Approximated Golden Signal metrics
 
 	// USE Method checklist (v0.36.6)
@@ -537,6 +546,14 @@ type Evidence struct {
 	Measured   bool              // true if from direct measurement (BPF/counter)
 	Owners     []OwnerAttribution
 	Tags       map[string]string // e.g. "weight": "psi", "device": "sda"
+
+	// Sustained-duration tracking (Phase 1: verdict discipline).
+	// FirstSeenAt is the wall-clock time this evidence ID first fired in the
+	// current incident; zero value means "first-tick onset".
+	// SustainedForSec is now() - FirstSeenAt at the moment the verdict is built.
+	// Stamped by stampSustainedDurations() in engine, using History.signalOnsets.
+	FirstSeenAt     time.Time `json:"first_seen_at,omitempty"`
+	SustainedForSec float64   `json:"sustained_for_sec,omitempty"`
 }
 
 // CausalNodeType identifies a node's role in the causal DAG.
@@ -656,6 +673,37 @@ type ProcessAnomaly struct {
 	Baseline float64
 	StdDev   float64
 	Sigma    float64
+}
+
+// ProbeResult is the captured output of one Phase 6 active investigation.
+// Probes are short, read-only shell or eBPF commands run on demand to
+// disambiguate Suspected→Confirmed transitions; results are attached to the
+// next trace dump for forensic inspection.
+type ProbeResult struct {
+	Name      string    `json:"name"`        // probe class, e.g. "top_cpu_processes"
+	EvidenceID string   `json:"evidence_id"` // evidence ID that triggered this probe
+	StartedAt time.Time `json:"started_at"`
+	DurationMs int      `json:"duration_ms"`
+	ExitCode  int       `json:"exit_code"`
+	Output    string    `json:"output"`     // stdout (truncated to 64 KB)
+	Stderr    string    `json:"stderr,omitempty"`
+	Truncated bool      `json:"truncated,omitempty"`
+	Error     string    `json:"error,omitempty"`
+}
+
+// AppBehaviorAnomaly is a per-app baseline deviation, anchored on cgroup +
+// hour-of-week so "Postgres is busy at 09:00 Monday" is normal but "Postgres
+// is busy at 03:00 Sunday" is flagged. Phase 4: per-app baselines.
+type AppBehaviorAnomaly struct {
+	AppName        string  `json:"app_name"`
+	CgroupPath     string  `json:"cgroup_path,omitempty"`
+	Metric         string  `json:"metric"`         // "cpu_pct", "rss_mb"
+	Current        float64 `json:"current"`
+	HourBaseline   float64 `json:"hour_baseline"`  // mean for this hour-of-week
+	HourStdDev     float64 `json:"hour_stddev"`
+	Sigma          float64 `json:"sigma"`
+	HourOfWeek     int     `json:"hour_of_week"`   // 0..167 (mon 00:00 = 0)
+	Note           string  `json:"note,omitempty"` // e.g. "frozen-during-incident", "cold-start"
 }
 
 // SaturationDetail breaks down saturation into individual components.

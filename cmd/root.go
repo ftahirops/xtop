@@ -188,6 +188,9 @@ var subcommands = map[string]func([]string) error{
 	"cost":       runCost,
 	"rightsize":  runCost, // descriptive alias
 	"baseline":   runBaseline,
+	"trace":      runTrace,
+	"loadshare":  runLoadshare,
+	"apps":       runLoadshare, // alias — natural name
 }
 
 // Run parses flags and starts the application.

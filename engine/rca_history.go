@@ -12,6 +12,22 @@ import (
 	"github.com/ftahirops/xtop/model"
 )
 
+// IncidentState tracks the lifecycle of an in-flight incident.
+//
+//   Suspected: pressure detected this tick but not yet confirmed (in-memory only,
+//              never persisted to JSONL or surfaced as "incident" in the UI status).
+//   Confirmed: passed confirmedTrustGate (sustained evidence + diversity gate).
+//              First time we treat this as a real incident; persists on close.
+//   Resolved:  health returned to OK. Persists to JSONL only if it was ever
+//              Confirmed; pure-Suspected episodes are discarded as noise.
+type IncidentState string
+
+const (
+	IncidentSuspected IncidentState = "suspected"
+	IncidentConfirmed IncidentState = "confirmed"
+	IncidentResolved  IncidentState = "resolved"
+)
+
 // RCAIncident is a recorded past incident for learning.
 type RCAIncident struct {
 	StartedAt      time.Time `json:"started_at"`
@@ -37,6 +53,21 @@ type RCAIncident struct {
 
 	// Resolution — set if we detected how the incident ended
 	Resolution string `json:"resolution,omitempty"` // "auto-recovered", "sustained", "escalated"
+
+	// Lifecycle (Phase 1: verdict discipline).
+	// State is the current lifecycle stage; ConfirmedAt is the wall-clock at
+	// which Suspected→Confirmed transition occurred. Both empty/zero on older
+	// history records loaded from disk; readers must tolerate that.
+	State       IncidentState `json:"state,omitempty"`
+	ConfirmedAt time.Time     `json:"confirmed_at,omitempty"`
+
+	// Phase 7: changes that landed in the 30 minutes preceding the
+	// Confirmed transition. Captured at promotion time to support "what
+	// changed?" forensics; immutable after that.
+	ChangesAtConfirm []model.SystemChange `json:"changes_at_confirm,omitempty"`
+	// Phase 7: human-readable summary of fleet peers reporting similar
+	// evidence at the same time.
+	FleetPeersAtConfirm string `json:"fleet_peers_at_confirm,omitempty"`
 }
 
 // IncidentRecorder tracks ongoing incidents and persists completed ones to disk.
@@ -106,8 +137,20 @@ func (r *IncidentRecorder) rebuildIndex() {
 	}
 }
 
-// Record processes the current RCA result, tracking incident start/end.
-// Returns the currently active incident (nil if healthy).
+// Record processes the current RCA result, tracking incident start/end with the
+// Suspected → Confirmed → Resolved lifecycle.
+//
+// Promotion rules:
+//   - First non-OK tick: start Suspected (in-memory only).
+//   - Subsequent ticks: if confirmedTrustGate passes (sustained evidence +
+//     diversity), promote Suspected → Confirmed and stamp ConfirmedAt.
+//   - Health returns to OK: if state was ever Confirmed, persist to JSONL.
+//     Pure-Suspected episodes are dropped as noise — this is the primary
+//     false-positive guard.
+//
+// Returns the currently active incident (nil if healthy or only Suspected and
+// caller wants to hide it). Suspected incidents are returned so the UI can
+// optionally show "investigating…" status without alerting.
 func (r *IncidentRecorder) Record(result *model.AnalysisResult) *RCAIncident {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -119,12 +162,16 @@ func (r *IncidentRecorder) Record(result *model.AnalysisResult) *RCAIncident {
 	isHealthy := result.Health == model.HealthOK
 
 	if isHealthy {
-		// End of incident (if one was active)
 		if r.active != nil {
 			r.active.EndedAt = time.Now()
 			r.active.DurationSec = int(r.active.EndedAt.Sub(r.active.StartedAt).Seconds())
 			r.active.Resolution = "auto-recovered"
-			r.appendToHistory(*r.active)
+			// Only persist incidents that were ever Confirmed. Pure-Suspected
+			// episodes are noise and must not pollute history / similarity matching.
+			if r.active.State == IncidentConfirmed {
+				r.active.State = IncidentResolved
+				r.appendToHistory(*r.active)
+			}
 			r.active = nil
 		}
 		return nil
@@ -132,9 +179,9 @@ func (r *IncidentRecorder) Record(result *model.AnalysisResult) *RCAIncident {
 
 	// System is degraded/critical
 	sig := signatureFromResult(result)
+	gatePassed := primaryConfirmedGatePasses(result)
 
 	if r.active == nil {
-		// New incident starting
 		r.active = &RCAIncident{
 			StartedAt:  time.Now(),
 			Bottleneck: result.PrimaryBottleneck,
@@ -143,11 +190,11 @@ func (r *IncidentRecorder) Record(result *model.AnalysisResult) *RCAIncident {
 			Culprit:    result.PrimaryProcess,
 			CulpritApp: result.PrimaryAppName,
 			Signature:  sig,
+			State:      IncidentSuspected,
 		}
 		if result.Narrative != nil {
 			r.active.RootCause = result.Narrative.RootCause
 			r.active.Pattern = result.Narrative.Pattern
-			// Take top 3 evidence items
 			n := 3
 			if len(result.Narrative.Evidence) < n {
 				n = len(result.Narrative.Evidence)
@@ -155,44 +202,105 @@ func (r *IncidentRecorder) Record(result *model.AnalysisResult) *RCAIncident {
 			r.active.Evidence = append([]string(nil), result.Narrative.Evidence[:n]...)
 		}
 		r.active.EvidenceIDs = collectFiringEvidenceIDs(result)
-	} else {
-		// Update active incident with worst values seen
-		if result.PrimaryScore > r.active.PeakScore {
-			r.active.PeakScore = result.PrimaryScore
+		// Edge case: gate already passes on the very first non-OK tick (rare but
+		// possible if minSustainedSec is reduced or if the engine is restarted
+		// mid-incident with onsets in a rebuilt history). Promote immediately.
+		if gatePassed {
+			r.active.State = IncidentConfirmed
+			r.active.ConfirmedAt = r.active.StartedAt
+			r.active.ChangesAtConfirm = snapshotRecentChanges(result)
+			r.active.FleetPeersAtConfirm = result.CrossHostCorrelation
 		}
-		if result.Confidence > r.active.Confidence {
-			r.active.Confidence = result.Confidence
-		}
-		// If the incident signature changed, close the current one and start new
-		if sig != r.active.Signature && sig != "" {
-			r.active.EndedAt = time.Now()
-			r.active.DurationSec = int(r.active.EndedAt.Sub(r.active.StartedAt).Seconds())
-			r.active.Resolution = "escalated"
+		return r.active
+	}
+
+	// Update active incident with worst values seen
+	if result.PrimaryScore > r.active.PeakScore {
+		r.active.PeakScore = result.PrimaryScore
+	}
+	if result.Confidence > r.active.Confidence {
+		r.active.Confidence = result.Confidence
+	}
+
+	// Signature change — close current and start fresh in Suspected.
+	if sig != r.active.Signature && sig != "" {
+		r.active.EndedAt = time.Now()
+		r.active.DurationSec = int(r.active.EndedAt.Sub(r.active.StartedAt).Seconds())
+		r.active.Resolution = "escalated"
+		if r.active.State == IncidentConfirmed {
+			r.active.State = IncidentResolved
 			r.appendToHistory(*r.active)
-			r.active = &RCAIncident{
-				StartedAt:  time.Now(),
-				Bottleneck: result.PrimaryBottleneck,
-				PeakScore:  result.PrimaryScore,
-				Confidence: result.Confidence,
-				Culprit:    result.PrimaryProcess,
-				CulpritApp: result.PrimaryAppName,
-				Signature:  sig,
-			}
-			if result.Narrative != nil {
-				r.active.RootCause = result.Narrative.RootCause
-				r.active.Pattern = result.Narrative.Pattern
-			}
-			r.active.EvidenceIDs = collectFiringEvidenceIDs(result)
-		} else {
-			// Same signature — refresh the snapshot of IDs so "new evidence"
-			// in DiffAgainstHistory reflects the incident at its current peak.
-			if ids := collectFiringEvidenceIDs(result); len(ids) > 0 {
-				r.active.EvidenceIDs = ids
-			}
 		}
+		r.active = &RCAIncident{
+			StartedAt:  time.Now(),
+			Bottleneck: result.PrimaryBottleneck,
+			PeakScore:  result.PrimaryScore,
+			Confidence: result.Confidence,
+			Culprit:    result.PrimaryProcess,
+			CulpritApp: result.PrimaryAppName,
+			Signature:  sig,
+			State:      IncidentSuspected,
+		}
+		if result.Narrative != nil {
+			r.active.RootCause = result.Narrative.RootCause
+			r.active.Pattern = result.Narrative.Pattern
+		}
+		r.active.EvidenceIDs = collectFiringEvidenceIDs(result)
+		if gatePassed {
+			r.active.State = IncidentConfirmed
+			r.active.ConfirmedAt = r.active.StartedAt
+			r.active.ChangesAtConfirm = snapshotRecentChanges(result)
+			r.active.FleetPeersAtConfirm = result.CrossHostCorrelation
+		}
+		return r.active
+	}
+
+	// Same-signature continuation: refresh IDs and check for promotion.
+	if ids := collectFiringEvidenceIDs(result); len(ids) > 0 {
+		r.active.EvidenceIDs = ids
+	}
+	if r.active.State == IncidentSuspected && gatePassed {
+		r.active.State = IncidentConfirmed
+		r.active.ConfirmedAt = time.Now()
+		// Phase 7: snapshot recent changes + fleet correlation at the moment
+		// of promotion. These become permanent on the persisted incident so
+		// post-mortem analysis still has them even if the live state moves on.
+		r.active.ChangesAtConfirm = snapshotRecentChanges(result)
+		r.active.FleetPeersAtConfirm = result.CrossHostCorrelation
 	}
 
 	return r.active
+}
+
+// snapshotRecentChanges returns the SystemChange entries already on the
+// result, capped at 20. The engine populates result.Changes via
+// ChangeDetector + ConfigDriftDetector before Record runs, so this is just
+// a defensive copy + cap.
+func snapshotRecentChanges(result *model.AnalysisResult) []model.SystemChange {
+	if result == nil || len(result.Changes) == 0 {
+		return nil
+	}
+	n := len(result.Changes)
+	if n > 20 {
+		n = 20
+	}
+	out := make([]model.SystemChange, n)
+	copy(out, result.Changes[:n])
+	return out
+}
+
+// primaryConfirmedGatePasses returns true if the result's primary RCA entry
+// would pass the confirmed (sustained + diversity) trust gate.
+func primaryConfirmedGatePasses(result *model.AnalysisResult) bool {
+	if result == nil || len(result.RCA) == 0 {
+		return false
+	}
+	for _, rca := range result.RCA {
+		if rca.Bottleneck == result.PrimaryBottleneck {
+			return confirmedTrustGate(rca.EvidenceV2)
+		}
+	}
+	return false
 }
 
 // collectFiringEvidenceIDs returns the evidence IDs currently firing (strength

@@ -67,9 +67,11 @@ func renderLayoutA(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 	// Build right column
 	var right strings.Builder
 	if compact {
-		// Clean summary: RCA + Owners + Capacity + Apps + Security + Probe
+		// Clean summary: RCA + App Load Distribution + Capacity + Apps + ...
+		// "Top Resource Owners" was removed — App Load Distribution shows the
+		// same data in a more human-readable per-app pivot.
 		right.WriteString(renderRCABox(result, rightW))
-		right.WriteString(renderOwnersBlock(result, rightW))
+		right.WriteString(renderTopConsumersBlock(snap, rates, result, rightW))
 		right.WriteString(renderCapacityBlock(result, true, 16, rightW, intermediate))
 		right.WriteString(renderOverviewAppsSummary(snap, rightW))
 		right.WriteString(renderOverviewSecuritySummary(snap, rightW))
@@ -82,11 +84,12 @@ func renderLayoutA(snap *model.Snapshot, rates *model.RateSnapshot, result *mode
 			right.WriteString(renderDegradationBlock(result, rightW))
 		}
 	} else {
-		// Full detail: everything + sparklines
+		// Full detail: everything + sparklines.
+		// "Top Resource Owners" removed; App Load Distribution covers it.
 		right.WriteString(renderRCABox(result, rightW))
 		right.WriteString(renderChangesBlock(result, rightW))
 		right.WriteString(renderActionsBlock(result, rightW))
-		right.WriteString(renderOwnersBlock(result, rightW))
+		right.WriteString(renderTopConsumersBlock(snap, rates, result, rightW))
 		right.WriteString(renderCapacityBlock(result, true, 16, rightW, intermediate))
 		right.WriteString(renderProbeStatusLine(pm, snap, intermediate))
 		right.WriteString(renderExhaustionBlock(result, rightW))

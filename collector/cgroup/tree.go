@@ -4,9 +4,20 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 
 	"github.com/ftahirops/xtop/model"
 )
+
+// skipTreeWalk is flipped by the engine when the resource guard says
+// the host is loaded enough that walking the entire cgroup tree (which
+// can mean thousands of dirent reads on k8s nodes) is unaffordable.
+// While set, Collect returns the previously-collected list (cached on
+// snap by the previous tick — or nil if we never had one).
+var skipTreeWalk atomic.Bool
+
+// SetSkipTreeWalk lets the engine flip the skip flag once per tick.
+func SetSkipTreeWalk(v bool) { skipTreeWalk.Store(v) }
 
 // Collector reads cgroup metrics for all discovered cgroups.
 type Collector struct {
@@ -29,8 +40,15 @@ func NewCollector() *Collector {
 // Name returns the collector name.
 func (c *Collector) Name() string { return "cgroup" }
 
-// Collect walks the cgroup tree and populates snap.Cgroups.
+// Collect walks the cgroup tree and populates snap.Cgroups. Skipped at
+// guard level >= 1 — the walk is cheap on 5-cgroup VMs but punishing on
+// k8s nodes with thousands of pod cgroups.
 func (c *Collector) Collect(snap *model.Snapshot) error {
+	if skipTreeWalk.Load() {
+		// Leave snap.Cgroups empty — downstream RCA gracefully degrades to
+		// process-level attribution.
+		return nil
+	}
 	var cgroups []model.CgroupMetrics
 
 	switch c.version {

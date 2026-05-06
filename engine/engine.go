@@ -41,6 +41,8 @@ type Engine struct {
 	logTailer        *LogTailer                     // correlates incidents with app log output
 	calibrator       *ConfidenceCalibrator          // learns per-bottleneck confidence bias from past outcomes
 	traces           *TraceCorrelator               // optional OTel-trace correlation from a JSONL feed
+	traceArmer       *TraceArmer                    // Phase 3: arm-once full-reasoning dump (nil = off)
+	probeRunner      *ProbeRunner                   // Phase 6: opt-in active probes (XTOP_PROBES=1)
 	deepScan         *collector.DeepBigFileScanner  // opt-in full-FS big-file walker
 	guard            *ResourceGuard                 // opt-in xtop self-throttle
 	intervalSec      int                            // base tick interval (for guard + callers)
@@ -186,6 +188,22 @@ func NewEngineMode(historySize, intervalSec int, mode collector.Mode) *Engine {
 		mode:             mode,
 		memReliefQuit:    make(chan struct{}),
 	}
+	// Eagerly construct the resource guard at engine creation so the very
+	// first Tick's pre-collect advice (using runtime.NumCPU as the cpu
+	// count) can throttle expensive collectors. Without this, the guard
+	// is nil for the first tick and apps Manager runs deep probes against
+	// a possibly-already-thrashing host before we have a chance to skip.
+	{
+		base := intervalSec
+		if base <= 0 {
+			base = 3
+		}
+		nc := runtime.NumCPU()
+		if nc < 1 {
+			nc = 1
+		}
+		e.guard = NewResourceGuard(nc, base)
+	}
 
 	// Initialize advanced RCA components (package-level singletons)
 	dataDir := "/var/lib/xtop"
@@ -195,6 +213,23 @@ func NewEngineMode(historySize, intervalSec int, mode collector.Mode) *Engine {
 	adaptiveThresholdDB = NewAdaptiveThresholdDB(dataDir)
 	probabilisticCausalGraph = NewProbabilisticCausalGraph()
 	topologyCorrelator = NewTopologyCorrelator()
+
+	// FastPulse: sub-second PSI sampler that refines per-evidence
+	// SustainedForSec. Off by default in lean (agent) mode to keep the
+	// import graph tight; on in rich mode unless explicitly disabled.
+	if mode != collector.ModeLean && os.Getenv("XTOP_FASTPULSE") != "0" {
+		e.History.FastPulse = NewFastPulse(500)
+		e.History.FastPulse.Start()
+	}
+
+	// TraceArmer: Phase 3 verification tool. Reads XTOP_TRACE_NEXT /
+	// XTOP_TRACE_ON_CONFIRMED at startup; can also be armed by the CLI.
+	e.traceArmer = NewTraceArmer("")
+
+	// ProbeRunner: Phase 6 active investigation. Disabled by default; enable
+	// with XTOP_PROBES=1. Hard-budgeted (5s deadline, 64KB output cap, 30s
+	// rate limit per class, 3 concurrent max).
+	e.probeRunner = NewProbeRunner()
 	// Self-relief loop — every 5 minutes, return idle pages to the OS so
 	// long-running daemons don't hold onto a high RSS forever after a
 	// transient allocation spike. Cheap (microseconds) but Go's runtime
@@ -350,6 +385,35 @@ func (e *Engine) Tick() (*model.Snapshot, *model.RateSnapshot, *model.AnalysisRe
 	e.tickMu.Lock()
 	defer e.tickMu.Unlock()
 
+	// Apply guard advice based on the PREVIOUS tick's host signals — this
+	// gives us a chance to throttle BEFORE running any expensive collectors.
+	// One-tick lag is acceptable for safety: if the box was loaded last tick,
+	// odds are it still is. Plus: even if advice is "no skip", we read it
+	// via /proc/loadavg directly in Advise, which is already populated.
+	if e.guard != nil && e.guard.Enabled() {
+		var loadRatio, hostBusy float64
+		if prevSnap := e.History.Latest(); prevSnap != nil {
+			loadRatio = prevSnap.Global.CPU.LoadAvg.Load1
+		} else {
+			// First tick: read load directly from /proc/loadavg so we don't
+			// run unguarded even on the very first collection cycle.
+			if data, err := os.ReadFile("/proc/loadavg"); err == nil {
+				_, _ = fmt.Sscanf(string(data), "%f", &loadRatio)
+			}
+		}
+		if r := e.History.GetRate(e.History.Len() - 1); r != nil {
+			hostBusy = r.CPUBusyPct
+		}
+		advice := e.guard.Advise(loadRatio, hostBusy)
+		// Flip every package-level skip flag from one place. Each downstream
+		// collector reads its own flag at the top of Collect — when the
+		// host calms down, flags clear and they resume normal cadence.
+		apps.SetSkipDeepProbes(advice.SkipAppDeep)
+		cgcollector.SetSkipTreeWalk(advice.Level >= 1)
+		rt.SetSkipDetection(advice.Level >= 1)
+		skipAdvice = advice
+	}
+
 	snap := &model.Snapshot{
 		Timestamp: time.Now(),
 	}
@@ -428,6 +492,7 @@ func (e *Engine) Tick() (*model.Snapshot, *model.RateSnapshot, *model.AnalysisRe
 		// in the new result.
 		if e.calibrator != nil && e.incidentRecorder != nil {
 			if prev := e.incidentRecorder.Active(); prev != nil &&
+				prev.State == IncidentConfirmed &&
 				(result == nil || result.Health == model.HealthOK) {
 				duration := time.Since(prev.StartedAt)
 				e.calibrator.RecordOutcome(prev.Bottleneck, prev.PeakScore, duration)
@@ -441,7 +506,43 @@ func (e *Engine) Tick() (*model.Snapshot, *model.RateSnapshot, *model.AnalysisRe
 		// Incident recording: track active incidents, persist completed ones,
 		// and enrich current narrative with history context (recurrence info).
 		if e.incidentRecorder != nil {
-			e.incidentRecorder.Record(result)
+			active := e.incidentRecorder.Record(result)
+
+			// Echo lifecycle into result so downstream consumers (fleet client,
+			// trace dump) see it without needing the recorder reference.
+			if active != nil {
+				result.IncidentState = string(active.State)
+				result.IncidentConfirmedAt = active.ConfirmedAt
+			}
+
+			// Phase 4: per-app baselines. Frozen while a Confirmed incident
+			// is active so we don't memorize the bad state as "normal".
+			frozen := active != nil && active.State == IncidentConfirmed
+			result.AppAnomalies = UpdateAppBaselines(snap, rates, e.History, frozen)
+
+			// Phase 5: multi-scale drift detection (boiling-frog).
+			result.Degradations = append(result.Degradations,
+				UpdateDrift(result, e.History, frozen)...)
+			result.Degradations = append(result.Degradations,
+				HoltExhaustionEvidence(result, e.History)...)
+
+			// Phase 6: active probes — only at Suspected→Confirmed transition.
+			// We detect this by checking the current incident state plus a
+			// "have we run yet" guard via ConfirmedAt being recent.
+			if e.probeRunner != nil && e.probeRunner.Enabled() &&
+				active != nil && active.State == IncidentConfirmed &&
+				time.Since(active.ConfirmedAt) < 10*time.Second {
+				if probes := e.probeRunner.MaybeRun(result); len(probes) > 0 {
+					result.ProbeResults = probes
+				}
+			}
+
+			// Phase 3 trace dump: runs after lifecycle is up to date so the
+			// dump reflects the post-Record state (Suspected vs Confirmed).
+			if e.traceArmer != nil && e.traceArmer.Mode() != TraceModeOff {
+				e.traceArmer.MaybeDump(snap, rates, result, e.History, active)
+			}
+			_ = active
 			if result.Health > model.HealthOK {
 				ctx := e.incidentRecorder.HistoryContext(result)
 				if ctx != "" {

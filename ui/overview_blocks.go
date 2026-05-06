@@ -1656,3 +1656,332 @@ func perCoreBusy(prev, curr *model.Snapshot) []float64 {
 	}
 	return pcts
 }
+
+// ─── SHARED: APP LOAD DISTRIBUTION (always visible) ─────────────────────────
+//
+// One row per service/app cgroup, showing CPU/RAM/IO/NET share. Built from
+// CPUOwners/MemOwners/IOOwners/NetOwners which are populated every tick
+// regardless of health state.
+//
+// Generic top-level cgroups (system.slice, user.slice, init.scope, /) are
+// filtered out — they "contain everything" and aren't actionable. Specific
+// units (mongod.service, nginx.service, /docker/<id>) are kept.
+
+// formatBitrate auto-scales a bytes/sec value to a human-readable string with
+// a unit (B/s, KB/s, MB/s, GB/s). Uses kibibytes (1024) so it matches the
+// rest of xtop's MB-rate fields. Negative input is treated as 0.
+func formatBitrate(bytesPerSec float64) string {
+	if bytesPerSec < 0 {
+		bytesPerSec = 0
+	}
+	const (
+		k = 1024.0
+		m = k * 1024
+		g = m * 1024
+	)
+	switch {
+	case bytesPerSec >= g:
+		return fmt.Sprintf("%.2f GB/s", bytesPerSec/g)
+	case bytesPerSec >= m:
+		return fmt.Sprintf("%.2f MB/s", bytesPerSec/m)
+	case bytesPerSec >= k:
+		return fmt.Sprintf("%.1f KB/s", bytesPerSec/k)
+	default:
+		return fmt.Sprintf("%.0f B/s", bytesPerSec)
+	}
+}
+
+// genericCgroupNames is the noise filter. These names roll up many children
+// and showing them as "the consumer" is misleading.
+var genericCgroupNames = map[string]bool{
+	"":              true,
+	"/":             true,
+	"[root]":        true, // kernel/root cgroup label — covers everything
+	"system.slice":  true,
+	"user.slice":    true,
+	"init.scope":    true,
+	"machine.slice": true,
+}
+
+// appRow is the per-service aggregation we display.
+type appRow struct {
+	Name     string
+	CPUPct   float64 // sum-of-cores percent (e.g. 448 = 4.48 cores)
+	MemPct   float64 // % of host RAM
+	IOReadB  float64 // disk read bytes/sec
+	IOWriteB float64 // disk write bytes/sec
+	IORWStr  string  // pre-formatted "R x W y" string
+	NetMBs   float64 // best-effort MB/s
+	NetValue string
+	Score    float64 // sort key — combined heat
+}
+
+func renderTopConsumersBlock(snap *model.Snapshot, rates *model.RateSnapshot, result *model.AnalysisResult, width int) string {
+	var sb strings.Builder
+
+	innerW := width - 7
+	if innerW < 64 {
+		innerW = 64
+	}
+	if innerW > 200 {
+		innerW = 200
+	}
+
+	title := fmt.Sprintf(" %s ", titleStyle.Render("App Load Distribution"))
+	sb.WriteString(boxTopTitle(title, innerW) + "\n")
+
+	if result == nil {
+		sb.WriteString(boxRow(dimStyle.Render("  collecting..."), innerW) + "\n")
+		sb.WriteString(boxBot(innerW) + "\n")
+		return sb.String()
+	}
+
+	var nCPU int
+	if snap != nil {
+		nCPU = snap.Global.CPU.NumCPUs
+	}
+	if nCPU == 0 {
+		nCPU = 1
+	}
+
+	// Aggregate by cgroup name across the four owner lists.
+	rows := map[string]*appRow{}
+	getRow := func(name string) *appRow {
+		if r, ok := rows[name]; ok {
+			return r
+		}
+		r := &appRow{Name: name}
+		rows[name] = r
+		return r
+	}
+	for _, o := range result.CPUOwners {
+		if genericCgroupNames[o.Name] {
+			continue
+		}
+		getRow(o.Name).CPUPct = o.Pct
+	}
+	for _, o := range result.MemOwners {
+		if genericCgroupNames[o.Name] {
+			continue
+		}
+		getRow(o.Name).MemPct = o.Pct
+	}
+	for _, o := range result.NetOwners {
+		if genericCgroupNames[o.Name] {
+			continue
+		}
+		r := getRow(o.Name)
+		r.NetValue = o.Value
+	}
+
+	if len(rows) == 0 {
+		sb.WriteString(boxRow(dimStyle.Render("  no specific service activity (only generic cgroups)"), innerW) + "\n")
+		sb.WriteString(boxBot(innerW) + "\n")
+		return sb.String()
+	}
+
+	// Score: combine CPU% (normalized to host) + MEM%
+	for _, r := range rows {
+		r.Score = (r.CPUPct / float64(nCPU)) + r.MemPct
+	}
+
+	// Sort by score desc
+	list := make([]*appRow, 0, len(rows))
+	for _, r := range rows {
+		list = append(list, r)
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].Score > list[j].Score })
+
+	// Per-cgroup IO bytes/sec — we have the raw MB/s in rates.CgroupRates.
+	// User wants the actual numbers (R 1.2 MB/s W 0.5 MB/s) not a share %.
+	if rates != nil {
+		for _, cg := range rates.CgroupRates {
+			if genericCgroupNames[cg.Name] {
+				continue
+			}
+			r := rows[cg.Name]
+			if r == nil {
+				continue
+			}
+			r.IOReadB = cg.IORateMBs * 1024 * 1024  // MB/s → bytes/s
+			r.IOWriteB = cg.IOWRateMBs * 1024 * 1024
+		}
+	}
+
+	// Compute host-level network bandwidth.
+	var rxBytes, txBytes float64
+	if rates != nil {
+		for _, nr := range rates.NetRates {
+			rxBytes += nr.RxMBs * 1024 * 1024
+			txBytes += nr.TxMBs * 1024 * 1024
+		}
+	}
+	// Use ASCII "rx/tx" labels rather than ↓↑ — Unicode glyphs are 3 bytes
+	// but 1 visible column, which throws off any byte-based padding (Sprintf
+	// %*s pads bytes, not runes). All padding here goes through styledPad
+	// which uses lipgloss.Width (rune-aware), but we keep ASCII for safety.
+	netStr := fmt.Sprintf("rx %s  tx %s", formatBitrate(rxBytes), formatBitrate(txBytes))
+
+	// One unified table. EVERY cell goes through styledPad which measures
+	// VISIBLE width (skips ANSI escapes, counts each rune as 1 col). This
+	// guarantees the right-hand box border doesn't shift between refreshes
+	// regardless of whether values contain ANSI styling, em-dashes, or
+	// arrow glyphs.
+	const (
+		colApp = 22
+		colNum = 8
+		colIO  = 22 // "R 12.3 MB/s  W 4.5 MB/s"
+		colNet = 24 // "rx 12.3 MB/s  tx 4.5 MB/s"
+	)
+	pad := func(s string, n int) string { return styledPad(s, n) }
+	makeRow := func(name, cpu, ram, io, net string) string {
+		return "  " + pad(name, colApp) + "  " +
+			pad(cpu, colNum) + "  " +
+			pad(ram, colNum) + "  " +
+			pad(io, colIO) + "  " +
+			pad(net, colNet)
+	}
+
+	header := makeRow("APP / SERVICE", "CPU%", "RAM%", "IO (read / write)", "NET (rx / tx)")
+	sb.WriteString(boxRow(headerStyle.Render(header), innerW) + "\n")
+
+	formatIO := func(rd, wr float64) string {
+		if rd <= 0 && wr <= 0 {
+			return "-"
+		}
+		return fmt.Sprintf("R %s  W %s", formatBitrate(rd), formatBitrate(wr))
+	}
+
+	// Host total row.
+	var hostReadB, hostWriteB float64
+	if rates != nil {
+		for _, cg := range rates.CgroupRates {
+			hostReadB += cg.IORateMBs * 1024 * 1024
+			hostWriteB += cg.IOWRateMBs * 1024 * 1024
+		}
+	}
+	listedCPU := sumCPUHost(list, nCPU) // % of host CPU used by listed apps
+	listedMem := sumMemHost(list)
+	hostRow := makeRow(
+		"HOST TOTAL",
+		formatPct(listedCPU),
+		formatPct(listedMem),
+		formatIO(hostReadB, hostWriteB),
+		netStr,
+	)
+	sb.WriteString(boxRow(valueStyle.Render(hostRow), innerW) + "\n")
+
+	// Filter rows that have no useful data — appearing only in NetOwners
+	// (process-name keyed) means they have no CPU/RAM/IO numbers to show.
+	useful := list[:0]
+	for _, r := range list {
+		if r.CPUPct > 0.05 || r.MemPct > 0.05 || r.IOReadB > 0 || r.IOWriteB > 0 {
+			useful = append(useful, r)
+		}
+	}
+	list = useful
+
+	// LOCK panel height: always render exactly appRowSlots app rows
+	// (pad with blanks if fewer). This prevents the right border from
+	// shifting between refreshes when the app count changes.
+	const appRowSlots = 3
+	maxShow := appRowSlots
+	if len(list) < maxShow {
+		maxShow = len(list)
+	}
+	for _, r := range list[:maxShow] {
+		name := r.Name
+		if len(name) > colApp {
+			name = name[:colApp-2] + ".."
+		}
+		cpuHostPct := r.CPUPct / float64(nCPU)
+		row := makeRow(
+			name,
+			formatPct(cpuHostPct),
+			formatPct(r.MemPct),
+			formatIO(r.IOReadB, r.IOWriteB),
+			"-", // per-app NET requires eBPF
+		)
+		worst := cpuHostPct
+		if r.MemPct > worst {
+			worst = r.MemPct
+		}
+		var styled string
+		switch {
+		case worst >= 50:
+			styled = critStyle.Render(row)
+		case worst >= 20:
+			styled = warnStyle.Render(row)
+		case worst > 0:
+			styled = valueStyle.Render(row)
+		default:
+			styled = dimStyle.Render(row)
+		}
+		sb.WriteString(boxRow(styled, innerW) + "\n")
+	}
+	// Pad with empty rows so the panel height is fixed.
+	for i := maxShow; i < appRowSlots; i++ {
+		blank := makeRow("", "", "", "", "")
+		sb.WriteString(boxRow(dimStyle.Render(blank), innerW) + "\n")
+	}
+
+	// Single human-readable summary line — not a deep breakdown.
+	// "Box busy 35.8% / RAM used 42.3%. mongod.service is the main consumer."
+	var hostBusyCPU, hostUsedMem float64
+	if rates != nil {
+		hostBusyCPU = rates.CPUBusyPct
+	}
+	if snap != nil && snap.Global.Memory.Total > 0 {
+		hostUsedMem = float64(snap.Global.Memory.Total-snap.Global.Memory.Available) /
+			float64(snap.Global.Memory.Total) * 100
+	}
+	summary := fmt.Sprintf("  Box: CPU %.0f%% busy, RAM %.0f%% used", hostBusyCPU, hostUsedMem)
+	if len(list) > 0 {
+		summary += fmt.Sprintf(".  Top consumer: %s", list[0].Name)
+	}
+	sb.WriteString(boxRow(dimStyle.Render(summary), innerW) + "\n")
+	_ = listedCPU
+	_ = listedMem
+
+	sb.WriteString(boxBot(innerW) + "\n")
+	return sb.String()
+}
+
+func max0(x float64) float64 {
+	if x < 0 {
+		return 0
+	}
+	return x
+}
+
+// formatPct returns a fixed-width percentage string ("XX.X%") suitable for
+// the App Load Distribution table. Plain text — no ANSI; the whole row is
+// styled outside. ASCII "-" rather than em-dash so byte-padding stays in
+// sync with visible width.
+func formatPct(p float64) string {
+	if p <= 0 {
+		return "-"
+	}
+	return fmt.Sprintf("%.1f%%", p)
+}
+
+// sumCPUHost returns the sum of CPU% (host-share) across all rows.
+func sumCPUHost(list []*appRow, nCPU int) float64 {
+	if nCPU < 1 {
+		nCPU = 1
+	}
+	var s float64
+	for _, r := range list {
+		s += r.CPUPct / float64(nCPU)
+	}
+	return s
+}
+
+// sumMemHost returns the sum of MEM% across all rows.
+func sumMemHost(list []*appRow) float64 {
+	var s float64
+	for _, r := range list {
+		s += r.MemPct
+	}
+	return s
+}

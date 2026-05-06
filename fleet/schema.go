@@ -59,6 +59,15 @@ func (h *Hub) initPostgresSchema() error {
 		`CREATE INDEX IF NOT EXISTS idx_inc_host_start ON fleet_incidents (hostname, started_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_inc_started    ON fleet_incidents (started_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_inc_sig        ON fleet_incidents (signature)`,
+
+		// Migration: lifecycle hot columns added with the RCA overhaul. New
+		// columns are NULLable so existing rows back-populate as NULL; the
+		// JSONB blob still has the values for full-fidelity queries.
+		// Idempotent — ADD COLUMN IF NOT EXISTS is a Postgres 9.6+ feature.
+		`ALTER TABLE fleet_incidents ADD COLUMN IF NOT EXISTS state         TEXT`,
+		`ALTER TABLE fleet_incidents ADD COLUMN IF NOT EXISTS confirmed_at  TIMESTAMPTZ`,
+		`CREATE INDEX IF NOT EXISTS idx_inc_state        ON fleet_incidents (state)`,
+		`CREATE INDEX IF NOT EXISTS idx_inc_confirmed_at ON fleet_incidents (confirmed_at DESC)`,
 	}
 
 	for _, s := range stmts {
