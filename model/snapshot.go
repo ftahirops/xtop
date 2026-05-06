@@ -351,6 +351,7 @@ type AnalysisResult struct {
 	ZScoreAnomalies   []ZScoreAnomaly     // Statistically unusual values vs recent window
 	ProcessAnomalies  []ProcessAnomaly    // Processes deviating from learned profile
 	AppAnomalies      []AppBehaviorAnomaly `json:"app_anomalies,omitempty"` // Phase 4: per-app baseline deviations
+	AppRCA            []AppRCAFinding      `json:"app_rca,omitempty"`       // per-app rule-engine findings
 	ProbeResults      []ProbeResult        `json:"probe_results,omitempty"` // Phase 6: active investigation captures
 
 	// Lifecycle echo from the incident recorder. Populated each tick by the
@@ -689,6 +690,26 @@ type ProbeResult struct {
 	Stderr    string    `json:"stderr,omitempty"`
 	Truncated bool      `json:"truncated,omitempty"`
 	Error     string    `json:"error,omitempty"`
+}
+
+// AppRCAFinding is one diagnostic conclusion produced by the per-app rule
+// engine. The engine runs purely against already-collected DeepMetrics —
+// no new probes, no subprocesses. Findings are produced cheaply (sub-
+// millisecond) so they're safe to surface every tick.
+//
+// Severity: "info" (worth noting), "warn" (action recommended), "crit"
+// (likely cause of an active incident).
+type AppRCAFinding struct {
+	App        string `json:"app"`         // app instance ID, e.g. "mongodb-0"
+	AppType    string `json:"app_type"`    // mongodb / mysql / redis / etc.
+	Rule       string `json:"rule"`        // rule ID, stable for filtering / dedup
+	Severity   string `json:"severity"`    // info | warn | crit
+	Title      string `json:"title"`       // one-line headline
+	Detail     string `json:"detail"`      // measured value + threshold context
+	Action     string `json:"action,omitempty"` // recommended next step
+	Metric     string `json:"metric,omitempty"`
+	Value      float64 `json:"value,omitempty"`
+	Threshold  float64 `json:"threshold,omitempty"`
 }
 
 // AppBehaviorAnomaly is a per-app baseline deviation, anchored on cgroup +

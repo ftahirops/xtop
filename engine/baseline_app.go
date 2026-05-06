@@ -74,6 +74,10 @@ func (s *appBaselineStore) updateAndScore(key string, v float64, freeze bool) (m
 
 // appBaselines is a process-lifetime store. Keyed by hist pointer so multiple
 // engines (tests, parallel hosts via fleet hub) don't share state.
+//
+// Cleanup: Engine.Close calls forgetAppBaselines(history) so test runs and
+// short-lived engines (xtop why / loadshare) don't accumulate entries here.
+// Without this, every `go test -count=N` would leak N entries.
 var (
 	appBaselinesMu sync.Mutex
 	appBaselines   = make(map[*History]*appBaselineStore)
@@ -88,6 +92,17 @@ func getAppBaselineStore(h *History) *appBaselineStore {
 	s := newAppBaselineStore()
 	appBaselines[h] = s
 	return s
+}
+
+// forgetAppBaselines drops the per-history Welford state from the global
+// store. Called by Engine.Close. Safe to call with an unknown history.
+func forgetAppBaselines(h *History) {
+	if h == nil {
+		return
+	}
+	appBaselinesMu.Lock()
+	delete(appBaselines, h)
+	appBaselinesMu.Unlock()
 }
 
 // Phase 4: per-app behavioral baselines.

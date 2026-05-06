@@ -1353,7 +1353,7 @@ func (m Model) View() string {
 		case PageProxmox:
 			content = renderProxmoxPage(m.snap, m.rates, m.result, smartDisks, m.probeManager, renderW, m.height)
 		case PageApps:
-			content = renderAppsPage(m.snap, m.appsSelectedIdx, m.appsDetailMode,
+			content = renderAppsPage(m.snap, m.result, m.appsSelectedIdx, m.appsDetailMode,
 				m.appsViewCompact,
 				m.dockerStackCursor, m.dockerStackExpanded, m.dockerContainerIdx,
 				renderW, m.height)

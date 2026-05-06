@@ -113,8 +113,12 @@ func TestGuard_IntervalExtendsOnSevereLoad(t *testing.T) {
 	if adv.Level != 3 {
 		t.Fatalf("precondition: level should be 3, got %d", adv.Level)
 	}
-	if adv.IntervalSec != 6 {
-		t.Errorf("level 3 interval = %d, want maxIntervalSec=6", adv.IntervalSec)
+	// At L3 the guard caps the tick interval at maxIntervalSec, which is
+	// 4× base in v0.46.3+ (was 2×). The aggressive default is deliberate
+	// — on a box thrashing at load 80, 1.5× isn't meaningful relief; 4×
+	// is (12 s vs the default 3 s).
+	if adv.IntervalSec != 12 {
+		t.Errorf("level 3 interval = %d, want 4×base=12", adv.IntervalSec)
 	}
 }
 

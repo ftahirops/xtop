@@ -520,6 +520,11 @@ func (e *Engine) Tick() (*model.Snapshot, *model.RateSnapshot, *model.AnalysisRe
 			frozen := active != nil && active.State == IncidentConfirmed
 			result.AppAnomalies = UpdateAppBaselines(snap, rates, e.History, frozen)
 
+			// Per-app RCA rule engine — pure data crunch over already-collected
+			// DeepMetrics, no new probes. Skipped when guard >= 1 (deep metrics
+			// are stale anyway).
+			result.AppRCA = EvaluateAppRCA(snap, skipAdvice.Level)
+
 			// Phase 5: multi-scale drift detection (boiling-frog).
 			result.Degradations = append(result.Degradations,
 				UpdateDrift(result, e.History, frozen)...)
@@ -780,6 +785,15 @@ func (e *Engine) Close() {
 			close(e.memReliefQuit)
 		}
 	}
+	// Stop FastPulse if running so its goroutine doesn't outlive us.
+	if e.History != nil && e.History.FastPulse != nil {
+		e.History.FastPulse.Stop()
+	}
+	// Drop per-history entries from package-level Welford stores so a
+	// process that creates and discards engines (tests, one-shot CLI)
+	// doesn't accumulate map entries forever.
+	forgetAppBaselines(e.History)
+	forgetDriftStore(e.History)
 	done := make(chan struct{})
 	go func() {
 		var wg sync.WaitGroup

@@ -304,8 +304,17 @@ var counterRateFields = []string{
 
 func computeCounterRates(curr, prev map[string]string, elapsed float64) {
 	for _, f := range counterRateFields {
+		// Only compute a rate when prev actually had this key. Without
+		// this check, a missing prev (e.g. when the previous tick was a
+		// tier1-only stub from skipDeep) parses to 0 and the rate becomes
+		// curr/elapsed — i.e. lifetime cumulative divided by the tick
+		// interval, producing absurd values like "1.2M new conns/sec".
+		pv, prevHad := prev[f]
+		if !prevHad || pv == "" {
+			continue
+		}
 		c, _ := strconv.ParseFloat(curr[f], 64)
-		p, _ := strconv.ParseFloat(prev[f], 64)
+		p, _ := strconv.ParseFloat(pv, 64)
 		if c >= p && elapsed > 0 {
 			rate := (c - p) / elapsed
 			curr[f+"_rate"] = fmt.Sprintf("%.1f", rate)

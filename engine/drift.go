@@ -113,11 +113,23 @@ func (s *driftStore) update(id string, v float64, freeze bool) *driftTracker {
 }
 
 // driftStores keyed by History so multiple engines (parallel hub agents,
-// tests) don't share state.
+// tests) don't share state. Engine.Close calls forgetDriftStore for
+// cleanup; otherwise repeated test runs leak.
 var (
 	driftStoresMu sync.Mutex
 	driftStores   = make(map[*History]*driftStore)
 )
+
+// forgetDriftStore drops the per-history drift trackers from the global
+// store. Called by Engine.Close. Safe with unknown histories.
+func forgetDriftStore(h *History) {
+	if h == nil {
+		return
+	}
+	driftStoresMu.Lock()
+	delete(driftStores, h)
+	driftStoresMu.Unlock()
+}
 
 func getDriftStore(h *History) *driftStore {
 	driftStoresMu.Lock()

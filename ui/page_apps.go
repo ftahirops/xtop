@@ -11,7 +11,7 @@ import (
 	"github.com/ftahirops/xtop/model"
 )
 
-func renderAppsPage(snap *model.Snapshot, selectedIdx int, detailMode bool,
+func renderAppsPage(snap *model.Snapshot, result *model.AnalysisResult, selectedIdx int, detailMode bool,
 	viewCompact bool,
 	stackCursor int, stackExpanded []bool, containerIdx int,
 	width, height int) string {
@@ -29,7 +29,7 @@ func renderAppsPage(snap *model.Snapshot, selectedIdx int, detailMode bool,
 		if viewCompact {
 			return renderAppsDetailCompact(app, nCPU, iw)
 		}
-		return renderAppsDetail(app, nCPU, iw)
+		return renderAppsDetail(app, result, nCPU, iw)
 	}
 
 	// ── List View ──────────────────────────────────────────────────────────
@@ -457,7 +457,7 @@ func max4(a, b, c, d int) int {
 
 // ── Generic App Detail ─────────────────────────────────────────────────
 
-func renderAppsDetail(app model.AppInstance, nCPU int, iw int) string {
+func renderAppsDetail(app model.AppInstance, result *model.AnalysisResult, nCPU int, iw int) string {
 	var sb strings.Builder
 
 	sb.WriteString(appDetailHeader(app))
@@ -468,6 +468,13 @@ func renderAppsDetail(app model.AppInstance, nCPU int, iw int) string {
 	}
 
 	sb.WriteString(renderAppInfoResourceBox(app, nCPU, iw))
+
+	// Per-app RCA findings — pluggable rule engine, no extra cost.
+	// Renders a clear panel of "what's wrong with this app right now"
+	// based on already-collected DeepMetrics. Empty = no panel rendered.
+	if result != nil && len(result.AppRCA) > 0 {
+		sb.WriteString(renderAppRCAFindings(app, result.AppRCA, iw))
+	}
 
 	if app.HasDeepMetrics && len(app.DeepMetrics) > 0 {
 		sb.WriteString(renderAppDeepMetrics(app, iw))
@@ -2573,4 +2580,52 @@ func healthScoreStr(score int) string {
 	default:
 		return critStyle.Render(s)
 	}
+}
+
+// renderAppRCAFindings renders the per-app RCA panel for one app instance.
+// Shows only findings whose .App matches this instance's ID. Sorted crit →
+// warn → info by the engine; we render in the same order. Each finding
+// gets a colored bullet, headline, detail line, and (when available) a
+// recommended action.
+//
+// Cost: pure string assembly — never spawns subprocesses.
+func renderAppRCAFindings(app model.AppInstance, all []model.AppRCAFinding, iw int) string {
+	var mine []model.AppRCAFinding
+	for _, f := range all {
+		if f.App == app.ID {
+			mine = append(mine, f)
+		}
+	}
+	if len(mine) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("  " + titleStyle.Render(fmt.Sprintf("RCA FINDINGS — %s (%d)", app.DisplayName, len(mine))) + "\n")
+	sb.WriteString(boxTop(iw) + "\n")
+	for _, f := range mine {
+		var bullet, sevStyle string
+		switch f.Severity {
+		case "crit":
+			bullet = critStyle.Render("●")
+			sevStyle = critStyle.Render("CRIT")
+		case "warn":
+			bullet = warnStyle.Render("●")
+			sevStyle = warnStyle.Render("WARN")
+		default:
+			bullet = okStyle.Render("●")
+			sevStyle = okStyle.Render("INFO")
+		}
+		head := fmt.Sprintf("  %s %s  %s", bullet, sevStyle, valueStyle.Render(f.Title))
+		sb.WriteString(boxRow(head, iw) + "\n")
+		if f.Detail != "" {
+			sb.WriteString(boxRow("       "+dimStyle.Render(f.Detail), iw) + "\n")
+		}
+		if f.Action != "" {
+			sb.WriteString(boxRow("       "+okStyle.Render("→ "+f.Action), iw) + "\n")
+		}
+		sb.WriteString(boxRow("", iw) + "\n")
+	}
+	sb.WriteString(boxBot(iw) + "\n")
+	return sb.String()
 }

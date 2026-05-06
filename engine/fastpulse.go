@@ -87,6 +87,11 @@ func (fp *FastPulse) Start() {
 }
 
 // Stop signals the goroutine to exit. Safe to call multiple times.
+//
+// Race-safety: Stop CLOSES the existing quit channel and replaces it
+// with a fresh one for any future Start. The goroutine reads its
+// channel via a captured local — never the field — so the close →
+// re-create sequence is safe even if another Start follows.
 func (fp *FastPulse) Stop() {
 	if fp == nil {
 		return
@@ -102,25 +107,33 @@ func (fp *FastPulse) Stop() {
 }
 
 func (fp *FastPulse) loop() {
+	// Capture the channel ONCE at goroutine start. Stop closes whatever
+	// channel was current at that moment; we never re-read fp.quit here,
+	// so the race detector is happy and the loop exits cleanly even if
+	// Stop / Start cycle fast.
+	fp.mu.Lock()
+	quit := fp.quit
+	fp.mu.Unlock()
+
 	// Try kernel-event-driven mode first (Linux PSI poll(2)). If it works,
 	// the kernel wakes us instantly on threshold crossings. If it doesn't
 	// (no permission, kernel <4.20, or trigger write rejected), fall back
 	// to the legacy ticker.
-	if fp.tryPollLoop() {
+	if fp.tryPollLoop(quit) {
 		return
 	}
-	fp.legacyTickerLoop()
+	fp.legacyTickerLoop(quit)
 }
 
 // legacyTickerLoop is the polling fallback: read PSI files every fp.interval.
-func (fp *FastPulse) legacyTickerLoop() {
+func (fp *FastPulse) legacyTickerLoop(quit <-chan struct{}) {
 	t := time.NewTicker(fp.interval)
 	defer t.Stop()
 	for {
 		select {
 		case <-t.C:
 			fp.sample()
-		case <-fp.quit:
+		case <-quit:
 			return
 		}
 	}
@@ -144,7 +157,7 @@ type psiPollFile struct {
 //
 // When the kernel wakes us, we sample(); we also wake on a periodic timeout
 // so streaks reset cleanly when pressure drops back below threshold.
-func (fp *FastPulse) tryPollLoop() bool {
+func (fp *FastPulse) tryPollLoop(quit <-chan struct{}) bool {
 	type trigger struct {
 		id   string
 		path string
@@ -175,7 +188,7 @@ func (fp *FastPulse) tryPollLoop() bool {
 		opened = append(opened, psiPollFile{id: t.id, path: t.path, fd: fd})
 	}
 
-	go fp.runPollLoop(opened)
+	go fp.runPollLoop(opened, quit)
 	return true
 }
 
@@ -188,7 +201,7 @@ func closePollFiles(files []psiPollFile) {
 // runPollLoop blocks on poll(2) for any registered PSI fd. POLLPRI = threshold
 // crossed. We also use a fp.interval-sized timeout so streaks naturally reset
 // when pressure drops (poll won't fire on dropping edges, only crossings).
-func (fp *FastPulse) runPollLoop(files []psiPollFile) {
+func (fp *FastPulse) runPollLoop(files []psiPollFile, quit <-chan struct{}) {
 	defer closePollFiles(files)
 
 	// Build pollfd array. Watch POLLPRI (priority/exception data — what PSI
@@ -205,7 +218,7 @@ func (fp *FastPulse) runPollLoop(files []psiPollFile) {
 
 	for {
 		select {
-		case <-fp.quit:
+		case <-quit:
 			return
 		default:
 		}
@@ -216,7 +229,7 @@ func (fp *FastPulse) runPollLoop(files []psiPollFile) {
 		if err != nil && err != unix.EINTR {
 			// Unexpected poll error — drop to ticker fallback so we don't
 			// silently stop sampling.
-			fp.legacyTickerLoop()
+			fp.legacyTickerLoop(quit)
 			return
 		}
 		fp.sample()
