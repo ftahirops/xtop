@@ -15,6 +15,7 @@ import (
 	"github.com/ftahirops/xtop/collector/apps"
 	cgcollector "github.com/ftahirops/xtop/collector/cgroup"
 	bpf "github.com/ftahirops/xtop/collector/ebpf"
+	"github.com/ftahirops/xtop/collector/phpfpm"
 	"github.com/ftahirops/xtop/collector/profiler"
 	rt "github.com/ftahirops/xtop/collector/runtime"
 	"github.com/ftahirops/xtop/model"
@@ -155,6 +156,12 @@ func NewEngineMode(historySize, intervalSec int, mode collector.Mode) *Engine {
 			appm.Register(apps.NewPleskModule())
 			reg.Add(appm)
 		}
+
+		// PHP-FPM deep per-worker view — discovers all running FPM masters
+		// via /proc, queries pm.status_path?full over the master's listen
+		// socket, joins workers with /proc for live CPU%/RSS, aggregates by
+		// app docroot. Honors guard SkipDeepProbes.
+		reg.Add(phpfpm.NewCollector())
 
 		// System Profiler — Heavy tier. Off by default in Standard;
 		// enabled in SRE Workstation + Investigation profiles.
@@ -411,6 +418,7 @@ func (e *Engine) Tick() (*model.Snapshot, *model.RateSnapshot, *model.AnalysisRe
 		apps.SetSkipDeepProbes(advice.SkipAppDeep)
 		cgcollector.SetSkipTreeWalk(advice.Level >= 1)
 		rt.SetSkipDetection(advice.Level >= 1)
+		phpfpm.SetSkipDeepProbes(advice.Level >= 1)
 		skipAdvice = advice
 	}
 

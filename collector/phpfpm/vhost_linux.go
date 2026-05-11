@@ -1,0 +1,287 @@
+//go:build linux
+
+package phpfpm
+
+import (
+	"bufio"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+// vhostInfo describes one configured server block — domain → docroot →
+// access log. We pull this from nginx and apache vhost files so we can
+// show stats for sites with zero active workers (static-heavy, idle, or
+// purely under attack but not yet generating PHP work).
+type vhostInfo struct {
+	Domain    string
+	DocRoot   string
+	AccessLog string
+	PHPSocket string // unix:/tmp/php-cgi-83.sock if visible from include line
+}
+
+// discoverVhosts walks the well-known nginx + apache config directories
+// and returns one vhostInfo per server_name / ServerName found.
+func discoverVhosts() []vhostInfo {
+	var out []vhostInfo
+	out = append(out, parseNginxDir("/www/server/panel/vhost/nginx")...) // aaPanel
+	out = append(out, parseNginxDir("/etc/nginx/sites-enabled")...)
+	out = append(out, parseNginxDir("/etc/nginx/conf.d")...)
+	out = append(out, parseApacheDir("/etc/apache2/sites-enabled")...)
+	out = append(out, parseApacheDir("/etc/httpd/conf.d")...)
+	return dedupVhosts(out)
+}
+
+func dedupVhosts(in []vhostInfo) []vhostInfo {
+	seen := map[string]vhostInfo{}
+	for _, v := range in {
+		if v.Domain == "" {
+			continue
+		}
+		prev, ok := seen[v.Domain]
+		if !ok {
+			seen[v.Domain] = v
+			continue
+		}
+		// Prefer the entry with more info (longest accumulated string len).
+		if scoreVhost(v) > scoreVhost(prev) {
+			seen[v.Domain] = v
+		}
+	}
+	out := make([]vhostInfo, 0, len(seen))
+	for _, v := range seen {
+		out = append(out, v)
+	}
+	return out
+}
+
+func scoreVhost(v vhostInfo) int {
+	return len(v.DocRoot) + len(v.AccessLog) + len(v.PHPSocket)
+}
+
+func parseNginxDir(dir string) []vhostInfo {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var out []vhostInfo
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasSuffix(name, ".conf") {
+			continue
+		}
+		// skip aaPanel's framework files
+		if strings.HasPrefix(name, "0.") || name == "phpfpm_status.conf" {
+			continue
+		}
+		out = append(out, parseNginxFile(filepath.Join(dir, name))...)
+	}
+	return out
+}
+
+// parseNginxFile is a tiny, deliberately-lenient nginx parser — we only
+// look for `server_name`, `root`, `access_log`, and `enable-php-NN.conf`
+// includes. We do NOT track brace nesting; this is "look at lines that
+// look right." Works for ~98% of real-world configs.
+func parseNginxFile(path string) []vhostInfo {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+
+	var (
+		cur        vhostInfo
+		out        []vhostInfo
+		inSrv      bool
+		pendingSrv bool // saw `server` line, waiting for `{`
+		depth      int
+	)
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		opens := strings.Count(line, "{")
+		closes := strings.Count(line, "}")
+		// `server` directive — may be on its own line, with `{` after.
+		// We handle both "server {" and bare "server" with `{` on next line.
+		isServerStart := false
+		if !inSrv && (strings.HasPrefix(line, "server {") ||
+			strings.HasPrefix(line, "server{") ||
+			line == "server") {
+			isServerStart = true
+		}
+		if isServerStart {
+			if opens > 0 {
+				inSrv = true
+				depth = opens - closes
+				cur = vhostInfo{}
+			} else {
+				pendingSrv = true
+				cur = vhostInfo{}
+			}
+			continue
+		}
+		if pendingSrv && opens > 0 {
+			inSrv = true
+			pendingSrv = false
+			depth = opens - closes
+			continue
+		}
+		if inSrv {
+			depth += opens - closes
+			// extract directives — strip trailing ;
+			lc := strings.TrimSuffix(line, ";")
+			switch {
+			case strings.HasPrefix(lc, "server_name "):
+				names := strings.Fields(strings.TrimPrefix(lc, "server_name"))
+				for _, n := range names {
+					n = strings.TrimSpace(n)
+					if n == "" || n == "_" || n == "default_server" {
+						continue
+					}
+					if cur.Domain == "" {
+						cur.Domain = n
+					}
+				}
+			case strings.HasPrefix(lc, "root "):
+				cur.DocRoot = strings.TrimSpace(strings.TrimPrefix(lc, "root"))
+			case strings.HasPrefix(lc, "access_log "):
+				al := strings.Fields(strings.TrimPrefix(lc, "access_log"))
+				if len(al) > 0 && al[0] != "off" {
+					cur.AccessLog = al[0]
+				}
+			case strings.Contains(lc, "enable-php-"):
+				if i := strings.Index(lc, "enable-php-"); i >= 0 {
+					tail := lc[i+len("enable-php-"):]
+					ver := ""
+					for _, c := range tail {
+						if (c >= '0' && c <= '9') || c == '.' {
+							ver += string(c)
+						} else {
+							break
+						}
+					}
+					if ver != "" {
+						// Map "82" → "/tmp/php-cgi-82.sock"
+						cur.PHPSocket = "unix:/tmp/php-cgi-" + ver + ".sock"
+					}
+				}
+			case strings.HasPrefix(lc, "fastcgi_pass "):
+				addr := strings.TrimSpace(strings.TrimPrefix(lc, "fastcgi_pass"))
+				if addr != "" {
+					cur.PHPSocket = addr
+				}
+			}
+			if depth <= 0 {
+				if cur.Domain != "" {
+					// Default access log if not set
+					if cur.AccessLog == "" {
+						cur.AccessLog = guessAccessLog(cur.Domain)
+					}
+					out = append(out, cur)
+				}
+				inSrv = false
+				cur = vhostInfo{}
+			}
+		}
+	}
+	return out
+}
+
+// guessAccessLog tries the common aaPanel + nginx defaults.
+func guessAccessLog(domain string) string {
+	for _, p := range []string{
+		"/www/wwwlogs/" + domain + ".log",
+		"/var/log/nginx/" + domain + ".access.log",
+		"/var/log/nginx/access.log",
+	} {
+		if fileExists(p) {
+			return p
+		}
+	}
+	return ""
+}
+
+func parseApacheDir(dir string) []vhostInfo {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var out []vhostInfo
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasSuffix(name, ".conf") {
+			continue
+		}
+		out = append(out, parseApacheFile(filepath.Join(dir, name))...)
+	}
+	return out
+}
+
+func parseApacheFile(path string) []vhostInfo {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	var (
+		cur   vhostInfo
+		out   []vhostInfo
+		inV   bool
+	)
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		ll := strings.ToLower(line)
+		if strings.HasPrefix(ll, "<virtualhost") {
+			inV = true
+			cur = vhostInfo{}
+			continue
+		}
+		if strings.HasPrefix(ll, "</virtualhost") {
+			if cur.Domain != "" {
+				if cur.AccessLog == "" {
+					cur.AccessLog = guessAccessLog(cur.Domain)
+				}
+				out = append(out, cur)
+			}
+			inV = false
+			continue
+		}
+		if !inV {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		switch strings.ToLower(fields[0]) {
+		case "servername":
+			if cur.Domain == "" {
+				cur.Domain = fields[1]
+			}
+		case "serveralias":
+			if cur.Domain == "" {
+				cur.Domain = fields[1]
+			}
+		case "documentroot":
+			cur.DocRoot = strings.Trim(fields[1], `"`)
+		case "customlog":
+			cur.AccessLog = strings.Trim(fields[1], `"`)
+		}
+	}
+	return out
+}

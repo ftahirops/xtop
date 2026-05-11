@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/xtop-v0.46.3-00d4aa?style=for-the-badge&logo=linux&logoColor=white" alt="version"/>
+  <img src="https://img.shields.io/badge/xtop-v0.47.0-00d4aa?style=for-the-badge&logo=linux&logoColor=white" alt="version"/>
   <img src="https://img.shields.io/badge/Go-1.25+-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="go"/>
   <img src="https://img.shields.io/badge/eBPF-Powered-ff6600?style=for-the-badge&logo=linux&logoColor=white" alt="ebpf"/>
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="license"/>
@@ -39,15 +39,30 @@
 
 ---
 
-## What's new in v0.46.3
+## What's new in v0.47.0
 
-- **Resource Guardian on by default** — auto-throttles xtop when host load > 1.5× cores. Set `XTOP_GUARD=0` to opt out (audit/debug only). At Level 1 skips app deep probes (mongosh / mysql / redis-cli) and the cgroup tree walker; at Level 2 also skips traces/watchdog and triples the tick interval; at Level 3 caps tick interval at 4× base and skips deep scans. **Visible badge** in the TUI header (`GUARD L2 degraded — host load 5.5x`).
-- **App Load Distribution panel** — explicit per-app CPU%, RAM%, IO read/write (with auto-scaled units B/s → KB/s → MB/s → GB/s), and host-level NET RX/TX. One row per app/service. Filters out generic cgroups (`system.slice`, `[root]`, etc.) so you see actual services.
-- **Apps detection no longer permanently disabled** — fixed a registry budget bug where the apps Manager would be marked `Skipped=true` after 3 consecutive ticks > 50ms (mongosh on busy mongo legitimately takes seconds). Apps Manager now declares a 30s budget. Combined with deferred `snap.Global.Apps` assignment, a panic in any one module no longer empties the whole apps list.
-- **Trace mode for verification** — `xtop trace --once` dumps the next analysis cycle's full A→Z reasoning to `~/.xtop/traces/trace-<ts>.{json,md}`: inputs, evidence, gate audit, rejected evidence, runner-up domain, blame, drift warnings. Use this to verify "is xtop's verdict actually correct?" without trusting the TUI summary.
-- **Per-app behavioural baselines** — anchored on cgroup, per-hour-of-week, frozen during incidents so a workload spike doesn't get learned as "normal."
-- **PSI poll() event-driven onset** — sub-second crossing detection via Linux PSI poll(2), falling back to 500ms sampling on permission error.
-- **CPU% in human terms** — process detail shows `832.7% (8.3 / 12 cores = 69% of host)` instead of just a giant number.
+**Full PHP-FPM per-site diagnostic.** New F8 TUI page + `xtop phpfpm` cmd. Answers "which app is each php-fpm worker actually running, who's hitting it, and what's slow?" — the gap in every existing PHP-FPM monitoring tool.
+
+- **Auto-discovery.** Finds every running php-fpm master via `/proc` (no config needed), parses each pool's `pm.status_path` + listen socket. Works on aaPanel/BT (`/www/server/php/*/etc/`), Debian/Ubuntu (`/etc/php/*/fpm/`), RHEL, custom installs.
+- **Per-worker view via FastCGI status.** Queries `pm.status_path?full` over each pool's Unix socket (~2 ms per pool). Surfaces each worker's PID, state, current script, request URI, last CPU%, last memory. Joins with `/proc/<pid>/{stat,io}` for live CPU%/RSS/disk I/O.
+- **Per-site aggregation.** Buckets workers by docroot — `wp-cron.php on new.dula.ai` vs `index.php on dev.fairwayexchange.com` — so the `pool www` ambiguity goes away.
+- **Access-log analysis.** Incremental tail of each site's access log. Top client IPs with **reverse-DNS + cloud-provider tag** (AWS, Hetzner, OVH, DigitalOcean, Cloudflare, Tor exit, UptimeRobot, ~20 more). Hot URIs with scanner-probe markers (`/.env`, `/legacy.php`). **WHO HIT WHAT** table — top IP/URL combinations for IR triage.
+- **Slow-log analysis.** Tails `/var/log/php-fpm.log` / `/www/server/php/*/var/log/slow.log`. Top slow scripts with full path. **BLOCKING PHP CALLS panel** — every function in the slow-log stack is classified as `[critical]` / `[heavy]` / `[normal]` with an explanation and optimization tip (Elementor render hooks, opcache config, hook-system overhead, DB query patterns, web-shell call signatures).
+- **Filesystem scan.** Walks the docroot looking for web-shell signatures (eval/shell_exec/system on user input, FilesMan/WSO/b374k/c99 patterns, packed base64 payloads) and unexpected ELF/shebang binaries. Cached 10 min, on-demand with `D`.
+- **Ghost-site detection.** When nginx still has a vhost but the docroot is deleted, surfaces it as `[GHOST SITE — docroot missing]` with the cleanup commands (`rm vhost.conf; nginx -s reload`) ready to paste. Stops the 404 noise.
+- **8 new RCA rules.** `phpfpm.webshell.suspect`, `phpfpm.fs.webshell`, `phpfpm.fs.binary`, `phpfpm.bruteforce.detected`, `phpfpm.vhost.stale`, `phpfpm.single_ip.dominant`, `phpfpm.5xx.surge`, `phpfpm.slow.high` — each with severity + specific remediation.
+- **Cost model.** Throttled to 30 s refresh. FastCGI status fetch + log tails are always-on (~10-15 ms total). Docroot scan only runs on cold first walk or user-pressed `D`. Resource Guardian still in effect.
+
+Usage:
+```bash
+xtop phpfpm                          # per-site dashboard
+xtop phpfpm --site=fairway           # one site
+xtop phpfpm --deep-scan              # force fresh docroot scan
+xtop phpfpm --json                   # full data
+xtop                                 # then press F8 for live TUI page
+```
+
+The F7 per-process-connections page from v0.46.x has been removed.
 
 ## What's new in v0.39.1
 
@@ -615,12 +630,12 @@ xtop -cron-install
 
 ```bash
 # Ubuntu/Debian (amd64)
-wget https://github.com/ftahirops/xtop/releases/download/v0.46.3/xtop_0.46.3-1_amd64.deb
-sudo dpkg -i xtop_0.46.3-1_amd64.deb
+wget https://github.com/ftahirops/xtop/releases/download/v0.47.0/xtop_0.47.0-1_amd64.deb
+sudo dpkg -i xtop_0.47.0-1_amd64.deb
 
 # RHEL/Rocky/Fedora (x86_64)
-wget https://github.com/ftahirops/xtop/releases/download/v0.46.3/xtop-0.46.3-1.x86_64.rpm
-sudo rpm -i xtop-0.46.3-1.x86_64.rpm
+wget https://github.com/ftahirops/xtop/releases/download/v0.47.0/xtop-0.47.0-1.x86_64.rpm
+sudo rpm -i xtop-0.47.0-1.x86_64.rpm
 
 # Arch Linux
 git clone https://github.com/ftahirops/xtop.git
@@ -632,7 +647,7 @@ cd xtop/packaging/archlinux && makepkg -si
 ```bash
 git clone https://github.com/ftahirops/xtop.git
 cd xtop
-CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.46.3" -o xtop .
+CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.47.0" -o xtop .
 sudo install -m 755 xtop /usr/local/bin/xtop
 ```
 
@@ -664,15 +679,15 @@ sudo xtop -json | jq   # JSON for scripting
 ### From .deb Package (Ubuntu 22.04/24.04, Debian)
 
 ```bash
-wget https://github.com/ftahirops/xtop/releases/download/v0.46.3/xtop_0.46.3-1_amd64.deb
-sudo dpkg -i xtop_0.46.3-1_amd64.deb
+wget https://github.com/ftahirops/xtop/releases/download/v0.47.0/xtop_0.47.0-1_amd64.deb
+sudo dpkg -i xtop_0.47.0-1_amd64.deb
 ```
 
 ### From .rpm Package (Rocky Linux, RHEL, AlmaLinux, Fedora)
 
 ```bash
-wget https://github.com/ftahirops/xtop/releases/download/v0.46.3/xtop-0.46.3-1.x86_64.rpm
-sudo rpm -i xtop-0.46.3-1.x86_64.rpm
+wget https://github.com/ftahirops/xtop/releases/download/v0.47.0/xtop-0.47.0-1.x86_64.rpm
+sudo rpm -i xtop-0.47.0-1.x86_64.rpm
 ```
 
 ### Arch Linux (PKGBUILD)
@@ -694,7 +709,7 @@ Builds from source automatically. Optional dependencies: `nvidia-utils` (GPU mon
 ```bash
 git clone https://github.com/ftahirops/xtop.git
 cd xtop
-CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.46.3" -o xtop .
+CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.47.0" -o xtop .
 sudo install -m 755 xtop /usr/local/bin/xtop
 ```
 

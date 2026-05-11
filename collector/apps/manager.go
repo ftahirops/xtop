@@ -238,6 +238,13 @@ func (m *Manager) Collect(snap *model.Snapshot) error {
 			}()
 			var inst model.AppInstance
 			if skipDeep {
+				// Build a tier-1 instance: cheap /proc reads only. NO subprocess
+				// spawns (mongosh / mysql / redis-cli) — that's what skipDeep
+				// is for. RSS, threads, FDs, uptime are all single open()+read()
+				// calls so they cost <100µs each. countTCPConnections walks
+				// /proc/net/tcp which can be expensive on busy hosts so it's
+				// excluded from the lite path.
+				uptime := readProcUptime(entry.app.PID)
 				inst = model.AppInstance{
 					ID:          fmt.Sprintf("%s-%d", entry.module.Type(), entry.app.Index),
 					AppType:     entry.module.Type(),
@@ -246,7 +253,13 @@ func (m *Manager) Collect(snap *model.Snapshot) error {
 					Port:        entry.app.Port,
 					Status:      "active",
 					HealthScore: 100,
-					DeepMetrics: map[string]string{"tier2_skipped": "first-tick-fast-path"},
+					RSSMB:       readProcRSS(entry.app.PID),
+					Threads:     readProcThreads(entry.app.PID),
+					FDs:         readProcFDs(entry.app.PID),
+					UptimeSec:   uptime,
+					DeepMetrics: map[string]string{
+						"tier2_skipped": "guard-active-or-first-tick",
+					},
 				}
 			} else {
 				inst = entry.module.Collect(&entry.app, secrets)

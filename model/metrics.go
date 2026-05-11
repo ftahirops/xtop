@@ -888,6 +888,143 @@ type GlobalMetrics struct {
 	Proxmox        *ProxmoxMetrics     // non-nil only on Proxmox hosts
 	Profile        *ServerProfile      // system profiler (optimization audit)
 	GPU            GPUSnapshot         // NVIDIA GPU metrics (empty if no GPU)
+	PHPFPM         PHPFPMMetrics       // per-pool/per-worker PHP-FPM view
+}
+
+// PHPFPMMetrics carries the per-worker breakdown that PHP-FPM's
+// `pm.status_path?full` exposes, joined with /proc for live cost.
+type PHPFPMMetrics struct {
+	Masters []PHPFPMMaster
+	Workers []PHPFPMWorker
+	Apps    []PHPFPMApp
+}
+
+// PHPFPMMaster is one running php-fpm master process — identified by its
+// config path (which encodes the PHP version on most distros).
+type PHPFPMMaster struct {
+	PID         int
+	PHPVersion  string // "8.3", "8.2", "8.1", "7.4" — derived from ConfigPath
+	ConfigPath  string // e.g. /www/server/php/83/etc/php-fpm.conf
+	ListenAddr  string // unix:/tmp/php-cgi-83.sock or 127.0.0.1:9000
+	StatusPath  string // /phpfpm_83_status (if pm.status_path set)
+	PoolName    string
+	WorkerCount int
+	StatusOK    bool   // true if last status fetch succeeded
+	StatusError string // non-empty on failure
+}
+
+// PHPFPMWorker is one row from the FPM `?full` status block, augmented
+// with live /proc data.
+type PHPFPMWorker struct {
+	PID            int
+	MasterPID      int
+	PHPVersion     string
+	PoolName       string
+	State          string  // "Running" | "Idle"
+	Script         string  // /www/wwwroot/<app>/index.php
+	App            string  // derived from Script — first dir under /www/wwwroot or docroot
+	RequestURI     string
+	RequestMethod  string
+	DurationUs     int64   // microseconds — current request when Running, last when Idle
+	LastReqCPUPct  float64 // %
+	LastReqMemKB   int64
+	RequestsTotal  int64
+	// Live values from /proc
+	LiveCPUPct   float64
+	LiveRSSKB    int64
+	DiskReadBps  float64 // bytes/sec via /proc/<pid>/io rchar delta
+	DiskWriteBps float64 // bytes/sec via /proc/<pid>/io wchar delta
+}
+
+// PHPFPMApp aggregates workers by app (derived docroot dirname).
+type PHPFPMApp struct {
+	App              string
+	PHPVersion       string
+	DocRoot          string
+	DocRootMissing   bool // configured DocRoot does not exist on disk (stale vhost)
+	AccessLog        string
+	WorkerCount   int
+	RunningCount  int
+	IdleCount     int
+	CPUPct        float64 // sum of LiveCPUPct (% of one core)
+	RSSKB         int64
+	DiskReadBps   float64
+	DiskWriteBps  float64
+	RequestsTotal int64
+	AvgDurationMs float64
+	TopURI        string
+	// From access log
+	AccessReqs       int
+	AccessBytes      int64
+	Status2xx        int
+	Status3xx        int
+	Status4xx        int
+	Status5xx        int
+	TopIPs           []PHPFPMIPHit  // top IPs hitting this site
+	TopAccessURIs    []PHPFPMURIHit // top URIs in access log
+	TopIPURIs        []PHPFPMIPURIHit
+	// From slow log
+	SlowBlocksTotal int
+	TopSlowScripts  []PHPFPMScriptHit
+	TopSlowFns      []PHPFPMFunctionHit
+	WebShellHits    []PHPFPMWebShellSuspect
+	// Filesystem scan of the docroot
+	FSWebShells []PHPFPMFSFinding
+	FSBinaries  []PHPFPMFSFinding
+	// From live FPM status (which scripts have most workers right now)
+	TopRunningScripts []PHPFPMScriptHit
+	// Issues fired by RCA rules
+	Issues []PHPFPMIssue
+}
+
+type PHPFPMIPHit struct {
+	IP       string
+	Hits     int
+	RDNS     string // reverse-DNS hostname if resolvable
+	Provider string // cloud/ASN label inferred from rDNS or CIDR
+	Country  string // ISO-2 hint when available
+}
+type PHPFPMURIHit struct {
+	URI  string
+	Hits int
+}
+type PHPFPMIPURIHit struct {
+	IP   string
+	URI  string
+	Hits int
+}
+type PHPFPMScriptHit struct {
+	Script string
+	Hits   int
+}
+type PHPFPMFunctionHit struct {
+	Function    string
+	Hits        int
+	Category    string // framework | render | db | http | fs | exec | regex | image | serialize | other
+	Severity    string // normal | heavy | critical
+	Explanation string
+	Optimize    string
+}
+type PHPFPMWebShellSuspect struct {
+	Script   string
+	Function string
+	Frame    string
+}
+
+type PHPFPMFSFinding struct {
+	Path     string
+	Kind     string // "php-shell" | "obfuscated" | "ext-mismatch" | "elf-binary" | "shebang-script"
+	Signal   string // why we flagged
+	Evidence string // short excerpt
+	Size     int64
+	ModTime  time.Time
+}
+type PHPFPMIssue struct {
+	Severity string // "crit" | "warn" | "info"
+	Code     string // "phpfpm.bruteforce" | "phpfpm.webshell" | "phpfpm.saturated" | ...
+	Message  string
+	Detail   string
+	Action   string
 }
 
 // CgroupMetrics holds metrics for a single cgroup.

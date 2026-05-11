@@ -100,7 +100,13 @@ func NewResourceGuard(numCPUs, baseIntervalSec int) *ResourceGuard {
 	}
 	g := &ResourceGuard{
 		enabled:         enabled,
-		ownCPUBudgetPct: 2.0, // self-throttle when we exceed 2% of one core
+		// 5% of one core is the "we are contributing meaningfully" line.
+		// Earlier (v0.46.3-app-rca) used 2%, which was too tight for the
+		// interactive TUI: lipgloss reflow during a full-screen redraw on
+		// a 100+ wide terminal can briefly use 10-15% of a core, kicking
+		// the guard into L3 and blackholing the apps panel even when the
+		// host is genuinely idle.
+		ownCPUBudgetPct: 5.0,
 		loadWarnRatio:   1.5, // load > 1.5 × NumCPUs → caution
 		loadCritRatio:   3.0, // load > 3.0 × NumCPUs → degraded
 		hostBusyWarnPct: 75,

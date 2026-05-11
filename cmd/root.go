@@ -23,7 +23,7 @@ import (
 )
 
 // Version is set at build time via ldflags.
-var Version = "0.46.3"
+var Version = "0.47.0"
 
 // Config holds CLI configuration.
 type Config struct {
@@ -191,6 +191,7 @@ var subcommands = map[string]func([]string) error{
 	"trace":      runTrace,
 	"loadshare":  runLoadshare,
 	"apps":       runLoadshare, // alias — natural name
+	"phpfpm":     runPHPFPM,
 }
 
 // Run parses flags and starts the application.

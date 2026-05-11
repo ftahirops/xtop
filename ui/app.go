@@ -12,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ftahirops/xtop/collector"
+	"github.com/ftahirops/xtop/collector/phpfpm"
 	"github.com/ftahirops/xtop/engine"
 	"github.com/ftahirops/xtop/model"
 )
@@ -38,10 +39,11 @@ const (
 	PageApps
 	PageProfiler
 	PageGPU
+	PagePHPFPM
 	pageCount
 )
 
-var pageNames = []string{"Overview", "CPU", "Memory", "IO", "Network", "CGroups", "Timeline", "Events", "Probe", "Thresholds", "DiskGuard", "Security", "Diagnostics", "Intel", "Proxmox", "Apps", "Profiler", "GPU"}
+var pageNames = []string{"Overview", "CPU", "Memory", "IO", "Network", "CGroups", "Timeline", "Events", "Probe", "Thresholds", "DiskGuard", "Security", "Diagnostics", "Intel", "Proxmox", "Apps", "Profiler", "GPU", "PHP-FPM"}
 
 // signalEntry describes a signal option in the signal menu.
 type signalEntry struct {
@@ -216,6 +218,11 @@ type Model struct {
 	// Profiler page collapsible sections
 	profSectionCursor   int     // 0-6: highlighted domain
 	profSectionExpanded [7]bool // which domains are expanded
+
+	// PHP-FPM page
+	phpfpmSelectedIdx int  // cursor in site list
+	phpfpmDetailMode  bool // true = drill-down into selected site
+	phpfpmScrollY     int  // scroll inside detail panel
 
 	// Network page collapsible sections
 	netSectionCursor   int      // 0-5: highlighted section
@@ -684,6 +691,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.snap != nil && len(m.snap.Global.Apps.Instances) > 0 {
 					m.appsSelectedIdx = (m.appsSelectedIdx + 1) % len(m.snap.Global.Apps.Instances)
 				}
+			} else if m.page == PagePHPFPM {
+				if m.phpfpmDetailMode {
+					m.phpfpmScrollY++
+				} else if m.snap != nil && len(m.snap.Global.PHPFPM.Apps) > 0 {
+					m.phpfpmSelectedIdx = (m.phpfpmSelectedIdx + 1) % len(m.snap.Global.PHPFPM.Apps)
+				}
 			} else if m.page == PageCgroups {
 				maxIdx := 0
 				if m.snap != nil && len(m.snap.Cgroups) > 0 {
@@ -712,6 +725,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else if m.page == PageApps && !m.appsDetailMode {
 				if m.snap != nil && len(m.snap.Global.Apps.Instances) > 0 {
 					m.appsSelectedIdx = (m.appsSelectedIdx + len(m.snap.Global.Apps.Instances) - 1) % len(m.snap.Global.Apps.Instances)
+				}
+			} else if m.page == PagePHPFPM {
+				if m.phpfpmDetailMode {
+					if m.phpfpmScrollY > 0 {
+						m.phpfpmScrollY--
+					}
+				} else if m.snap != nil && len(m.snap.Global.PHPFPM.Apps) > 0 {
+					n := len(m.snap.Global.PHPFPM.Apps)
+					m.phpfpmSelectedIdx = (m.phpfpmSelectedIdx + n - 1) % n
 				}
 			} else if m.page == PageCgroups {
 				if m.cgSelected > 0 {
@@ -770,6 +792,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							m.dockerStackExpanded[0] = true
 						}
 					}
+				}
+				return m, nil
+			}
+			// PHP-FPM page: drill into selected site / collapse back
+			if m.page == PagePHPFPM {
+				if !m.phpfpmDetailMode {
+					if m.snap != nil && m.phpfpmSelectedIdx < len(m.snap.Global.PHPFPM.Apps) {
+						m.phpfpmDetailMode = true
+						m.phpfpmScrollY = 0
+					}
+				} else {
+					m.phpfpmDetailMode = false
 				}
 				return m, nil
 			}
@@ -915,11 +949,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			active, completed := m.eventDetector.AllEvents()
 			return m, exportIncidentMarkdown(m.snap, m.rates, m.result, active, completed)
 		case "D":
+			// Page-specific: D on the PHP-FPM page triggers a deep
+			// filesystem scan for the focused site (or all if no detail).
+			if m.page == PagePHPFPM {
+				if m.phpfpmDetailMode && m.snap != nil &&
+					m.phpfpmSelectedIdx < len(m.snap.Global.PHPFPM.Apps) {
+					site := m.snap.Global.PHPFPM.Apps[m.phpfpmSelectedIdx].App
+					phpfpm.TriggerDeepScan(site)
+				} else {
+					phpfpm.TriggerDeepScan("*")
+				}
+				return m, nil
+			}
 			m.page = PageDiskGuard
 			m.scroll = 0
 			m.explainScroll = 0
 		case "L":
 			m.page = PageSecurity
+			m.scroll = 0
+			m.explainScroll = 0
+		case "f8":
+			// F8 → PHP-FPM per-app/per-worker view.
+			m.page = PagePHPFPM
 			m.scroll = 0
 			m.explainScroll = 0
 		case "W":
@@ -1167,6 +1218,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case "r", "R":
+			// PHP-FPM page: force a full refresh (FastCGI + log tail).
+			if m.page == PagePHPFPM {
+				phpfpm.TriggerRefresh()
+				return m, nil
+			}
 			// Resume all frozen processes (verify PID identity first)
 			if m.page == PageDiskGuard && len(m.frozenPIDs) > 0 {
 				resumed := 0
@@ -1361,6 +1417,8 @@ func (m Model) View() string {
 			content = renderProfilerPage(m.snap, m.profSectionCursor, m.profSectionExpanded, renderW, m.height)
 		case PageGPU:
 			content = renderGPUPage(m.snap, renderW, m.height)
+		case PagePHPFPM:
+			content = renderPHPFPMPage(m.snap, m.phpfpmSelectedIdx, m.phpfpmDetailMode, m.phpfpmScrollY, renderW, m.height)
 		}
 	}
 
@@ -1451,6 +1509,8 @@ func (m Model) renderStatusBar(scrollInfo string) string {
 			return "O"
 		case PageGPU:
 			return "U"
+		case PagePHPFPM:
+			return "F8"
 		default:
 			return fmt.Sprintf("%d", i)
 		}

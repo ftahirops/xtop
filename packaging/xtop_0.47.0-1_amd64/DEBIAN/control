@@ -1,0 +1,39 @@
+Package: xtop
+Version: 0.47.0-1
+Section: admin
+Priority: optional
+Architecture: amd64
+Depends: libc6
+Recommends: postgresql, journalctl
+Installed-Size: 37740
+Maintainer: Farhan Tahir <farhan.003@gmail.com>
+Homepage: https://github.com/ftahirops/xtop
+Description: Incident-first root-cause analysis console for Linux
+ v0.47.0 adds a full PHP-FPM per-site diagnostic — discovers every
+ running php-fpm master via /proc, queries pm.status_path?full over
+ each pool's listen socket, joins workers with /proc for live
+ CPU/RSS/disk-I/O, then aggregates by docroot. Per-site panel shows:
+ .
+   - top client IPs with reverse-DNS + cloud-provider tag (AWS,
+     Hetzner, OVH, DigitalOcean, Cloudflare, Tor, ~20 more)
+   - hot URIs with scanner-probe markers (/.env, /legacy.php, etc.)
+   - WHO HIT WHAT — top IP/URL combinations for IR triage
+   - currently-running scripts (which app each worker serves)
+   - filesystem scan: docroot walk for web-shell signatures + ELF binaries
+   - slow-log analysis with BLOCKING PHP CALLS classified by severity
+     (critical / heavy / normal), each with an optimization tip
+   - ghost-site detection: vhost configured but docroot missing,
+     with cleanup commands ready to paste
+ .
+ New RCA rules: phpfpm.webshell.suspect, phpfpm.bruteforce.detected,
+ phpfpm.fs.webshell, phpfpm.fs.binary, phpfpm.vhost.stale,
+ phpfpm.single_ip.dominant, phpfpm.5xx.surge, phpfpm.slow.high.
+ .
+ New TUI page (F8) with R = refresh, D = deep scan, j/k navigation
+ and per-site detail mode. New cmd: xtop phpfpm with --site, --json,
+ --max-ips, --deep-scan flags. The F7 per-process connections page
+ has been removed.
+ .
+ PHP-FPM collector throttles to 30s refresh interval. FastCGI status
+ fetch always runs (cheap ~2ms per pool); heavy docroot scans only
+ on cold first walk or user-triggered deep scan.
