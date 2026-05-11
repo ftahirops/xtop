@@ -13,6 +13,33 @@ import (
 	"github.com/ftahirops/xtop/model"
 )
 
+// phpVersionFromSocket extracts "8.2" from "unix:/tmp/php-cgi-82.sock" or
+// "/run/php/php8.3-fpm.sock" — the version is encoded in the socket path
+// on every panel that uses one socket per PHP version.
+func phpVersionFromSocket(sock string) string {
+	if sock == "" {
+		return ""
+	}
+	// Find substring "php-cgi-NN", "phpX.Y", "php-N.N", etc.
+	for i := 0; i < len(sock)-1; i++ {
+		// look for digit, then optional '.', then digit
+		if sock[i] >= '0' && sock[i] <= '9' {
+			j := i
+			for j < len(sock) && ((sock[j] >= '0' && sock[j] <= '9') || sock[j] == '.') {
+				j++
+			}
+			cand := sock[i:j]
+			if len(cand) == 2 && allDigits(cand) {
+				return cand[:1] + "." + cand[1:]
+			}
+			if len(cand) == 3 && cand[1] == '.' {
+				return cand
+			}
+		}
+	}
+	return ""
+}
+
 // docrootExists returns true if the path exists and is a directory.
 func docrootExists(p string) bool {
 	if p == "" {
@@ -101,12 +128,16 @@ func pageSizeKB() int64 {
 // rollupApps groups workers by app and folds in access-log + slow-log
 // data. Sites with no live workers but with access-log activity are
 // still emitted so the user sees the full picture.
+//
+// masters carries pool→{php-version, worker-count} so we can populate
+// PHPVersion + WorkerCount even when the FastCGI status fetch failed.
 func rollupApps(
 	workers []model.PHPFPMWorker,
 	vhosts []vhostInfo,
 	accLogs map[string]accessLogAgg,
 	slow map[string]*slowSiteAgg,
 	masterCaps map[string]int,
+	masters []model.PHPFPMMaster,
 ) []model.PHPFPMApp {
 	type bucket struct {
 		app       model.PHPFPMApp
@@ -122,12 +153,54 @@ func rollupApps(
 		}
 		m[v.Domain] = &bucket{
 			app: model.PHPFPMApp{
-				App:       v.Domain,
-				DocRoot:   v.DocRoot,
-				AccessLog: v.AccessLog,
+				App:        v.Domain,
+				DocRoot:    v.DocRoot,
+				AccessLog:  v.AccessLog,
+				PHPVersion: phpVersionFromSocket(v.PHPSocket),
 			},
 			uriHits:    map[string]int{},
 			scriptHits: map[string]int{},
+		}
+	}
+
+	// Seed buckets from FPM masters/pools too so pools without any
+	// matching vhost or live worker still show up. Carries PHP version
+	// and worker count from /proc — these survive even if FastCGI
+	// status fetch failed (common on Plesk where pm.status_path is off).
+	skipPools := map[string]bool{
+		// Plesk's internal service pools — not real sites.
+		"plesk-php83-fpm.plesk-service.localdomain": true,
+		"plesk-php84-fpm.plesk-service.localdomain": true,
+		// Generic pool names that don't map to a specific site.
+		// aaPanel + Debian default use these; their actual per-site
+		// attribution comes from FastCGI status (script path → app).
+		"www":     true,
+		"default": true,
+		"pool":    true,
+	}
+	for _, ms := range masters {
+		if ms.PoolName == "" || skipPools[ms.PoolName] {
+			continue
+		}
+		b, ok := m[ms.PoolName]
+		if !ok {
+			b = &bucket{
+				app: model.PHPFPMApp{
+					App:        ms.PoolName,
+					PHPVersion: ms.PHPVersion,
+				},
+				uriHits:    map[string]int{},
+				scriptHits: map[string]int{},
+			}
+			m[ms.PoolName] = b
+		}
+		// Always fill in PHP version + worker count from master data —
+		// these are the source of truth when FastCGI fetch fails.
+		if b.app.PHPVersion == "" {
+			b.app.PHPVersion = ms.PHPVersion
+		}
+		if b.app.WorkerCount == 0 {
+			b.app.WorkerCount = ms.WorkerCount
 		}
 	}
 

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/xtop-v0.47.0-00d4aa?style=for-the-badge&logo=linux&logoColor=white" alt="version"/>
+  <img src="https://img.shields.io/badge/xtop-v0.47.1-00d4aa?style=for-the-badge&logo=linux&logoColor=white" alt="version"/>
   <img src="https://img.shields.io/badge/Go-1.25+-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="go"/>
   <img src="https://img.shields.io/badge/eBPF-Powered-ff6600?style=for-the-badge&logo=linux&logoColor=white" alt="ebpf"/>
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="license"/>
@@ -38,6 +38,17 @@
 </p>
 
 ---
+
+## What's new in v0.47.1
+
+**Generic PHP-FPM diagnostic — works on Plesk, cPanel, aaPanel, vanilla Debian/Ubuntu/RHEL, and manual setups.** v0.47.1 fixes the one-master-one-pool assumption in v0.47.0 that broke Plesk (which uses one master with N pools, one per site, plus relative socket paths).
+
+- **Multi-pool per master.** Plesk-style: one master can host 20+ pools, each with its own listen socket. Each pool surfaces as its own per-site row.
+- **Relative listen-path resolution.** When a pool's `listen=` is a bare name (Plesk: `php-fpm.sock`), resolved against `/var/www/vhosts/system/<pool>/`, `<chdir>/`, `/run/`, `/var/run/`, `/tmp/` — first existing path wins.
+- **Worker → pool attribution.** Workers' cmdline (`php-fpm: pool <name>`) bucketed into the right pool. Worker count shown even when FastCGI status is off.
+- **PHP version inference** from FPM pool or vhost `enable-php-XX` include.
+- **Panel-specific vhost paths.** Plesk (`/etc/nginx/plesk.conf.d/vhosts`, `/var/www/vhosts/system/<dom>/`), cPanel (`/etc/userdatadomains`), aaPanel/BT, Debian/Ubuntu — all auto-discovered.
+- **Better dedup.** `www.example.com` + `example.com` server_names no longer produce two apps. Plesk's internal `plesk-php8X-fpm.plesk-service.*` service pools filtered out.
 
 ## What's new in v0.47.0
 
@@ -630,12 +641,12 @@ xtop -cron-install
 
 ```bash
 # Ubuntu/Debian (amd64)
-wget https://github.com/ftahirops/xtop/releases/download/v0.47.0/xtop_0.47.0-1_amd64.deb
-sudo dpkg -i xtop_0.47.0-1_amd64.deb
+wget https://github.com/ftahirops/xtop/releases/download/v0.47.1/xtop_0.47.1-1_amd64.deb
+sudo dpkg -i xtop_0.47.1-1_amd64.deb
 
 # RHEL/Rocky/Fedora (x86_64)
-wget https://github.com/ftahirops/xtop/releases/download/v0.47.0/xtop-0.47.0-1.x86_64.rpm
-sudo rpm -i xtop-0.47.0-1.x86_64.rpm
+wget https://github.com/ftahirops/xtop/releases/download/v0.47.1/xtop-0.47.1-1.x86_64.rpm
+sudo rpm -i xtop-0.47.1-1.x86_64.rpm
 
 # Arch Linux
 git clone https://github.com/ftahirops/xtop.git
@@ -647,7 +658,7 @@ cd xtop/packaging/archlinux && makepkg -si
 ```bash
 git clone https://github.com/ftahirops/xtop.git
 cd xtop
-CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.47.0" -o xtop .
+CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.47.1" -o xtop .
 sudo install -m 755 xtop /usr/local/bin/xtop
 ```
 
@@ -679,15 +690,15 @@ sudo xtop -json | jq   # JSON for scripting
 ### From .deb Package (Ubuntu 22.04/24.04, Debian)
 
 ```bash
-wget https://github.com/ftahirops/xtop/releases/download/v0.47.0/xtop_0.47.0-1_amd64.deb
-sudo dpkg -i xtop_0.47.0-1_amd64.deb
+wget https://github.com/ftahirops/xtop/releases/download/v0.47.1/xtop_0.47.1-1_amd64.deb
+sudo dpkg -i xtop_0.47.1-1_amd64.deb
 ```
 
 ### From .rpm Package (Rocky Linux, RHEL, AlmaLinux, Fedora)
 
 ```bash
-wget https://github.com/ftahirops/xtop/releases/download/v0.47.0/xtop-0.47.0-1.x86_64.rpm
-sudo rpm -i xtop-0.47.0-1.x86_64.rpm
+wget https://github.com/ftahirops/xtop/releases/download/v0.47.1/xtop-0.47.1-1.x86_64.rpm
+sudo rpm -i xtop-0.47.1-1.x86_64.rpm
 ```
 
 ### Arch Linux (PKGBUILD)
@@ -709,7 +720,7 @@ Builds from source automatically. Optional dependencies: `nvidia-utils` (GPU mon
 ```bash
 git clone https://github.com/ftahirops/xtop.git
 cd xtop
-CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.47.0" -o xtop .
+CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.47.1" -o xtop .
 sudo install -m 755 xtop /usr/local/bin/xtop
 ```
 

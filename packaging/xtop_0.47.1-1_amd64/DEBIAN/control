@@ -1,0 +1,38 @@
+Package: xtop
+Version: 0.47.1-1
+Section: admin
+Priority: optional
+Architecture: amd64
+Depends: libc6
+Recommends: postgresql, journalctl
+Installed-Size: 37740
+Maintainer: Farhan Tahir <farhan.003@gmail.com>
+Homepage: https://github.com/ftahirops/xtop
+Description: Incident-first root-cause analysis console for Linux
+ v0.47.1 makes the PHP-FPM diagnostic generic across panels —
+ Plesk (one master, N pools per site), aaPanel/BT, Debian/Ubuntu,
+ cPanel, and manually-configured PHP-FPM all work the same way.
+ .
+ Key fixes vs 0.47.0:
+   - Multi-pool support: one master may host many pools (Plesk pattern).
+     Each pool surfaces as its own row with its own listen socket.
+   - Relative listen-path resolution: when a pool's `listen=` is a
+     bare filename (Plesk: "php-fpm.sock"), it's resolved against
+     /var/www/vhosts/system/<pool_name>/, then chdir-relative, then
+     /run, /var/run, /tmp. First existing socket wins.
+   - Worker attribution via pool name: each worker's cmdline carries
+     "php-fpm: pool <name>" — used to attribute workers to their pool.
+   - Vhost discovery: added /etc/nginx/plesk.conf.d/vhosts,
+     /etc/apache2/plesk.conf.d/vhosts, /var/www/vhosts/system/<dom>/,
+     /etc/userdatadomains (cPanel).
+   - www-prefix dedup: server_name "example.com www.example.com"
+     and separate vhosts for both no longer create duplicate apps.
+   - PHP version inference: pulled from FPM pool master or vhost
+     `enable-php-XX.conf` include when no live workers are present.
+   - Plesk internal service pools (plesk-php8X-fpm.plesk-service.*)
+     are filtered out of the per-site view.
+ .
+ All v0.47.0 features remain: per-site dashboard, IP enrichment with
+ rDNS + cloud tag, WHO HIT WHAT panel, filesystem scan for web-shells,
+ ghost-site detection, BLOCKING PHP CALLS classifier with optimization
+ tips, 8 RCA rules, throttled 30s refresh, F8 TUI page with R/D/Enter.

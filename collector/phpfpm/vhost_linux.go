@@ -24,28 +24,42 @@ type vhostInfo struct {
 // and returns one vhostInfo per server_name / ServerName found.
 func discoverVhosts() []vhostInfo {
 	var out []vhostInfo
-	out = append(out, parseNginxDir("/www/server/panel/vhost/nginx")...) // aaPanel
-	out = append(out, parseNginxDir("/etc/nginx/sites-enabled")...)
-	out = append(out, parseNginxDir("/etc/nginx/conf.d")...)
-	out = append(out, parseApacheDir("/etc/apache2/sites-enabled")...)
-	out = append(out, parseApacheDir("/etc/httpd/conf.d")...)
+	out = append(out, parseNginxDir("/www/server/panel/vhost/nginx")...)     // aaPanel
+	out = append(out, parseNginxDir("/etc/nginx/sites-enabled")...)         // Debian/Ubuntu
+	out = append(out, parseNginxDir("/etc/nginx/conf.d")...)                // RHEL default + custom
+	out = append(out, parseNginxDir("/etc/nginx/plesk.conf.d/vhosts")...)   // Plesk
+	out = append(out, parseApacheDir("/etc/apache2/sites-enabled")...)      // Debian/Ubuntu
+	out = append(out, parseApacheDir("/etc/httpd/conf.d")...)               // RHEL
+	out = append(out, parseApacheDir("/etc/apache2/plesk.conf.d/vhosts")...) // Plesk
+	out = append(out, parsePleskSystemDirs()...)                            // Plesk fallback
+	out = append(out, parseCpanelDirs()...)                                 // cPanel
 	return dedupVhosts(out)
 }
 
 func dedupVhosts(in []vhostInfo) []vhostInfo {
+	// Two passes:
+	// 1. Strip www. and dedupe by canonical name (so `www.X` and `X` merge).
+	// 2. For multiple entries of the same canonical name, keep the richer one.
+	canonical := func(s string) string {
+		s = strings.Trim(s, `"' `)
+		s = strings.TrimPrefix(s, "www.")
+		return s
+	}
 	seen := map[string]vhostInfo{}
 	for _, v := range in {
 		if v.Domain == "" {
 			continue
 		}
-		prev, ok := seen[v.Domain]
+		key := canonical(v.Domain)
+		// Prefer the bare-domain form for display.
+		v.Domain = key
+		prev, ok := seen[key]
 		if !ok {
-			seen[v.Domain] = v
+			seen[key] = v
 			continue
 		}
-		// Prefer the entry with more info (longest accumulated string len).
 		if scoreVhost(v) > scoreVhost(prev) {
-			seen[v.Domain] = v
+			seen[key] = v
 		}
 	}
 	out := make([]vhostInfo, 0, len(seen))
@@ -143,10 +157,17 @@ func parseNginxFile(path string) []vhostInfo {
 				names := strings.Fields(strings.TrimPrefix(lc, "server_name"))
 				for _, n := range names {
 					n = strings.TrimSpace(n)
+					n = strings.Trim(n, `"'`)
+					n = strings.TrimSuffix(n, ";")
+					n = strings.TrimSpace(n)
 					if n == "" || n == "_" || n == "default_server" {
 						continue
 					}
-					if cur.Domain == "" {
+					// Skip www.X if we already have X (or vice-versa: prefer the bare form).
+					if strings.HasPrefix(n, "www.") && cur.Domain == strings.TrimPrefix(n, "www.") {
+						continue
+					}
+					if cur.Domain == "" || (strings.HasPrefix(cur.Domain, "www.") && !strings.HasPrefix(n, "www.")) {
 						cur.Domain = n
 					}
 				}
@@ -160,16 +181,17 @@ func parseNginxFile(path string) []vhostInfo {
 			case strings.Contains(lc, "enable-php-"):
 				if i := strings.Index(lc, "enable-php-"); i >= 0 {
 					tail := lc[i+len("enable-php-"):]
+					// Collect leading digits only — "enable-php-82.conf"
+					// yields "82", not "82." (used to include the dot).
 					ver := ""
 					for _, c := range tail {
-						if (c >= '0' && c <= '9') || c == '.' {
+						if c >= '0' && c <= '9' {
 							ver += string(c)
 						} else {
 							break
 						}
 					}
-					if ver != "" {
-						// Map "82" → "/tmp/php-cgi-82.sock"
+					if ver != "" && ver != "00" {
 						cur.PHPSocket = "unix:/tmp/php-cgi-" + ver + ".sock"
 					}
 				}
@@ -195,11 +217,15 @@ func parseNginxFile(path string) []vhostInfo {
 	return out
 }
 
-// guessAccessLog tries the common aaPanel + nginx defaults.
+// guessAccessLog tries common nginx defaults + per-panel conventions.
 func guessAccessLog(domain string) string {
 	for _, p := range []string{
-		"/www/wwwlogs/" + domain + ".log",
+		"/www/wwwlogs/" + domain + ".log",                       // aaPanel
+		"/var/www/vhosts/system/" + domain + "/logs/access_log", // Plesk
+		"/var/www/vhosts/system/" + domain + "/logs/proxy_access_log",
 		"/var/log/nginx/" + domain + ".access.log",
+		"/var/log/nginx/domains/" + domain + ".log", // some panels
+		"/usr/local/apache/domlogs/" + domain,       // cPanel
 		"/var/log/nginx/access.log",
 	} {
 		if fileExists(p) {
@@ -207,6 +233,82 @@ func guessAccessLog(domain string) string {
 		}
 	}
 	return ""
+}
+
+// parsePleskSystemDirs walks /var/www/vhosts/system/<domain>/conf for
+// the nginx + Apache configs Plesk generates per site. This is the
+// authoritative source on a Plesk box when /etc/nginx/plesk.conf.d/
+// uses includes that point back here.
+func parsePleskSystemDirs() []vhostInfo {
+	root := "/var/www/vhosts/system"
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil
+	}
+	var out []vhostInfo
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		domain := e.Name()
+		// Standard Plesk paths.
+		docroot := "/var/www/vhosts/" + domain + "/httpdocs"
+		if !fileExists(docroot) {
+			// httpdocs may not exist on some installs; try the system dir.
+			if st, err := os.Stat("/var/www/vhosts/" + domain); err == nil && st.IsDir() {
+				docroot = "/var/www/vhosts/" + domain
+			} else {
+				continue
+			}
+		}
+		access := guessAccessLog(domain)
+		out = append(out, vhostInfo{
+			Domain:    domain,
+			DocRoot:   docroot,
+			AccessLog: access,
+		})
+	}
+	return out
+}
+
+// parseCpanelDirs handles cPanel per-user docroot conventions:
+//   /home/<user>/public_html        (primary domain)
+//   /home/<user>/<domain>/public_html (addon/subdomain)
+// We surface anything that has both a docroot and a domlog.
+func parseCpanelDirs() []vhostInfo {
+	if !fileExists("/var/cpanel/users") && !fileExists("/etc/userdatadomains") {
+		return nil
+	}
+	// Read /etc/userdatadomains — cPanel's authoritative domain→docroot
+	// mapping. Format per line: "<domain>: <user>==<owner>==<domain>==<docroot>==..."
+	out := []vhostInfo{}
+	b, err := os.ReadFile("/etc/userdatadomains")
+	if err != nil {
+		return nil
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		colon := strings.IndexByte(line, ':')
+		if colon < 0 {
+			continue
+		}
+		domain := strings.TrimSpace(line[:colon])
+		rest := strings.TrimSpace(line[colon+1:])
+		parts := strings.Split(rest, "==")
+		if len(parts) < 5 {
+			continue
+		}
+		docroot := parts[4]
+		out = append(out, vhostInfo{
+			Domain:    domain,
+			DocRoot:   docroot,
+			AccessLog: guessAccessLog(domain),
+		})
+	}
+	return out
 }
 
 func parseApacheDir(dir string) []vhostInfo {
