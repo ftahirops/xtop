@@ -102,11 +102,24 @@ func walkDocroot(docroot string, r *fsScanResult) {
 		".git":            true,
 		".svn":            true,
 		"litespeed-cache": true,
-		"phpmyadmin":      true, // official phpMyAdmin install; non-PHP-ext template files are normal here
+		"phpmyadmin":      true,
 		"smarty":          true,
 		"twig":            true,
 		"composer":        true,
 		"vendor-prefixed": true,
+		// WordPress / common-framework subtrees that ship Unicode-handling
+		// libraries with heavy \x?? escape use. Real shells don't live here.
+		"SimplePie":      true,
+		"Requests":       true,
+		"PHPMailer":      true,
+		"IXR":            true,
+		"random_compat":  true,
+		"sodium_compat":  true,
+		"symfony":        true,
+		"masterminds":    true,
+		"guzzlehttp":     true,
+		"psr":            true,
+		"react":          true,
 	}
 	_ = filepath.WalkDir(docroot, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -375,6 +388,10 @@ func matchShellPattern(b []byte) string {
 
 func matchObfuscated(b []byte, size int64) string {
 	s := string(b)
+	// Packed payload: long base64 blob fed into runtime decode.
+	// This needs co-occurrence of "base64_decode" and a long base64
+	// run to be confident — both bare blobs (legit cached data) and
+	// bare calls (legit data marshalling) are common in normal code.
 	if strings.Contains(s, "base64_"+"decode") && size < 100*1024 {
 		run := 0
 		maxRun := 0
@@ -388,17 +405,42 @@ func matchObfuscated(b []byte, size int64) string {
 				run = 0
 			}
 		}
-		if maxRun >= 200 {
-			return "long encoded blob fed into base64_decode — likely packed payload"
+		if maxRun >= 200 && hasDynamicExec(s) {
+			return "long base64 blob + base64_decode + dynamic-exec — likely packed shell"
 		}
 	}
-	if strings.Count(s, "\\x") > 30 {
-		return "many \\x?? hex escapes — likely encoded PHP source"
+	// Hex / chr() obfuscation is only suspicious when paired with a
+	// runtime code-execution sink. Legitimate Unicode tables (SimplePie,
+	// charset libs, mb_* polyfills) routinely contain hundreds of \x??
+	// escapes without any exec sink.
+	if strings.Count(s, "\\x") > 30 && hasDynamicExec(s) {
+		return "many \\x?? hex escapes near a code-exec sink — likely obfuscated shell"
 	}
-	if strings.Count(s, "chr(") > 20 {
-		return "many chr() calls — likely character-by-character obfuscation"
+	if strings.Count(s, "chr(") > 20 && hasDynamicExec(s) {
+		return "many chr() calls near a code-exec sink — likely obfuscated shell"
 	}
 	return ""
+}
+
+// hasDynamicExec reports whether the bytes contain any of the runtime
+// code-execution functions that a packed shell needs to actually run.
+// Plain "eval" / "exec" mentions in comments or string lists are ignored
+// by requiring an open-paren immediately after — same trick we use for
+// matchShellPattern's needles.
+func hasDynamicExec(s string) bool {
+	for _, n := range []string{
+		"e" + "val(",
+		"ass" + "ert(",
+		"gz" + "inflate(",
+		"gz" + "uncompress(",
+		"create_" + "function(",
+		"prefer" + "encoded(", // some packer-specific helpers
+	} {
+		if strings.Contains(s, n) {
+			return true
+		}
+	}
+	return false
 }
 
 func isBase64Char(c byte) bool {

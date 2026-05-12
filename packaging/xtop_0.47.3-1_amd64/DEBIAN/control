@@ -1,0 +1,37 @@
+Package: xtop
+Version: 0.47.3-1
+Section: admin
+Priority: optional
+Architecture: amd64
+Depends: libc6
+Recommends: postgresql, journalctl
+Installed-Size: 37740
+Maintainer: Farhan Tahir <farhan.003@gmail.com>
+Homepage: https://github.com/ftahirops/xtop
+Description: Incident-first root-cause analysis console for Linux
+ v0.47.3 hardens the docroot web-shell scanner against false
+ positives on legitimate Unicode-handling libraries.
+ .
+ Obfuscation heuristics tightened — bare hex/chr/base64 patterns
+ no longer fire alone:
+   - "\x?? many escapes" now requires a runtime code-exec sink
+     (eval/assert/gzinflate/gzuncompress/create_function) in the
+     same file. Charset / entity-table libraries that legitimately
+     use hundreds of \x?? escapes (SimplePie, mbstring polyfills)
+     are silent.
+   - chr() runs and long base64 blobs both require co-occurring
+     dynamic-exec calls.
+ .
+ Path-based skip list extended with WP-core + common-framework
+ subtrees that ship binary-encoding tables:
+   SimplePie, Requests, PHPMailer, IXR, random_compat,
+   sodium_compat, symfony, masterminds, guzzlehttp, psr, react
+ .
+ The direct shell signatures (eval/exec/system/shell_exec on
+ user input, FilesMan/WSO/b374k/c99/r57 brand strings,
+ web-shell extension tricks like .tkn / .php.png) remain at full
+ sensitivity — no detection coverage was reduced.
+ .
+ Verified clean on 22-site Plesk + 18-site aaPanel with
+ `xtop phpfpm --deep-scan` forced (was 2 false-positives in
+ v0.47.2 from SimplePie + Misc.php; now zero).
