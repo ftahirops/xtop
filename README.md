@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/xtop-v0.47.1-00d4aa?style=for-the-badge&logo=linux&logoColor=white" alt="version"/>
+  <img src="https://img.shields.io/badge/xtop-v0.47.2-00d4aa?style=for-the-badge&logo=linux&logoColor=white" alt="version"/>
   <img src="https://img.shields.io/badge/Go-1.25+-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="go"/>
   <img src="https://img.shields.io/badge/eBPF-Powered-ff6600?style=for-the-badge&logo=linux&logoColor=white" alt="ebpf"/>
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="license"/>
@@ -38,6 +38,21 @@
 </p>
 
 ---
+
+## What's new in v0.47.2
+
+**MASTERS table cleanup + web-shell false-positive fix.** Spotted while running v0.47.1 on a real Plesk box.
+
+- **MASTERS section as a real table.** Aligned columns (PHP · POOL · WORKERS · LISTEN · STATE) instead of one wide line per pool.
+- **Semantic status states** replace the misleading `STATUS-FAIL`:
+  - `ok` (green) — FastCGI status fetch worked
+  - `no-status` (dim) — pool healthy but `pm.status_path` not configured (Plesk + manual default — informational, not an error)
+  - `no-socket` (red) — listen address could not be resolved
+  - `unreachable` (red) — socket exists but connect failed
+- **Web-shell scanner: zero false positives** on defensive code:
+  - `create_function` needle now requires an open-paren — bare string mentions inside security plugins' deny-list arrays no longer trip.
+  - Files in `*validator*`, `*sanitiz*`, `/security/`, `*firewall*` paths are skipped.
+  - Files containing `$forbidden`, `$blacklist`, `$denylist`, `$banned_functions`, or PHP classes named `Validator` / `Sanitizer` / `Firewall` / `SecurityCheck` are recognized as defensive code and skipped.
 
 ## What's new in v0.47.1
 
@@ -641,12 +656,12 @@ xtop -cron-install
 
 ```bash
 # Ubuntu/Debian (amd64)
-wget https://github.com/ftahirops/xtop/releases/download/v0.47.1/xtop_0.47.1-1_amd64.deb
-sudo dpkg -i xtop_0.47.1-1_amd64.deb
+wget https://github.com/ftahirops/xtop/releases/download/v0.47.2/xtop_0.47.2-1_amd64.deb
+sudo dpkg -i xtop_0.47.2-1_amd64.deb
 
 # RHEL/Rocky/Fedora (x86_64)
-wget https://github.com/ftahirops/xtop/releases/download/v0.47.1/xtop-0.47.1-1.x86_64.rpm
-sudo rpm -i xtop-0.47.1-1.x86_64.rpm
+wget https://github.com/ftahirops/xtop/releases/download/v0.47.2/xtop-0.47.2-1.x86_64.rpm
+sudo rpm -i xtop-0.47.2-1.x86_64.rpm
 
 # Arch Linux
 git clone https://github.com/ftahirops/xtop.git
@@ -658,7 +673,7 @@ cd xtop/packaging/archlinux && makepkg -si
 ```bash
 git clone https://github.com/ftahirops/xtop.git
 cd xtop
-CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.47.1" -o xtop .
+CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.47.2" -o xtop .
 sudo install -m 755 xtop /usr/local/bin/xtop
 ```
 
@@ -690,15 +705,15 @@ sudo xtop -json | jq   # JSON for scripting
 ### From .deb Package (Ubuntu 22.04/24.04, Debian)
 
 ```bash
-wget https://github.com/ftahirops/xtop/releases/download/v0.47.1/xtop_0.47.1-1_amd64.deb
-sudo dpkg -i xtop_0.47.1-1_amd64.deb
+wget https://github.com/ftahirops/xtop/releases/download/v0.47.2/xtop_0.47.2-1_amd64.deb
+sudo dpkg -i xtop_0.47.2-1_amd64.deb
 ```
 
 ### From .rpm Package (Rocky Linux, RHEL, AlmaLinux, Fedora)
 
 ```bash
-wget https://github.com/ftahirops/xtop/releases/download/v0.47.1/xtop-0.47.1-1.x86_64.rpm
-sudo rpm -i xtop-0.47.1-1.x86_64.rpm
+wget https://github.com/ftahirops/xtop/releases/download/v0.47.2/xtop-0.47.2-1.x86_64.rpm
+sudo rpm -i xtop-0.47.2-1.x86_64.rpm
 ```
 
 ### Arch Linux (PKGBUILD)
@@ -720,7 +735,7 @@ Builds from source automatically. Optional dependencies: `nvidia-utils` (GPU mon
 ```bash
 git clone https://github.com/ftahirops/xtop.git
 cd xtop
-CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.47.1" -o xtop .
+CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.47.2" -o xtop .
 sudo install -m 755 xtop /usr/local/bin/xtop
 ```
 

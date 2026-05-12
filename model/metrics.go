@@ -911,6 +911,10 @@ type PHPFPMMaster struct {
 	WorkerCount int
 	StatusOK    bool   // true if last status fetch succeeded
 	StatusError string // non-empty on failure
+	// State is a high-level classification: "ok" (status fetch worked),
+	// "no-status" (pool exists, pm.status_path not configured — fine
+	// but uninspectable), "socket-missing", "connect-failed".
+	State string
 }
 
 // PHPFPMWorker is one row from the FPM `?full` status block, augmented

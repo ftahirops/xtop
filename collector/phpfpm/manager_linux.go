@@ -177,15 +177,25 @@ func (c *Collector) Collect(snap *model.Snapshot) error {
 				WorkerCount: len(workerPIDs),
 			}
 			// Fetch FastCGI status for this pool, if it has a status_path.
-			if pool.listen != "" && pool.statusPath != "" {
+			switch {
+			case pool.listen == "":
+				m.State = "no-socket"
+				m.StatusError = "could not resolve listen address from config"
+			case pool.statusPath == "":
+				// Common on Plesk + many manual setups. Not an error —
+				// the pool is fine, we just can't introspect requests.
+				m.State = "no-status"
+				m.StatusError = "pm.status_path not configured"
+			default:
 				body, err := fcgiQuery(pool.listen, pool.statusPath, "full", 1500*time.Millisecond)
 				if err != nil {
 					m.StatusOK = false
+					m.State = "connect-failed"
 					m.StatusError = err.Error()
 				} else {
 					m.StatusOK = true
+					m.State = "ok"
 					_, workers := parseStatusFull(body, dm.pid, dm.phpVersion)
-					// Make sure each worker carries its pool name.
 					for i := range workers {
 						if workers[i].PoolName == "" {
 							workers[i].PoolName = pool.name
@@ -193,10 +203,6 @@ func (c *Collector) Collect(snap *model.Snapshot) error {
 					}
 					outWorkers = append(outWorkers, workers...)
 				}
-			} else if pool.listen == "" {
-				m.StatusError = "could not resolve listen address from config"
-			} else {
-				m.StatusError = "pm.status_path not configured on this pool"
 			}
 			outMasters = append(outMasters, m)
 		}

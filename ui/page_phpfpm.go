@@ -106,15 +106,40 @@ func renderPHPFPMStatusLine() string {
 func renderPHPFPMMasters(sb *strings.Builder, masters []model.PHPFPMMaster) {
 	sb.WriteString(headerStyle.Render("  MASTERS"))
 	sb.WriteString("\n")
-	sort.Slice(masters, func(i, j int) bool { return masters[i].PHPVersion < masters[j].PHPVersion })
-	for _, m := range masters {
-		status := okStyle.Render("ok")
-		if !m.StatusOK {
-			status = warnStyle.Render("STATUS-FAIL")
+	sort.Slice(masters, func(i, j int) bool {
+		if masters[i].PHPVersion != masters[j].PHPVersion {
+			return masters[i].PHPVersion < masters[j].PHPVersion
 		}
-		fmt.Fprintf(sb, "  PHP %-5s pid=%-7d pool=%-8s workers=%-3d listen=%-30s %s\n",
-			defaultPHP(m.PHPVersion), m.PID, m.PoolName, m.WorkerCount,
-			truncPHP(m.ListenAddr, 30), status)
+		return masters[i].PoolName < masters[j].PoolName
+	})
+	fmt.Fprintf(sb, "  %-3s  %-32s  %7s  %-50s  %s\n",
+		"PHP", "POOL", "WORKERS", "LISTEN", "STATE")
+	sb.WriteString(dimStyle.Render("  "+strings.Repeat("─", 110)) + "\n")
+	for _, m := range masters {
+		fmt.Fprintf(sb, "  %-3s  %-32s  %7d  %-50s  %s\n",
+			defaultPHP(m.PHPVersion),
+			truncPHP(m.PoolName, 32),
+			m.WorkerCount,
+			truncPHP(m.ListenAddr, 50),
+			renderMasterStateTUI(m))
+	}
+}
+
+func renderMasterStateTUI(m model.PHPFPMMaster) string {
+	switch m.State {
+	case "ok":
+		return okStyle.Render("ok")
+	case "no-status":
+		return dimStyle.Render("no-status")
+	case "no-socket":
+		return critStyle.Render("no-socket")
+	case "connect-failed":
+		return critStyle.Render("unreachable")
+	default:
+		if m.StatusOK {
+			return okStyle.Render("ok")
+		}
+		return dimStyle.Render("unknown")
 	}
 }
 

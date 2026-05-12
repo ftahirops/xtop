@@ -181,6 +181,11 @@ func walkDocroot(docroot string, r *fsScanResult) {
 
 		if ext == ".php" || ext == ".phtml" || ext == ".phps" || ext == ".pht" || ext == ".php5" || ext == ".php7" {
 			head, _ := readHead(path, fsReadBytes)
+			// Skip defensive code — file that DECLARES dangerous functions
+			// as forbidden/blocked is doing security work, not running it.
+			if isDefensiveCode(head, path) {
+				return nil
+			}
 			if reason := matchShellPattern(head); reason != "" {
 				r.WebShells = append(r.WebShells, FSFinding{
 					Path: path, Kind: "php-shell",
@@ -288,6 +293,46 @@ func firstNonEmpty(b []byte) string {
 	return string(out)
 }
 
+// isDefensiveCode returns true if the file looks like a security
+// validator / sanitizer that DECLARES dangerous function names as
+// a deny-list, rather than calling them. The classic false-positive
+// is plugins like "code-snippets/file-validator.php" that contain
+// `$forbidden = ['eval', 'shell_exec', 'system', ...]` — flagging
+// these would mean every WP security plugin trips the scanner.
+//
+// Heuristics:
+//   - Path component contains "validator", "sanitize", "security"
+//   - File content contains `$forbidden`, `$blacklist`, `$denylist`,
+//     `$banned_functions`, `$blocked_functions`, or a class name
+//     like *Validator/*Sanitizer/*FirewallRule near the top
+func isDefensiveCode(head []byte, path string) bool {
+	lp := strings.ToLower(path)
+	if strings.Contains(lp, "validator") ||
+		strings.Contains(lp, "sanitiz") ||
+		strings.Contains(lp, "/security/") ||
+		strings.Contains(lp, "firewall") {
+		return true
+	}
+	s := string(head)
+	if strings.Contains(s, "$forbidden") ||
+		strings.Contains(s, "$blacklist") ||
+		strings.Contains(s, "$denylist") ||
+		strings.Contains(s, "$banned_functions") ||
+		strings.Contains(s, "$blocked_functions") ||
+		strings.Contains(s, "$dangerous_functions") ||
+		strings.Contains(s, "$disabled_functions") {
+		return true
+	}
+	// PHP class name indicating defensive role.
+	for _, c := range []string{"class Validator", "class Sanitizer", "class Firewall",
+		"class SecurityCheck", "class FunctionBlacklist", "class FunctionDenylist"} {
+		if strings.Contains(s, c) {
+			return true
+		}
+	}
+	return false
+}
+
 // matchShellPattern returns a human-readable reason if the bytes look
 // like a known PHP web-shell pattern. Pattern needles are split across
 // string concatenations to avoid this Go source itself tripping naive
@@ -316,7 +361,7 @@ func matchShellPattern(b []byte) string {
 		{"r57" + "shell", "r57 shell signature"},
 		{"c99" + "shell", "c99 shell signature"},
 		{"/e\"", "preg_replace /e modifier (legacy code-exec)"},
-		{"create_" + "function", "create_function (legacy code-exec)"},
+		{"create_" + "function(", "create_function (legacy code-exec)"},
 		{"${\"_\".\"POST\"}", "obfuscated $_POST access"},
 		{"${\"_\".\"GET\"}", "obfuscated $_GET access"},
 	}

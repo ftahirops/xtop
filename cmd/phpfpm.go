@@ -111,16 +111,42 @@ func filterApps(apps []model.PHPFPMApp, filter string) []model.PHPFPMApp {
 
 func renderMasters(masters []model.PHPFPMMaster) {
 	fmt.Println(bold("PHP-FPM MASTERS"))
+	fmt.Printf("  %-3s  %-32s  %-7s  %-50s  %s\n",
+		"PHP", "POOL", "WORKERS", "LISTEN", "STATE")
+	fmt.Println("  " + strings.Repeat("─", 110))
 	for _, m := range masters {
-		status := green("ok")
-		if !m.StatusOK {
-			status = red("status-fail")
+		state := renderMasterState(m)
+		listen := truncS(m.ListenAddr, 50)
+		if listen == "" {
+			listen = dim("(none)")
 		}
-		fmt.Printf("  PHP %-5s  pid=%-7d  pool=%s  workers=%d  listen=%s  %s\n",
-			defaultS(m.PHPVersion, "?"), m.PID, m.PoolName, m.WorkerCount, m.ListenAddr, status)
-		if !m.StatusOK && m.StatusError != "" {
-			fmt.Printf("            err: %s\n", truncS(m.StatusError, 100))
+		fmt.Printf("  %-3s  %-32s  %7d  %-50s  %s\n",
+			defaultS(m.PHPVersion, "?"),
+			truncS(m.PoolName, 32),
+			m.WorkerCount,
+			listen,
+			state)
+	}
+}
+
+// renderMasterState turns the master's State field into a short colored
+// label. Distinguishes operator-OK ("no-status" — pool works but
+// pm.status_path unset) from genuine errors.
+func renderMasterState(m model.PHPFPMMaster) string {
+	switch m.State {
+	case "ok":
+		return green("ok")
+	case "no-status":
+		return dim("no-status") // not an error — Plesk default
+	case "no-socket":
+		return red("no-socket")
+	case "connect-failed":
+		return red("unreachable")
+	default:
+		if m.StatusOK {
+			return green("ok")
 		}
+		return dim("unknown")
 	}
 }
 

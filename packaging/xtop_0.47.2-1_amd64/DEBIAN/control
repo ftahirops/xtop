@@ -1,0 +1,36 @@
+Package: xtop
+Version: 0.47.2-1
+Section: admin
+Priority: optional
+Architecture: amd64
+Depends: libc6
+Recommends: postgresql, journalctl
+Installed-Size: 37740
+Maintainer: Farhan Tahir <farhan.003@gmail.com>
+Homepage: https://github.com/ftahirops/xtop
+Description: Incident-first root-cause analysis console for Linux
+ v0.47.2 polishes the PHP-FPM diagnostic with output fixes + a
+ false-positive eliminator for the docroot web-shell scanner.
+ .
+ Output improvements:
+   - MASTERS table now properly aligned columns (PHP / POOL /
+     WORKERS / LISTEN / STATE) instead of wide one-line entries.
+   - "STATUS-FAIL" is gone for pools without pm.status_path. New
+     state "no-status" (dim) means the pool is healthy but not
+     introspectable — the Plesk + manual-setup default. Genuine
+     failures show as "no-socket" or "unreachable" (red).
+ .
+ False-positive fixes for filesystem web-shell scan:
+   - `create_function` needle now requires the open-paren — bare
+     string mentions (in security-validator deny-lists) no longer
+     trigger.
+   - Files in `*validator*`, `*sanitiz*`, `*/security/*`, `*firewall*`
+     paths are skipped.
+   - Files containing `$forbidden`, `$blacklist`, `$denylist`,
+     `$banned_functions`, `$dangerous_functions`, `$disabled_functions`,
+     or classes named `Validator`/`Sanitizer`/`Firewall`/`SecurityCheck`
+     in their head bytes are treated as defensive code and skipped.
+ .
+ Verified zero false positives on 22-site Plesk + 18-site aaPanel
+ with --deep-scan forced. All v0.47.1 multi-pool / Plesk / cPanel
+ features remain intact.
