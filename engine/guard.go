@@ -131,6 +131,20 @@ func NewResourceGuard(numCPUs, baseIntervalSec int) *ResourceGuard {
 // a level-0 advice with no skips so callers can uniformly consult it.
 func (g *ResourceGuard) Enabled() bool { return g.enabled }
 
+// SetEnabled toggles the guard at runtime. Used by the UI's 'g' key
+// binding so operators can disable the safety throttle from inside
+// a running session without having to exit, re-export XTOP_GUARD=0,
+// and restart. When disabled, the level is forced back to 0 so the
+// engine immediately re-runs the deep probes that were being skipped.
+func (g *ResourceGuard) SetEnabled(on bool) {
+	g.enabled = on
+	if !on {
+		g.level.Store(0)
+		g.highTicks.Store(0)
+		g.lowTicks.Store(0)
+	}
+}
+
 // Advise is called once per tick. It reads the host signals plus xtop's
 // own CPU consumption and returns what to skip this cycle. The returned
 // IntervalSec is authoritative — callers should sleep that many seconds

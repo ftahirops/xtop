@@ -479,21 +479,12 @@ func renderAppsDetail(app model.AppInstance, result *model.AnalysisResult, nCPU 
 	if app.HasDeepMetrics && len(app.DeepMetrics) > 0 {
 		sb.WriteString(renderAppDeepMetrics(app, iw))
 	} else if app.DeepMetrics != nil && app.DeepMetrics["tier2_skipped"] != "" {
-		// Stub from the apps Manager skip path — guard has paused deep
-		// metric collection. Render a clear notice so the operator knows
-		// the empty page isn't a bug; it's an intentional pause + how to
-		// override.
-		sb.WriteString("  " + titleStyle.Render("EXTENDED MONGODB ANALYSIS — paused") + "\n")
-		sb.WriteString(boxTop(iw) + "\n")
-		sb.WriteString(boxRow("  "+warnStyle.Render("●")+"  Deep metrics collection is currently paused.", iw) + "\n")
-		sb.WriteString(boxRow("     "+dimStyle.Render("Reason: "+app.DeepMetrics["tier2_skipped"]), iw) + "\n")
-		sb.WriteString(boxRow("", iw) + "\n")
-		sb.WriteString(boxRow("  Will auto-resume when host load drops AND xtop's own CPU is below 5% of a core for 10 consecutive ticks.", iw) + "\n")
-		sb.WriteString(boxRow("", iw) + "\n")
-		sb.WriteString(boxRow("  "+okStyle.Render("To force the full extended analysis (DBs, indexes, locks, replication, opt recs):"), iw) + "\n")
-		sb.WriteString(boxRow("     "+valueStyle.Render("XTOP_GUARD=0 xtop"), iw) + "\n")
-		sb.WriteString(boxRow("     "+dimStyle.Render("(disables the safety throttle — only do this on hosts that aren't already under stress)"), iw) + "\n")
-		sb.WriteString(boxBot(iw) + "\n")
+		// Guard has paused tier-2 collection. Show a single dim line
+		// with the key binding to override; the prior 8-line block
+		// burned half the page on what amounts to a status message.
+		sb.WriteString("  " + dimStyle.Render(fmt.Sprintf(
+			"● deep metrics paused (%s) — press ! to disable the guard and run the full analysis now",
+			app.DeepMetrics["tier2_skipped"])) + "\n")
 	}
 
 	// Per-website table

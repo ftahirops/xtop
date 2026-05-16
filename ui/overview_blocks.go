@@ -1774,6 +1774,28 @@ func renderTopConsumersBlock(snap *model.Snapshot, rates *model.RateSnapshot, re
 		r.NetValue = o.Value
 	}
 
+	// Fallback: cgroup-derived owners can be empty on the first tick
+	// (rates need two snapshots) or when a service runs in a nested
+	// cgroup the walker doesn't reach. The apps catalog already has
+	// accurate per-process data — synthesise rows from it so the panel
+	// stays informative for unusual cgroup layouts.
+	if len(rows) == 0 && snap != nil {
+		var hostMemMB float64
+		if snap.Global.Memory.Total > 0 {
+			hostMemMB = float64(snap.Global.Memory.Total) / (1024 * 1024)
+		}
+		for _, app := range snap.Global.Apps.Instances {
+			if app.DisplayName == "" {
+				continue
+			}
+			r := getRow(app.DisplayName)
+			r.CPUPct = app.CPUPct
+			if hostMemMB > 0 {
+				r.MemPct = app.RSSMB / hostMemMB * 100
+			}
+		}
+	}
+
 	if len(rows) == 0 {
 		sb.WriteString(boxRow(dimStyle.Render("  no specific service activity (only generic cgroups)"), innerW) + "\n")
 		sb.WriteString(boxBot(innerW) + "\n")

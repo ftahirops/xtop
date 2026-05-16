@@ -758,6 +758,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.scroll += 20
 		case "g":
 			m.scroll = 0
+		case "!":
+			// Toggle the resource guard at runtime. Operators hitting
+			// the "deep metrics paused" notice can re-enable the full
+			// analysis without exiting and re-exporting XTOP_GUARD=0.
+			// Idempotent on/off — re-pressing returns to guarded mode.
+			if m.engine != nil {
+				if g := m.engine.Guard(); g != nil {
+					g.SetEnabled(!g.Enabled())
+				}
+			}
 		case "v":
 			// Cycle overview layout forward
 			m.layoutMode = (m.layoutMode + 1) % layoutCount
