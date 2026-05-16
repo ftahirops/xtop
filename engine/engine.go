@@ -398,6 +398,20 @@ func (e *Engine) Tick() (*model.Snapshot, *model.RateSnapshot, *model.AnalysisRe
 	// One-tick lag is acceptable for safety: if the box was loaded last tick,
 	// odds are it still is. Plus: even if advice is "no skip", we read it
 	// via /proc/loadavg directly in Advise, which is already populated.
+	//
+	// When the guard is DISABLED (operator pressed R, or XTOP_GUARD=0),
+	// proactively clear every package-level skip flag — otherwise the
+	// flags retain whatever state the guard last set them to and the
+	// "operator disabled the guard" gesture has no observable effect
+	// until something else re-sets the flags. This was the user-visible
+	// bug where pressing R showed the "guard disabled" banner but the
+	// apps page kept rendering "deep metrics paused".
+	if e.guard != nil && !e.guard.Enabled() {
+		apps.SetSkipDeepProbes(false)
+		cgcollector.SetSkipTreeWalk(false)
+		rt.SetSkipDetection(false)
+		phpfpm.SetSkipDeepProbes(false)
+	}
 	if e.guard != nil && e.guard.Enabled() {
 		var loadRatio, hostBusy float64
 		if prevSnap := e.History.Latest(); prevSnap != nil {

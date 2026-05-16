@@ -277,6 +277,27 @@ func collectClickhouseDeepMetrics(inst *model.AppInstance, secrets *AppSecrets) 
 		inst.NeedsCreds = false
 	} else {
 		inst.NeedsCreds = true
+		// Probe once to capture WHY no deep metrics — typical reasons:
+		// auth failure (password required), clickhouse-client missing,
+		// host:port wrong. The page-apps rendering reads tier2_skipped
+		// and shows it inline, so the operator sees a specific cause
+		// instead of the generic "deep metrics paused".
+		if _, err := chQuery(secrets, "SELECT 1"); err != nil {
+			msg := err.Error()
+			switch {
+			case strings.Contains(msg, "Authentication failed"),
+				strings.Contains(msg, "password is incorrect"):
+				inst.DeepMetrics["tier2_skipped"] =
+					"auth-required — add ClickHouse creds to /root/.xtop_secrets"
+			case strings.Contains(msg, "executable file not found"),
+				strings.Contains(msg, "no such file"):
+				inst.DeepMetrics["tier2_skipped"] = "clickhouse-client not on PATH"
+			case strings.Contains(msg, "Connection refused"):
+				inst.DeepMetrics["tier2_skipped"] = "connection refused on configured host:port"
+			default:
+				inst.DeepMetrics["tier2_skipped"] = "probe failed: " + truncErr(msg, 80)
+			}
+		}
 	}
 
 	// Health scoring — start at 100, dock per issue, similar pattern
@@ -331,4 +352,13 @@ func collectClickhouseDeepMetrics(inst *model.AppInstance, secrets *AppSecrets) 
 	if inst.HealthScore < 0 {
 		inst.HealthScore = 0
 	}
+}
+
+// truncErr trims an error message to width chars, single line.
+func truncErr(s string, width int) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	if len(s) > width {
+		s = s[:width-1] + "…"
+	}
+	return s
 }
