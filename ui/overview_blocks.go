@@ -1816,17 +1816,40 @@ func renderTopConsumersBlock(snap *model.Snapshot, rates *model.RateSnapshot, re
 
 	// Per-cgroup IO bytes/sec — we have the raw MB/s in rates.CgroupRates.
 	// User wants the actual numbers (R 1.2 MB/s W 0.5 MB/s) not a share %.
+	//
+	// Names won't always match exactly: when the fallback synthesised
+	// rows from the apps catalog the key is the DisplayName
+	// ("ClickHouse") but cgroup names are systemd slice paths
+	// ("clickhouse-server.service"). Try exact match first, then
+	// case-insensitive substring — covers DisplayName ↔ .service in
+	// the common case without being so permissive it cross-attributes.
 	if rates != nil {
+		// Pre-lower all row names once for fast lookup.
+		lowerRow := make(map[string]*appRow, len(rows))
+		for k, v := range rows {
+			lowerRow[strings.ToLower(k)] = v
+		}
 		for _, cg := range rates.CgroupRates {
 			if genericCgroupNames[cg.Name] {
 				continue
 			}
 			r := rows[cg.Name]
 			if r == nil {
+				cgLower := strings.ToLower(cg.Name)
+				// e.g. row "clickhouse" matches cg "clickhouse-server.service"
+				for name, candidate := range lowerRow {
+					if strings.HasPrefix(cgLower, name) ||
+						strings.Contains(cgLower, name) {
+						r = candidate
+						break
+					}
+				}
+			}
+			if r == nil {
 				continue
 			}
-			r.IOReadB = cg.IORateMBs * 1024 * 1024  // MB/s → bytes/s
-			r.IOWriteB = cg.IOWRateMBs * 1024 * 1024
+			r.IOReadB += cg.IORateMBs * 1024 * 1024 // MB/s → bytes/s
+			r.IOWriteB += cg.IOWRateMBs * 1024 * 1024
 		}
 	}
 
