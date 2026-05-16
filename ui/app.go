@@ -132,6 +132,13 @@ type Model struct {
 	width    int
 	height   int
 
+	// Transient operator-facing banner. Used by the 'P' guard-toggle
+	// key (and any future ad-hoc actions that need instant feedback).
+	// Cleared after 4 seconds in the render path so the message
+	// fades on its own without needing a separate timer goroutine.
+	statusMessage   string
+	statusMessageAt time.Time
+
 	// Data
 	snap   *model.Snapshot
 	rates  *model.RateSnapshot
@@ -758,14 +765,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.scroll += 20
 		case "g":
 			m.scroll = 0
-		case "!":
-			// Toggle the resource guard at runtime. Operators hitting
-			// the "deep metrics paused" notice can re-enable the full
-			// analysis without exiting and re-exporting XTOP_GUARD=0.
-			// Idempotent on/off — re-pressing returns to guarded mode.
+		case "R":
+			// Toggle the resource guard at runtime ("R for Run probes" —
+			// force deep app probes on, overriding the auto-throttle).
+			// Operators hitting the "deep metrics paused" notice can
+			// re-enable the full analysis without exiting and re-exporting
+			// XTOP_GUARD=0. Idempotent on/off — re-pressing R returns to
+			// guarded mode.
+			//
+			// Previously bound to "!" (Shift+1) which several operators
+			// reported as awkward; then to "P" which collided with
+			// markdown export. R is free and semantic.
+			//
+			// Posts a transient status banner so the operator sees
+			// immediate confirmation the key fired (without the banner,
+			// the only feedback was waiting one tick for deep metrics
+			// to appear, and on slow hosts that's enough lag to make
+			// the key feel broken).
 			if m.engine != nil {
 				if g := m.engine.Guard(); g != nil {
-					g.SetEnabled(!g.Enabled())
+					nowOn := !g.Enabled()
+					g.SetEnabled(nowOn)
+					if nowOn {
+						m.statusMessage = "● guard re-enabled (auto-throttle on busy hosts)"
+					} else {
+						m.statusMessage = "● guard DISABLED — deep metrics will run on the next tick"
+					}
+					m.statusMessageAt = time.Now()
 				}
 			}
 		case "v":
@@ -1227,8 +1253,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.signalFocusProc = true // start with process selection
 				}
 			}
-		case "r", "R":
+		case "r":
 			// PHP-FPM page: force a full refresh (FastCGI + log tail).
+			// Capital R is reserved for the guard toggle elsewhere in
+			// this switch; lowercase only triggers the refresh.
 			if m.page == PagePHPFPM {
 				phpfpm.TriggerRefresh()
 				return m, nil
@@ -1447,6 +1475,13 @@ func (m Model) View() string {
 	if resolvedAgo > 0 {
 		badge := dimStyle.Render(fmt.Sprintf("  Root cause from %ds ago — system recovered, holding for review", resolvedAgo))
 		content += "\n" + badge
+	}
+
+	// Transient status banner (e.g. "guard disabled — deep metrics
+	// will run next tick"). Auto-fades after 4 seconds in the render
+	// path so we don't need a separate timer goroutine.
+	if m.statusMessage != "" && time.Since(m.statusMessageAt) < 4*time.Second {
+		content += "\n" + warnStyle.Render("  "+m.statusMessage)
 	}
 
 	// Signal overlay

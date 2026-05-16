@@ -483,7 +483,7 @@ func renderAppsDetail(app model.AppInstance, result *model.AnalysisResult, nCPU 
 		// with the key binding to override; the prior 8-line block
 		// burned half the page on what amounts to a status message.
 		sb.WriteString("  " + dimStyle.Render(fmt.Sprintf(
-			"● deep metrics paused (%s) — press ! to disable the guard and run the full analysis now",
+			"● deep metrics paused (%s) — press R to disable the guard and run the full analysis now",
 			app.DeepMetrics["tier2_skipped"])) + "\n")
 	}
 
