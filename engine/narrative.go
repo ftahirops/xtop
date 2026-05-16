@@ -262,14 +262,22 @@ func estimateImpact(result *model.AnalysisResult, curr *model.Snapshot, rates *m
 		}
 		capacityLoss := fmt.Sprintf("%.0f%% CPU capacity lost (%d→%.1f effective cores)", cpuPSI, ncpu, effectiveCores)
 
-		// Estimate latency impact from run queue
-		rq := curr.Global.CPU.LoadAvg.Running
-		if rq > uint64(ncpu) {
-			queueRatio := float64(rq) / float64(ncpu)
+		// Latency impact from run queue. Uses Load1 (the 1-min average)
+		// rather than LoadAvg.Running (instantaneous; can jitter several
+		// units between ticks) so this string stays consistent with the
+		// Evidence "runqueue ratio=N/M cores" line which also derives
+		// from Load1. The CPU panel's "Run queue: X/Y" shows the
+		// instantaneous value — different metric, but at least the RCA
+		// narrative is now internally consistent (Evidence + Impact
+		// agree on the same number).
+		rqAvg := curr.Global.CPU.LoadAvg.Load1
+		if rqAvg > float64(ncpu) {
+			queueRatio := rqAvg / float64(ncpu)
 			if queueRatio > 2 {
 				capacityLoss += fmt.Sprintf(". Requests queueing %.0fx — response times ~%.0fx normal", queueRatio, queueRatio)
 			} else {
-				capacityLoss += fmt.Sprintf(". Run queue %d/%d — mild queueing, latency +%.0f%%", rq, ncpu, (queueRatio-1)*100)
+				capacityLoss += fmt.Sprintf(". Run queue %.0f/%d (1m avg) — mild queueing, latency +%.0f%%",
+					rqAvg, ncpu, (queueRatio-1)*100)
 			}
 		}
 

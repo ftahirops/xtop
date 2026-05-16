@@ -20,6 +20,12 @@ type Pattern struct {
 type PatternCondition struct {
 	EvidenceID  string
 	MinStrength float64 // 0 = any non-zero strength
+	Required    bool    // when true, this condition MUST match for the
+	// pattern to fire (regardless of MinMatch over the rest). Used to
+	// gate "named effect" patterns on the causal evidence — e.g. the
+	// "CPU Throttle Cascade" pattern shouldn't fire without actual
+	// cgroup throttling, otherwise the narrative contradicts the CPU
+	// panel ("Throttling: none" alongside "throttle cascade").
 }
 
 // patternLibrary is the built-in pattern library, ordered by priority (highest first).
@@ -64,15 +70,32 @@ var patternLibrary = []Pattern{
 		Narrative: "Direct reclaim storm — memory allocation blocking on disk IO",
 	},
 	{
+		// Gated on actual cgroup throttling. The prior version matched
+		// runqueue + psi alone, producing the "throttle cascade" narrative
+		// on hosts where Throttling=none — flatly contradicting the CPU
+		// panel. Required: cpu.cgroup.throttle.
 		Name:     "CPU Throttle Cascade",
 		Priority: 80,
 		Conditions: []PatternCondition{
-			{EvidenceID: "cpu.cgroup.throttle"},
+			{EvidenceID: "cpu.cgroup.throttle", Required: true},
 			{EvidenceID: "cpu.runqueue"},
 			{EvidenceID: "cpu.psi"},
 		},
 		MinMatch:  2,
 		Narrative: "CPU throttle cascade — cgroup limits saturating run queue",
+	},
+	{
+		// The "no cgroup throttle" version: load > cores + PSI stalls
+		// without any cgroup CPU quota limit. The honest narrative is
+		// oversubscription, not cgroup throttling.
+		Name:     "CPU Oversubscription",
+		Priority: 78,
+		Conditions: []PatternCondition{
+			{EvidenceID: "cpu.runqueue"},
+			{EvidenceID: "cpu.psi"},
+		},
+		MinMatch:  2,
+		Narrative: "CPU oversubscription — run queue exceeds cores, no cgroup throttling in play",
 	},
 	{
 		Name:     "Disk IO Saturation",
@@ -364,11 +387,9 @@ func MatchPattern(result *model.AnalysisResult) *Pattern {
 	for i := range patternLibrary {
 		pat := &patternLibrary[i]
 		matched := 0
+		missingRequired := false
 		for _, cond := range pat.Conditions {
 			ev, ok := fired[cond.EvidenceID]
-			if !ok {
-				continue
-			}
 			minStr := cond.MinStrength
 			if minStr == 0 {
 				minStr = pat.MinStr
@@ -376,9 +397,19 @@ func MatchPattern(result *model.AnalysisResult) *Pattern {
 			if minStr == 0 {
 				minStr = 0.01
 			}
-			if ev.Strength >= minStr {
+			condMatched := ok && ev.Strength >= minStr
+			if cond.Required && !condMatched {
+				// A required condition is absent; this pattern can't
+				// fire regardless of MinMatch over the other rows.
+				missingRequired = true
+				break
+			}
+			if condMatched {
 				matched++
 			}
+		}
+		if missingRequired {
+			continue
 		}
 		if matched >= pat.MinMatch {
 			return pat

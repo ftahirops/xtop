@@ -417,7 +417,14 @@ func (e *Engine) Tick() (*model.Snapshot, *model.RateSnapshot, *model.AnalysisRe
 		// collector reads its own flag at the top of Collect — when the
 		// host calms down, flags clear and they resume normal cadence.
 		apps.SetSkipDeepProbes(advice.SkipAppDeep)
-		cgcollector.SetSkipTreeWalk(advice.Level >= 1)
+		// Cgroup walk: only skip at level 2+. The cgroup tree is the
+		// only source of "which service is using the resource" — when
+		// it's empty, every Top group / writer / owner panel goes
+		// blank, exactly when operators need that data most. The walk
+		// is cheap on systemd hosts (~10 cgroups); the original level-1
+		// skip was protecting k8s nodes with 1000s of pod cgroups, which
+		// is a level-2 concern.
+		cgcollector.SetSkipTreeWalk(advice.Level >= 2)
 		rt.SetSkipDetection(advice.Level >= 1)
 		phpfpm.SetSkipDeepProbes(advice.Level >= 1)
 		skipAdvice = advice
