@@ -54,15 +54,23 @@ func computeCPURates(prev, curr *model.Snapshot, r *model.RateSnapshot) {
 		r.CPUBusyPct = float64(ct.Active()-pt.Active()) / float64(dtotal) * 100
 	}
 
-	// Estimate ctx switch rate from processes
-	var prevCtx, currCtx uint64
-	for _, p := range prev.Processes {
-		prevCtx += p.VoluntaryCtxSwitches + p.NonVoluntaryCtxSwitches
+	// Context switch rate. Prefer /proc/stat's "ctxt" field — the
+	// kernel's canonical total — and fall back to the per-process
+	// sum only when ctxt is unavailable (some non-Linux /proc or
+	// container-namespaced /proc views don't expose it).
+	if prev.Global.CPU.CtxSwitches > 0 && curr.Global.CPU.CtxSwitches > 0 {
+		r.CtxSwitchRate = util.Rate(prev.Global.CPU.CtxSwitches,
+			curr.Global.CPU.CtxSwitches, curr.Timestamp.Sub(prev.Timestamp))
+	} else {
+		var prevCtx, currCtx uint64
+		for _, p := range prev.Processes {
+			prevCtx += p.VoluntaryCtxSwitches + p.NonVoluntaryCtxSwitches
+		}
+		for _, p := range curr.Processes {
+			currCtx += p.VoluntaryCtxSwitches + p.NonVoluntaryCtxSwitches
+		}
+		r.CtxSwitchRate = util.Rate(prevCtx, currCtx, curr.Timestamp.Sub(prev.Timestamp))
 	}
-	for _, p := range curr.Processes {
-		currCtx += p.VoluntaryCtxSwitches + p.NonVoluntaryCtxSwitches
-	}
-	r.CtxSwitchRate = util.Rate(prevCtx, currCtx, curr.Timestamp.Sub(prev.Timestamp))
 }
 
 func computeMemRates(prev, curr *model.Snapshot, dt time.Duration, r *model.RateSnapshot) {

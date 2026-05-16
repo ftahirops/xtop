@@ -15,6 +15,7 @@ type AppSecrets struct {
 	Redis         *RedisCreds `json:"redis,omitempty"`
 	RabbitMQ      *RabbitCreds `json:"rabbitmq,omitempty"`
 	Elasticsearch *ESCreds    `json:"elasticsearch,omitempty"`
+	ClickHouse    *CHCreds    `json:"clickhouse,omitempty"`
 }
 
 type DBCreds struct {
@@ -53,6 +54,14 @@ type ESCreds struct {
 	URL      string `json:"url"`
 	User     string `json:"user"`
 	Password string `json:"password"`
+}
+
+type CHCreds struct {
+	Host     string `json:"host"`
+	Port     int    `json:"port"`
+	User     string `json:"user"`
+	Password string `json:"password"`
+	DBName   string `json:"dbname"`
 }
 
 type secretsLoader struct {

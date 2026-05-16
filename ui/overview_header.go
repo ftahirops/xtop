@@ -82,64 +82,11 @@ func renderHeader(snap *model.Snapshot, rates *model.RateSnapshot, result *model
 		sb.WriteString(badge)
 	}
 
-	sb.WriteString(dimStyle.Render(" | "))
-
-	cpuPct := float64(0)
-	if rates != nil {
-		cpuPct = rates.CPUBusyPct
-	}
-	sb.WriteString(meterColor(cpuPct).Render(fmt.Sprintf("CPU %5.1f%%", cpuPct)))
-	sb.WriteString(dimStyle.Render(" | "))
-
-	memPct := float64(0)
-	if snap.Global.Memory.Total > 0 {
-		memPct = float64(snap.Global.Memory.Total-snap.Global.Memory.Available) / float64(snap.Global.Memory.Total) * 100
-	}
-	sb.WriteString(meterColor(memPct).Render(fmt.Sprintf("MEM %5.1f%%", memPct)))
-	sb.WriteString(dimStyle.Render(" | "))
-
-	ioPct := float64(0)
-	if rates != nil {
-		for _, d := range rates.DiskRates {
-			if d.UtilPct > ioPct {
-				ioPct = d.UtilPct
-			}
-		}
-	}
-	sb.WriteString(meterColor(ioPct).Render(fmt.Sprintf("IO %5.1f%%", ioPct)))
-	sb.WriteString(dimStyle.Render(" | "))
-	headerNCPU := snap.Global.CPU.NumCPUs
-	if headerNCPU == 0 {
-		headerNCPU = 1
-	}
-	headerLoadPct := snap.Global.CPU.LoadAvg.Load1 / float64(headerNCPU) * 100
-	sb.WriteString(meterColor(headerLoadPct).Render(fmt.Sprintf("Load %.1f/%d=%.0f%%", snap.Global.CPU.LoadAvg.Load1, headerNCPU, headerLoadPct)))
-
-	// Disk free % (worst mount)
-	if rates != nil && len(rates.MountRates) > 0 {
-		var worstFreePct float64 = 100
-		var worstETA float64 = -1
-		for _, mr := range rates.MountRates {
-			if mr.FreePct < worstFreePct {
-				worstFreePct = mr.FreePct
-				worstETA = mr.ETASeconds
-			}
-		}
-		diskUsedPct := 100 - worstFreePct
-		sb.WriteString(dimStyle.Render(" | "))
-		diskStr := fmt.Sprintf("DISK %4.0f%%", diskUsedPct)
-		if worstETA > 0 && worstETA < 7200 {
-			diskStr += fmt.Sprintf(" ETA %.0fm", worstETA/60)
-		}
-		// Color: green >30% free, yellow >10% free, red <=10% free
-		if worstFreePct <= 10 {
-			sb.WriteString(critStyle.Render(diskStr))
-		} else if worstFreePct <= 30 {
-			sb.WriteString(warnStyle.Render(diskStr))
-		} else {
-			sb.WriteString(okStyle.Render(diskStr))
-		}
-	}
+	// The earlier "CPU N% | MEM N% | IO N% | Load A/B=C% | DISK N%"
+	// banner here duplicated every per-subsystem card below it. Removed
+	// to free a row and let the cards own those metrics. Each card
+	// shows the same data with more context (load interpretation, IO
+	// per-device, etc.).
 
 	// Active sessions summary
 	if len(snap.Global.Sessions) > 0 {

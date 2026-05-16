@@ -86,6 +86,15 @@ type CPUMetrics struct {
 	PerCPU  []CPUTimes
 	LoadAvg LoadAvg
 	NumCPUs int
+	// CtxSwitches is the cumulative total system context switches
+	// from /proc/stat's "ctxt N" line — the canonical kernel counter.
+	// The prior implementation estimated this from per-process
+	// VoluntaryCtxSwitches+NonVoluntaryCtxSwitches sums, which
+	// chronically undercounts on hosts with many kernel threads
+	// (the per-pid scan can miss short-lived workers and PSI-stalled
+	// ksoftirqd/k* tasks). Use this for the rate computation; fall
+	// back to the per-process sum only if this is zero.
+	CtxSwitches uint64
 }
 
 // MemoryMetrics holds /proc/meminfo data.

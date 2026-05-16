@@ -143,6 +143,7 @@ func NewEngineMode(historySize, intervalSec int, mode collector.Mode) *Engine {
 			appm.Register(apps.NewTraefikModule())
 			appm.Register(apps.NewMySQLModule())
 			appm.Register(apps.NewPostgreSQLModule())
+			appm.Register(apps.NewClickHouseModule())
 			appm.Register(apps.NewMongoModule())
 			appm.Register(apps.NewRedisModule())
 			appm.Register(apps.NewMemcachedModule())

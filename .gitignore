@@ -35,3 +35,14 @@ Thumbs.db
 .minimax/
 .opencode/
 WHYTOP_ANALYSIS.md
+
+# Internal / dev docs — kept locally only, not on GitHub.
+# AGENTS.md, README.md, docs/USAGE.md and packaging docs stay tracked.
+CLAUDE.md
+PROJECT_INDEX.md
+REQUIREMENTS.md
+xtop.1
+docs/CHANGES-*.md
+docs/RCA_*.md
+docs/plans/
+docs/superpowers/

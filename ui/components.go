@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // Column widths used across all layouts for consistent alignment.
@@ -60,9 +61,22 @@ func boxMid(innerW int) string {
 	return " " + dimStyle.Render("├"+strings.Repeat("─", innerW+2)+"┤")
 }
 
-// boxRow renders one content line inside a box, padded to innerW.
+// boxRow renders one content line inside a box, padded OR truncated
+// to innerW. The prior implementation only padded — content longer
+// than innerW would overflow and push adjacent panels to the right,
+// breaking the layout (the user-visible "Load avg: ... = X% of N CPUs
+// (critical)" line that spilled out of the CPU card).
+//
+// We truncate with ANSI awareness: lipgloss-rendered strings have
+// embedded escape sequences whose bytes don't contribute to the
+// visible width. ansi.Truncate from charmbracelet/x/ansi is the
+// canonical helper.
 func boxRow(content string, innerW int) string {
 	visW := lipgloss.Width(content)
+	if visW > innerW {
+		content = ansi.Truncate(content, innerW, "")
+		visW = innerW
+	}
 	pad := innerW - visW
 	if pad < 0 {
 		pad = 0

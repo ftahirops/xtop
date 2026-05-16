@@ -28,10 +28,19 @@ func (c *CPUCollector) collectStat(snap *model.Snapshot) error {
 
 	var perCPU []model.CPUTimes
 	for _, line := range lines {
-		if strings.HasPrefix(line, "cpu ") {
+		switch {
+		case strings.HasPrefix(line, "cpu "):
 			snap.Global.CPU.Total = parseCPULine(line)
-		} else if strings.HasPrefix(line, "cpu") {
+		case strings.HasPrefix(line, "cpu"):
 			perCPU = append(perCPU, parseCPULine(line))
+		case strings.HasPrefix(line, "ctxt "):
+			// "ctxt N" — total context switches since boot. The
+			// canonical kernel counter; used by rates.go to compute
+			// the per-second rate that the Overview panel shows.
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				snap.Global.CPU.CtxSwitches = util.ParseUint64(fields[1])
+			}
 		}
 	}
 	snap.Global.CPU.PerCPU = perCPU
