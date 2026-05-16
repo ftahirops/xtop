@@ -272,6 +272,158 @@ func collectClickhouseDeepMetrics(inst *model.AppInstance, secrets *AppSecrets) 
 		dm["zookeeper_connections"] = strings.TrimSpace(out)
 	}
 
+	// 11. Database count + total parts + total rows.
+	if out, err := chQuery(secrets,
+		"SELECT count(DISTINCT database), count(), sum(rows) FROM system.parts WHERE active"); err == nil && out != "" {
+		any = true
+		parts := strings.Split(out, "\t")
+		if len(parts) == 3 {
+			dm["databases"] = strings.TrimSpace(parts[0])
+			dm["active_parts"] = strings.TrimSpace(parts[1])
+			dm["total_rows"] = strings.TrimSpace(parts[2])
+		}
+	}
+
+	// 12. Top 3 tables by size — actionable for capacity planning.
+	if out, err := chQuery(secrets,
+		"SELECT database||'.'||table, formatReadableSize(sum(bytes_on_disk)), sum(rows) "+
+			"FROM system.parts WHERE active GROUP BY database,table "+
+			"ORDER BY sum(bytes_on_disk) DESC LIMIT 3"); err == nil && out != "" {
+		any = true
+		var lines []string
+		for _, line := range strings.Split(out, "\n") {
+			f := strings.Split(line, "\t")
+			if len(f) == 3 {
+				lines = append(lines, fmt.Sprintf("%s=%s/%s rows",
+					f[0], strings.TrimSpace(f[1]), strings.TrimSpace(f[2])))
+			}
+		}
+		if len(lines) > 0 {
+			dm["top_tables"] = strings.Join(lines, ", ")
+		}
+	}
+
+	// 13. Top 3 query patterns by total elapsed time — what the cluster
+	// is actually spending time on. Uses query_log (must be enabled,
+	// which it is by default in modern CH).
+	if out, err := chQuery(secrets,
+		"SELECT normalized_query_hash, any(substring(query,1,80)), count(), "+
+			"round(sum(query_duration_ms)/1000,1) as total_s, "+
+			"round(avg(query_duration_ms),0) as avg_ms "+
+			"FROM system.query_log "+
+			"WHERE type='QueryFinish' AND event_time > now() - INTERVAL 1 HOUR "+
+			"GROUP BY normalized_query_hash ORDER BY total_s DESC LIMIT 3"); err == nil && out != "" {
+		any = true
+		var lines []string
+		for _, line := range strings.Split(out, "\n") {
+			f := strings.Split(line, "\t")
+			if len(f) >= 5 {
+				q := strings.TrimSpace(f[1])
+				q = strings.ReplaceAll(q, "\n", " ")
+				lines = append(lines, fmt.Sprintf("[%s× avg %sms] %s",
+					strings.TrimSpace(f[2]), strings.TrimSpace(f[4]), q))
+			}
+		}
+		if len(lines) > 0 {
+			dm["top_queries_1h"] = strings.Join(lines, "  ║  ")
+		}
+	}
+
+	// 14. Recent error count (last 5 minutes) — quick health pulse.
+	if out, err := chQuery(secrets,
+		"SELECT count() FROM system.errors WHERE last_error_time > now() - INTERVAL 5 MINUTE"); err == nil && out != "" {
+		any = true
+		dm["errors_5min"] = strings.TrimSpace(out)
+	}
+
+	// 15. Top recent error name — what's actually failing.
+	if out, err := chQuery(secrets,
+		"SELECT name, value FROM system.errors "+
+			"WHERE last_error_time > now() - INTERVAL 1 HOUR "+
+			"ORDER BY value DESC LIMIT 1"); err == nil && out != "" {
+		any = true
+		f := strings.Split(out, "\t")
+		if len(f) == 2 {
+			dm["top_error"] = fmt.Sprintf("%s (×%s)",
+				strings.TrimSpace(f[0]), strings.TrimSpace(f[1]))
+		}
+	}
+
+	// 16. Cache hit ratios — mark cache + uncompressed cache. Both
+	// are critical for query performance.
+	if out, err := chQuery(secrets,
+		"SELECT "+
+			"sum(if(event='MarkCacheHits', value, 0)) as mh, "+
+			"sum(if(event='MarkCacheMisses', value, 0)) as mm, "+
+			"sum(if(event='UncompressedCacheHits', value, 0)) as uh, "+
+			"sum(if(event='UncompressedCacheMisses', value, 0)) as um "+
+			"FROM system.events"); err == nil && out != "" {
+		any = true
+		f := strings.Split(out, "\t")
+		if len(f) == 4 {
+			mh, _ := strconv.ParseFloat(strings.TrimSpace(f[0]), 64)
+			mm, _ := strconv.ParseFloat(strings.TrimSpace(f[1]), 64)
+			uh, _ := strconv.ParseFloat(strings.TrimSpace(f[2]), 64)
+			um, _ := strconv.ParseFloat(strings.TrimSpace(f[3]), 64)
+			if mh+mm > 0 {
+				dm["mark_cache_hit_pct"] = fmt.Sprintf("%.1f", mh/(mh+mm)*100)
+			}
+			if uh+um > 0 {
+				dm["uncompressed_cache_hit_pct"] = fmt.Sprintf("%.1f", uh/(uh+um)*100)
+			}
+		}
+	}
+
+	// 17. Async insert queue depth — when ingest backs up this rises.
+	if out, err := chQuery(secrets,
+		"SELECT count() FROM system.asynchronous_inserts"); err == nil && out != "" {
+		any = true
+		dm["async_insert_queue"] = strings.TrimSpace(out)
+	}
+
+	// 18. Optimization recommendations — derived inline rather than
+	// shipping a separate analyzer. Each rule is one-liner heuristics
+	// drawn from ClickHouse field experience.
+	var recs []string
+	if v, ok := dm["mark_cache_hit_pct"]; ok {
+		f, _ := strconv.ParseFloat(v, 64)
+		if f < 90 {
+			recs = append(recs, fmt.Sprintf(
+				"increase mark_cache_size (current hit ratio %.1f%% — should be >95%%)", f))
+		}
+	}
+	if v, ok := dm["active_merges"]; ok {
+		n, _ := strconv.Atoi(v)
+		if n > 30 {
+			recs = append(recs,
+				"consider raising background_pool_size (active merges high — ingest outpacing compaction)")
+		}
+	}
+	if v, ok := dm["long_running_queries"]; ok {
+		n, _ := strconv.Atoi(v)
+		if n > 0 {
+			recs = append(recs, fmt.Sprintf(
+				"%d queries running >30s — inspect system.processes and consider max_execution_time", n))
+		}
+	}
+	if v, ok := dm["async_insert_queue"]; ok {
+		n, _ := strconv.Atoi(v)
+		if n > 100 {
+			recs = append(recs,
+				"async-insert queue backed up — increase async_insert_threads or reduce ingest")
+		}
+	}
+	if v, ok := dm["detached_parts"]; ok {
+		n, _ := strconv.Atoi(v)
+		if n > 0 {
+			recs = append(recs, fmt.Sprintf(
+				"%d detached parts (past corruption) — review /var/lib/clickhouse/.../detached/", n))
+		}
+	}
+	if len(recs) > 0 {
+		dm["recommendations"] = strings.Join(recs, " ║ ")
+	}
+
 	if any {
 		inst.HasDeepMetrics = true
 		inst.NeedsCreds = false
