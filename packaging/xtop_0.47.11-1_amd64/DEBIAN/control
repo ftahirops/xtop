@@ -1,0 +1,45 @@
+Package: xtop
+Version: 0.47.11-1
+Section: admin
+Priority: optional
+Architecture: amd64
+Depends: libc6
+Recommends: postgresql, journalctl
+Installed-Size: 38440
+Maintainer: Farhan Tahir <farhan.003@gmail.com>
+Homepage: https://github.com/ftahirops/xtop
+Description: Incident-first root-cause analysis console for Linux
+ v0.47.11 ships full ClickHouse integration plus a long list of
+ UI and RCA correctness fixes captured during a live VM session.
+ .
+ ClickHouse:
+   - New collector/apps/mod_clickhouse.go: detection by PID + port,
+     dedup across multiple listeners, optional clickhouse-client
+     subprocess query backed by /root/.xtop_secrets credentials.
+   - 18 deep metrics: queries, mutations, merges, replication
+     queue, replicas degraded, databases, active parts, total
+     rows, top tables, top queries (1h), errors (5min), top
+     error, mark / uncompressed cache hit %, async-insert queue,
+     and per-tick recommendations.
+   - New UI renderer (ui/page_apps_clickhouse.go) groups deep
+     metrics into Health / Storage / Queries / Ingest / Caches /
+     Replication / Errors / Recommendations sections with
+     humanized numbers and inline anomaly highlighting.
+   - WRONG_PASSWORD / TIMEOUT_EXCEEDED / MEMORY_LIMIT_EXCEEDED
+     entries now carry an inline operator hint pointing at the
+     most common local cause.
+ .
+ Engine + RCA:
+   - Canonical context-switch rate from /proc/stat ctxt.
+   - cgroup tree walk suppressed only at guard level 2+.
+   - "CPU Throttle Cascade" pattern gated on actual
+     cpu.cgroup.throttle evidence; new "CPU Oversubscription"
+     pattern for hot run-queue without cgroup throttle.
+   - Run-queue impact estimate switched to Load1.
+ .
+ UI:
+   - boxRow truncates styled content so the frame never breaks.
+   - Duplicate header banner removed from Overview.
+   - "Deep metrics paused" notice collapsed to one line with
+     R-key to override the resource guard.
+   - App Load Distribution falls back to global app instances.

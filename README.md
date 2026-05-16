@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/xtop-v0.47.3-00d4aa?style=for-the-badge&logo=linux&logoColor=white" alt="version"/>
+  <img src="https://img.shields.io/badge/xtop-v0.47.11-00d4aa?style=for-the-badge&logo=linux&logoColor=white" alt="version"/>
   <img src="https://img.shields.io/badge/Go-1.25+-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="go"/>
   <img src="https://img.shields.io/badge/eBPF-Powered-ff6600?style=for-the-badge&logo=linux&logoColor=white" alt="ebpf"/>
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="license"/>
@@ -39,15 +39,27 @@
 
 ---
 
-## What is new in v0.47.3
+## What is new in v0.47.11
 
-**Web-shell scanner - obfuscation heuristics tightened.** v0.47.2 falsely flagged WordPress core SimplePie library (RSS/Atom parser whose HTML-entity tables legitimately use hundreds of \x?? byte-escape sequences).
+**Full ClickHouse integration plus a long list of UI/RCA correctness fixes captured during a live VM session.**
 
-- **Hex/chr/base64 patterns now require a co-occurring runtime code-execution sink** in the same file. Real packed shells always have both; charset / entity libraries have only the encoding markers.
-- **Path-skip extended** with well-known WordPress core and composer-vendored subtrees: SimplePie, Requests, PHPMailer, IXR, random_compat, sodium_compat, symfony, masterminds, guzzlehttp, psr, react.
-- **No detection coverage lost.** Direct-attack signatures and named-shell brand strings (FilesMan, WSO, b374k, c99, r57) remain at full sensitivity.
+ClickHouse:
+- **New `mod_clickhouse` collector.** Detection by PID + listening port, dedup across multiple listeners. Optional `clickhouse-client` subprocess query backed by `/root/.xtop_secrets` credentials (mode 0600).
+- **18 deep metrics**: active / total / failed / long-running queries, pending mutations, active merges, replication queue, replicas degraded, databases, active parts, total rows, top tables, top queries (1h), errors (5m), top error, mark / uncompressed cache hit %, async-insert queue, per-tick recommendations.
+- **Purpose-built UI renderer** (`ui/page_apps_clickhouse.go`). Replaces the alphabetical key=value dump with grouped sections: **Health / Storage / Queries / Ingest / Caches / Replication / Errors / Recommendations**. Humanized numbers (`3.4 B rows`, `267.5 K queries`). Inline anomaly highlighting — red for >5% failed queries, <80% mark-cache hit, runaway merges, replicas degraded.
+- **Error hints inline.** `WRONG_PASSWORD` carries a hint pointing at local clients (Grafana datasource, automation scripts) and the server log path; `TIMEOUT_EXCEEDED` and `MEMORY_LIMIT_EXCEEDED` get their own one-line tuning hint.
 
-Verified clean on 22-site Plesk + 18-site aaPanel with deep-scan forced.
+Engine / RCA correctness:
+- **Canonical context-switch rate** from `/proc/stat ctxt` (was reporting 0/s on hosts where per-process collection skipped kernel threads).
+- **cgroup tree walk** now suppressed only at guard level ≥ 2, so L1 throttling still produces "top group" rows in the UI.
+- **CPU Throttle Cascade** pattern gated on actual `cpu.cgroup.throttle` evidence. New **CPU Oversubscription** pattern fires when run-queue is hot without cgroup throttle.
+- **Run-queue impact estimate** switched to Load1 for consistency with the load-average header.
+
+UI:
+- **Layout never breaks horizontally** — `boxRow` truncates via `ansi.Truncate` so styled content stays inside the frame.
+- **Removed duplicate** `| CPU | MEM | IO | Load | DISK |` banner on Overview.
+- **"Deep metrics paused"** notice collapsed from an 8-line block to one dim line, with `R` bound to disable the resource guard and force a full tick on the current app page.
+- **App Load Distribution** falls back to global app instances when no cgroup rows exist; case-insensitive cgroup matching for IO attribution.
 
 ## What is new in v0.47.2
 
@@ -666,12 +678,12 @@ xtop -cron-install
 
 ```bash
 # Ubuntu/Debian (amd64)
-wget https://github.com/ftahirops/xtop/releases/download/v0.47.3/xtop_0.47.3-1_amd64.deb
-sudo dpkg -i xtop_0.47.3-1_amd64.deb
+wget https://github.com/ftahirops/xtop/releases/download/v0.47.11/xtop_0.47.11-1_amd64.deb
+sudo dpkg -i xtop_0.47.11-1_amd64.deb
 
 # RHEL/Rocky/Fedora (x86_64)
-wget https://github.com/ftahirops/xtop/releases/download/v0.47.3/xtop-0.47.3-1.x86_64.rpm
-sudo rpm -i xtop-0.47.3-1.x86_64.rpm
+wget https://github.com/ftahirops/xtop/releases/download/v0.47.11/xtop-0.47.11-1.x86_64.rpm
+sudo rpm -i xtop-0.47.11-1.x86_64.rpm
 
 # Arch Linux
 git clone https://github.com/ftahirops/xtop.git
@@ -683,7 +695,7 @@ cd xtop/packaging/archlinux && makepkg -si
 ```bash
 git clone https://github.com/ftahirops/xtop.git
 cd xtop
-CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.47.3" -o xtop .
+CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.47.11" -o xtop .
 sudo install -m 755 xtop /usr/local/bin/xtop
 ```
 
@@ -715,15 +727,15 @@ sudo xtop -json | jq   # JSON for scripting
 ### From .deb Package (Ubuntu 22.04/24.04, Debian)
 
 ```bash
-wget https://github.com/ftahirops/xtop/releases/download/v0.47.3/xtop_0.47.3-1_amd64.deb
-sudo dpkg -i xtop_0.47.3-1_amd64.deb
+wget https://github.com/ftahirops/xtop/releases/download/v0.47.11/xtop_0.47.11-1_amd64.deb
+sudo dpkg -i xtop_0.47.11-1_amd64.deb
 ```
 
 ### From .rpm Package (Rocky Linux, RHEL, AlmaLinux, Fedora)
 
 ```bash
-wget https://github.com/ftahirops/xtop/releases/download/v0.47.3/xtop-0.47.3-1.x86_64.rpm
-sudo rpm -i xtop-0.47.3-1.x86_64.rpm
+wget https://github.com/ftahirops/xtop/releases/download/v0.47.11/xtop-0.47.11-1.x86_64.rpm
+sudo rpm -i xtop-0.47.11-1.x86_64.rpm
 ```
 
 ### Arch Linux (PKGBUILD)
@@ -745,7 +757,7 @@ Builds from source automatically. Optional dependencies: `nvidia-utils` (GPU mon
 ```bash
 git clone https://github.com/ftahirops/xtop.git
 cd xtop
-CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.47.3" -o xtop .
+CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.47.11" -o xtop .
 sudo install -m 755 xtop /usr/local/bin/xtop
 ```
 

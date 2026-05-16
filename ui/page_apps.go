@@ -720,6 +720,8 @@ func renderAppDeepMetrics(app model.AppInstance, iw int) string {
 		return renderTraefikDeepMetrics(app, iw)
 	case "plesk":
 		return renderPleskDeepMetrics(app, iw)
+	case "clickhouse":
+		return renderClickHouseDeepMetrics(app, iw)
 	default:
 		return renderGenericDeepMetrics(app.DeepMetrics, iw)
 	}
