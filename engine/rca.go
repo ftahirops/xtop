@@ -346,6 +346,12 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History, 
 		}
 	}
 
+	// NEXTGEN Phase 3: build the host-local entity graph so verifier
+	// gates (ownership-consistency, blast-radius) have a structural
+	// answer to "who owns what". Cost is O(P + C) ≈ 100µs on a 500-
+	// proc host — within the engine's per-tick budget.
+	result.Entities = BuildEntityGraph(curr)
+
 	// NEXTGEN Phase 1B: the score-band Health decision is owned by
 	// finalize. Call it HERE (not at the end) so the downstream
 	// app-health-bridge and alert hysteresis read a properly-derived

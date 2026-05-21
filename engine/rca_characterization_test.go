@@ -132,6 +132,43 @@ func TestRCAInvariants(t *testing.T) {
 						c.dom, got, c.min)
 				}
 			}
+			// I12 (NEXTGEN Phase 3): EntityGraph is present and contains
+			// at least the host root.
+			if result.Entities == nil {
+				t.Error("invariant I12 violated: Entities graph is nil")
+			} else {
+				if result.Entities.Lookup("host") == nil {
+					t.Error("invariant I12 violated: host root entity missing")
+				}
+			}
+			// I13: every Fact's EntityID resolves to an entity in the
+			// graph (forward-link integrity). Verifier gates depend on
+			// this — a Fact referencing a non-existent entity would
+			// hang the ownership-consistency check.
+			if result.Entities != nil {
+				for i, f := range result.Facts {
+					if f.EntityID == "" {
+						continue
+					}
+					if result.Entities.Lookup(f.EntityID) == nil {
+						t.Errorf("invariant I13 violated: Facts[%d].EntityID=%q does not resolve",
+							i, f.EntityID)
+					}
+				}
+			}
+			// I14: every Entity's OwnerID either resolves or is empty.
+			// No dangling parent pointers. (Host root has no owner.)
+			if result.Entities != nil {
+				for _, e := range result.Entities.Entities {
+					if e.OwnerID == "" {
+						continue
+					}
+					if result.Entities.Lookup(e.OwnerID) == nil {
+						t.Errorf("invariant I14 violated: Entity %q has OwnerID=%q which does not resolve",
+							e.ID, e.OwnerID)
+					}
+				}
+			}
 		})
 	}
 }

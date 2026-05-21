@@ -259,6 +259,12 @@ type AnalysisResult struct {
 	// input to the verifier gates.
 	Facts []Fact `json:"facts,omitempty"`
 
+	// Entities is the host-local entity graph (NEXTGEN Phase 3) — a
+	// snapshot of the ownership tree at the time of this analysis.
+	// Verifier gates consult it for ownership-consistency + blast-
+	// radius checks. Built once per tick from snap.Processes + cgroups.
+	Entities *EntityGraph `json:"entities,omitempty"`
+
 	// Primary diagnosis
 	PrimaryBottleneck string
 	PrimaryScore      int

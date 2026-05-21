@@ -51,3 +51,47 @@ func buildFact(
 		Tags:       tags,
 	}
 }
+
+// buildFactScoped is buildFact + an explicit EntityID for facts that
+// are NOT host-scoped (e.g. cgroup throttle pct, per-device disk
+// latency). The entityID should match an entity ID in the EntityGraph
+// so the verifier can walk the ancestor chain.
+//
+// Empty entityID falls back to "host" — callers can pass cgroupEntityID
+// or deviceEntityID unconditionally without nil-guarding.
+func buildFactScoped(
+	id, metric string,
+	domain model.Domain,
+	value float64,
+	unit string,
+	warnThreshold float64,
+	confidence float64,
+	measuredAt time.Time,
+	source string,
+	entityID string,
+	tags map[string]string,
+) model.Fact {
+	f := buildFact(id, metric, domain, value, unit, warnThreshold, confidence, measuredAt, source, tags)
+	if entityID != "" {
+		f.EntityID = entityID
+	}
+	return f
+}
+
+// cgroupEntityID returns the canonical entity ID for a cgroup path, or
+// "host" if path is empty/root. Mirrors the format BuildEntityGraph uses.
+func cgroupEntityID(path string) string {
+	if path == "" || path == "/" {
+		return "host"
+	}
+	return "cgroup:" + path
+}
+
+// deviceEntityID returns the canonical entity ID for a block device.
+// Falls back to "host" if device name is empty.
+func deviceEntityID(dev string) string {
+	if dev == "" {
+		return "host"
+	}
+	return "device:" + dev
+}

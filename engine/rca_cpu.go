@@ -108,7 +108,10 @@ func analyzeCPU(db *AdaptiveThresholdDB, curr *model.Snapshot, rates *model.Rate
 		buildFact("cpu.runqueue", "runqueue_ratio", model.DomainCPU, rqRatio, "", w2, 0.7, now, "derived", nil),
 		buildFact("cpu.ctxswitch", "ctx_switches_per_core", model.DomainCPU, csPerCore, "count/s", w3, 0.6, now, "procfs", nil),
 		buildFact("cpu.steal", "steal_pct", model.DomainCPU, stealPct, "%", w4, 0.9, now, "procfs", nil),
-		buildFact("cpu.cgroup.throttle", "cgroup_throttle_pct", model.DomainCPU, maxThrottlePct, "%", w5, 0.8, now, "cgroup",
+		buildFactScoped(
+			"cpu.cgroup.throttle", "cgroup_throttle_pct", model.DomainCPU,
+			maxThrottlePct, "%", w5, 0.8, now, "cgroup",
+			cgroupEntityID(maxThrottleCg),
 			map[string]string{"cgroup": maxThrottleCg}),
 	)
 

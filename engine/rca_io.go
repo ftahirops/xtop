@@ -126,9 +126,11 @@ func analyzeIO(db *AdaptiveThresholdDB, curr *model.Snapshot, rates *model.RateS
 	r.Facts = append(r.Facts,
 		buildFact("io.psi.avg10", "psi.avg10", model.DomainIO, ioSome*100, "%", psiWarn, 0.9, now, "procfs", nil),
 		buildFact("io.dstate", "dstate_tasks", model.DomainIO, float64(dCount), "count", dstateWarn, 0.7, now, "procfs", nil),
-		buildFact("io.disk.latency", "await_ms", model.DomainIO, worstAwait, "ms", latWarn, 0.8, now, "diskstats", map[string]string{"device": worstDev}),
+		buildFactScoped("io.disk.latency", "await_ms", model.DomainIO, worstAwait, "ms", latWarn, 0.8, now, "diskstats",
+			deviceEntityID(worstDev), map[string]string{"device": worstDev}),
 		buildFact("io.disk.util", "util_pct", model.DomainIO, worstUtil, "%", utilWarn, 0.85, now, "diskstats", nil),
-		buildFact("io.disk.queuedepth", "queue_depth", model.DomainIO, float64(worstQueueDepth), "count", qdWarn, 0.75, now, "diskstats", map[string]string{"device": worstQueueDev}),
+		buildFactScoped("io.disk.queuedepth", "queue_depth", model.DomainIO, float64(worstQueueDepth), "count", qdWarn, 0.75, now, "diskstats",
+			deviceEntityID(worstQueueDev), map[string]string{"device": worstQueueDev}),
 		buildFact("io.writeback", "writeback_bytes", model.DomainIO, float64(mem.Writeback), "bytes", wbWarn, 0.7, now, "procfs", nil),
 	)
 
