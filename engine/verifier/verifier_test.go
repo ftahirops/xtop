@@ -186,7 +186,34 @@ func TestVerifier_AbstainsWithoutGates(t *testing.T) {
 	}
 }
 
-func TestVerifier_DefaultTwoGates(t *testing.T) {
+// TestVerifier_DefaultGateCount asserts the Default verifier ships
+// the expected number of gates. Bumps when new gates land — keeps the
+// other tier-classification tests honest about how many gates ran.
+func TestVerifier_DefaultGateCount(t *testing.T) {
+	v := Default()
+	out := v.Verify(Candidate{
+		Mechanism:         "smoke",
+		SupportingFactIDs: []string{"x"},
+	}, []model.Fact{makeFact("x", "host", 0.9)}, makeGraph())
+	if len(out.Gates) != 4 {
+		t.Errorf("Default() should have 4 gates today; got %d. Update this test when gates are added.", len(out.Gates))
+	}
+}
+
+// TestVerifier_AllGatesPass_TierA asserts a candidate that genuinely
+// passes ALL 4 gates reaches TierA. Requires non-zero Fact.Duration +
+// non-zero BaselineDelta + ownership consistent + signal quality.
+func TestVerifier_AllGatesPass_TierA(t *testing.T) {
+	now := time.Date(2026, 5, 12, 0, 0, 0, 0, time.UTC)
+	mkF := func(id, ent string, conf, val float64, dur time.Duration, baselineDelta float64) model.Fact {
+		return model.Fact{
+			ID: id, Source: "procfs", EntityID: ent, Domain: model.DomainCPU,
+			Metric: id, Value: val, Confidence: model.FactConfidence(conf),
+			Severity: model.FactSeverityWarn, MeasuredAt: now,
+			Duration: dur, BaselineDelta: baselineDelta,
+			Kind: model.FactKindSaturation,
+		}
+	}
 	v := Default()
 	c := Candidate{
 		Mechanism:         "CPU contention on mongod cgroup",
@@ -195,39 +222,67 @@ func TestVerifier_DefaultTwoGates(t *testing.T) {
 		SupportingFactIDs: []string{"f1", "f2"},
 	}
 	facts := []model.Fact{
-		makeFact("f1", "pid:1234", 0.9),
-		makeFact("f2", "cgroup:/system.slice/mongod.service", 0.85),
+		// Fact 1: high confidence, kernel-direct, sustained 10s, 30% above baseline
+		mkF("f1", "pid:1234", 0.9, 80, 10*time.Second, 30),
+		// Fact 2: also kernel-direct
+		mkF("f2", "cgroup:/system.slice/mongod.service", 0.85, 70, 8*time.Second, 25),
 	}
 	out := v.Verify(c, facts, makeGraph())
-	// 2 gates pass, no failures, but len(gates)=2 < 3 → Tier B
-	if out.Tier != model.TierBVerified {
-		t.Errorf("expected Tier B with 2 passing gates; got %s. gates=%+v", out.Tier, out.Gates)
-	}
-	if out.RootEntityID != c.RootEntityID {
-		t.Errorf("RootEntityID drift: got %q want %q", out.RootEntityID, c.RootEntityID)
-	}
-	if len(out.Gates) != 2 {
-		t.Errorf("expected 2 gate results; got %d", len(out.Gates))
+	if out.Tier != model.TierAConfirmed {
+		t.Errorf("expected TierAConfirmed with all 4 gates passing; got %s. gates=%+v",
+			out.Tier, out.Gates)
 	}
 }
 
-func TestVerifier_OneFailureGoesToTierC(t *testing.T) {
+// TestVerifier_OneNonCriticalFailure_TierC asserts a candidate that
+// passes signal-quality but fails exactly one OTHER gate reaches
+// Tier C. With 4 gates, that means 3 pass + 1 fails (non-signal-quality).
+func TestVerifier_OneNonCriticalFailure_TierC(t *testing.T) {
+	now := time.Date(2026, 5, 12, 0, 0, 0, 0, time.UTC)
+	v := Default()
+	// Setup: candidate would pass signal+ownership+temporal but fail
+	// baseline (no BaselineDelta data set).
+	c := Candidate{
+		Mechanism:         "CPU contention on mongod cgroup",
+		RootEntityID:      "cgroup:/system.slice/mongod.service",
+		Domain:            model.DomainCPU,
+		SupportingFactIDs: []string{"f1", "f2"},
+	}
+	mkF := func(id, ent string, conf float64, dur time.Duration) model.Fact {
+		return model.Fact{
+			ID: id, Source: "procfs", EntityID: ent, Domain: model.DomainCPU,
+			Metric: id, Value: 60, Confidence: model.FactConfidence(conf),
+			Severity: model.FactSeverityWarn, MeasuredAt: now,
+			Duration: dur, Kind: model.FactKindSaturation,
+		}
+	}
+	facts := []model.Fact{
+		mkF("f1", "pid:1234", 0.9, 10*time.Second),
+		mkF("f2", "cgroup:/system.slice/mongod.service", 0.85, 8*time.Second),
+	}
+	out := v.Verify(c, facts, makeGraph())
+	if out.Tier != model.TierCProbable {
+		t.Errorf("expected Tier C; got %s. gates=%+v", out.Tier, out.Gates)
+	}
+}
+
+// TestVerifier_MultipleFailures_TierD asserts 2+ failures drop to D
+// even if signal-quality passed.
+func TestVerifier_MultipleFailures_TierD(t *testing.T) {
 	v := Default()
 	c := Candidate{
 		Mechanism:         "fictitious",
-		RootEntityID:      "pid:99999", // doesn't exist
+		RootEntityID:      "pid:99999", // doesn't exist → ownership fail
 		Domain:            model.DomainCPU,
 		SupportingFactIDs: []string{"f1", "f2"},
 	}
 	facts := []model.Fact{
-		makeFact("f1", "host", 0.9),
-		makeFact("f2", "host", 0.85),
+		makeFact("f1", "host", 0.9),  // no Duration → temporal fail
+		makeFact("f2", "host", 0.85), // no BaselineDelta → baseline fail
 	}
 	out := v.Verify(c, facts, makeGraph())
-	// signal_quality passes; ownership_consistency fails → 1 failure
-	// (not signal_quality) → Tier C
-	if out.Tier != model.TierCProbable {
-		t.Errorf("expected Tier C; got %s. gates=%+v", out.Tier, out.Gates)
+	if out.Tier != model.TierDInconclusive {
+		t.Errorf("expected Tier D with 3 failures; got %s", out.Tier)
 	}
 }
 

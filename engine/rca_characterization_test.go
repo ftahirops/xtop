@@ -201,6 +201,16 @@ func TestRCAInvariants(t *testing.T) {
 					}
 				}
 			}
+			// I17 (NEXTGEN Phase 4 completion): verifier ships ≥ 4
+			// gates. Sentinel for gate-set migration — when more
+			// gates are added, bump this and update the gate-coverage
+			// expectation in the verifier package's own tests.
+			for i, vc := range result.VerifiedCauses {
+				if len(vc.Gates) < 4 {
+					t.Errorf("invariant I17 violated: VerifiedCauses[%d] has %d gates, want >= 4",
+						i, len(vc.Gates))
+				}
+			}
 		})
 	}
 }

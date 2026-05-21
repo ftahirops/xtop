@@ -78,6 +78,36 @@ func buildFactScoped(
 	return f
 }
 
+// stampFactDurations mirrors Evidence.SustainedForSec into the matching
+// Fact.Duration on each RCAEntry. Facts and Evidence share the same ID
+// convention (cpu.psi.avg10 etc.), so the join is by-key.
+//
+// NEXTGEN Phase 4: the temporal-ordering gate reads Fact.Duration to
+// decide if a candidate's evidence sustained long enough to count.
+// Without this stamping step, every Fact would have Duration=0 and
+// the gate would fail every candidate.
+func stampFactDurations(result *model.AnalysisResult) {
+	if result == nil {
+		return
+	}
+	for i := range result.RCA {
+		entry := &result.RCA[i]
+		// Build a quick lookup from evidence ID → sustained seconds.
+		susByID := make(map[string]float64, len(entry.EvidenceV2))
+		for _, ev := range entry.EvidenceV2 {
+			if ev.SustainedForSec > 0 {
+				susByID[ev.ID] = ev.SustainedForSec
+			}
+		}
+		for j := range entry.Facts {
+			f := &entry.Facts[j]
+			if sec, ok := susByID[f.ID]; ok {
+				f.Duration = time.Duration(sec * float64(time.Second))
+			}
+		}
+	}
+}
+
 // cgroupEntityID returns the canonical entity ID for a cgroup path, or
 // "host" if path is empty/root. Mirrors the format BuildEntityGraph uses.
 func cgroupEntityID(path string) string {

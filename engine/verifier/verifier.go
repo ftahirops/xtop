@@ -85,14 +85,16 @@ func New(gates ...Gate) *Verifier {
 }
 
 // Default returns a Verifier with the Phase 4 gate set. As more gates
-// land they're added here in deliberate evaluation order.
+// land they're added here in deliberate evaluation order: signal quality
+// first (foundational), then ownership (cheap), then temporal +
+// baseline (need fact metadata), then the heavier gates.
 func Default() *Verifier {
 	return New(
 		signalQualityGate{},
 		ownershipConsistencyGate{},
+		temporalOrderingGate{},
+		baselineDeviationGate{},
 		// Future:
-		//   baselineDeviationGate{}
-		//   temporalOrderingGate{}
 		//   blastRadiusGate{}
 		//   counterEvidenceGate{}
 		//   deepProbeGate{}

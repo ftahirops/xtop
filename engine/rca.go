@@ -214,6 +214,11 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History, 
 	// UpdateSignalOnsets handles the write side.
 	stampSustainedDurations(result, hist)
 
+	// NEXTGEN Phase 4: mirror Evidence.SustainedForSec into the matching
+	// Fact.Duration so the temporal-ordering gate has real input. Match
+	// by ID — Facts and Evidence share the same ID convention.
+	stampFactDurations(result)
+
 	// Compute v2 domain confidence for each entry
 	for i := range result.RCA {
 		result.RCA[i].DomainConf = domainConfidence(result.RCA[i].EvidenceV2)
