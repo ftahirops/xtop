@@ -541,6 +541,13 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History, 
 		result.CrossHostCorrelation = correlatePeerIncidents(result, peerIncidents)
 	}
 
+	// NEXTGEN Phase 1 task 4: single finalization hook. Currently only
+	// clamps PrimaryScore + Confidence to [0,100]; future commits will
+	// move the scattered Health/Confidence mutations here so the
+	// pipeline has exactly one mutation point.
+	if e != nil {
+		e.finalize(result, hist)
+	}
 	return result
 }
 
