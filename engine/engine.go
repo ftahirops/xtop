@@ -60,6 +60,13 @@ type Engine struct {
 
 	// Phase 2: resource-guarded deep app diagnostics throttling
 	lastDeepAnalysis time.Time // last time deep app diagnostics ran
+
+	// NEXTGEN Phase 1: previously package-globals in engine/rca.go.
+	// Owned per-Engine so multiple engines in one process don't share
+	// threshold history, causal observations, or topology correlations.
+	adaptiveThresholdDB      *AdaptiveThresholdDB
+	probabilisticCausalGraph *ProbabilisticCausalGraph
+	topologyCorrelator       *TopologyCorrelator
 }
 
 // NewEngine creates a new engine with all collectors registered.
@@ -218,9 +225,18 @@ func NewEngineMode(historySize, intervalSec int, mode collector.Mode) *Engine {
 	if home, err := os.UserHomeDir(); err == nil {
 		dataDir = filepath.Join(home, ".xtop")
 	}
-	adaptiveThresholdDB = NewAdaptiveThresholdDB(dataDir)
-	probabilisticCausalGraph = NewProbabilisticCausalGraph()
-	topologyCorrelator = NewTopologyCorrelator()
+	// NEXTGEN Phase 1: construct per-engine state. The package-globals
+	// below are populated in parallel and will be removed in task 3 of
+	// the Phase 1 plan once all callers read from e.* fields.
+	adaptiveDB := NewAdaptiveThresholdDB(dataDir)
+	causalGraph := NewProbabilisticCausalGraph()
+	topology := NewTopologyCorrelator()
+	e.adaptiveThresholdDB = adaptiveDB
+	e.probabilisticCausalGraph = causalGraph
+	e.topologyCorrelator = topology
+	adaptiveThresholdDB = adaptiveDB
+	probabilisticCausalGraph = causalGraph
+	topologyCorrelator = topology
 
 	// FastPulse: sub-second PSI sampler that refines per-evidence
 	// SustainedForSec. Off by default in lean (agent) mode to keep the
