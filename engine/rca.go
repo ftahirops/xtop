@@ -336,28 +336,22 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History, 
 		}
 	}
 
-	// Health level — v2: uses trust gate + domain confidence
-	if result.PrimaryScore >= rcaScoreCritical {
-		primary := result.RCA[0]
-		if v2TrustGate(primary.EvidenceV2) {
-			result.Health = model.HealthCritical
-			result.Confidence = int(primary.DomainConf * 100)
-		} else {
-			result.Health = model.HealthInconclusive
-			result.Confidence = int(primary.DomainConf * 100)
+	// NEXTGEN Phase 1B: the score-band Health decision is owned by
+	// finalize. Call it HERE (not at the end) so the downstream
+	// app-health-bridge and alert hysteresis read a properly-derived
+	// Health. They are still allowed to upgrade Health after this.
+	// Runs even when engine is nil (test path): the score-band logic
+	// reads only the result, not any engine state.
+	{
+		var earlyCtx finalizationCtx
+		if len(result.RCA) > 0 {
+			earlyCtx.primary = &result.RCA[0]
 		}
-	} else if result.PrimaryScore >= rcaScoreDegraded {
-		primary := result.RCA[0]
-		if v2TrustGate(primary.EvidenceV2) {
-			result.Health = model.HealthDegraded
-			result.Confidence = int(primary.DomainConf * 100)
+		if e != nil {
+			e.finalize(result, &earlyCtx, hist)
 		} else {
-			result.Health = model.HealthInconclusive
-			result.Confidence = int(primary.DomainConf * 100)
+			finalizeResult(result, &earlyCtx, hist)
 		}
-	} else {
-		result.Health = model.HealthOK
-		result.Confidence = rcaHealthOKConfidence
 	}
 
 	// Phase 5: App Health Bridge — if any detected app is critically degraded
@@ -392,27 +386,27 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History, 
 		}
 	}
 
-	// Alert state machine: apply sustained-threshold filtering
-	if hist != nil && hist.alert != nil {
-		hasCritEvidence := false
-		if len(result.RCA) > 0 {
-			for _, e := range result.RCA[0].EvidenceV2 {
-				if e.ID == "mem.oom.kills" && e.Strength >= oomKillStrengthThreshold && e.Value > 0 {
+	// NEXTGEN Phase 1B stage-2 finalization: alert hysteresis runs
+	// AFTER the post-decision policy upgrades (app-bridge above) so
+	// the sustained-threshold filter sees the correct Health.
+	hasCritEvidence := false
+	if len(result.RCA) > 0 {
+		for _, e := range result.RCA[0].EvidenceV2 {
+			if e.ID == "mem.oom.kills" && e.Strength >= oomKillStrengthThreshold && e.Value > 0 {
+				hasCritEvidence = true
+				break
+			}
+		}
+		if rates != nil {
+			for _, mr := range rates.MountRates {
+				if mr.ETASeconds > 0 && mr.ETASeconds < diskExhaustionETASeconds {
 					hasCritEvidence = true
 					break
 				}
 			}
-			if rates != nil {
-				for _, mr := range rates.MountRates {
-					if mr.ETASeconds > 0 && mr.ETASeconds < diskExhaustionETASeconds {
-						hasCritEvidence = true
-						break
-					}
-				}
-			}
 		}
-		result.Health = hist.alert.Update(result.Health, result.PrimaryScore, hasCritEvidence)
 	}
+	finalizeHysteresis(result, hist, hasCritEvidence)
 
 	// Propagate system identity
 	result.SysInfo = curr.SysInfo
@@ -538,12 +532,22 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History, 
 		result.CrossHostCorrelation = correlatePeerIncidents(result, peerIncidents)
 	}
 
-	// NEXTGEN Phase 1 task 4: single finalization hook. Currently only
-	// clamps PrimaryScore + Confidence to [0,100]; future commits will
-	// move the scattered Health/Confidence mutations here so the
-	// pipeline has exactly one mutation point.
-	if e != nil {
-		e.finalize(result, hist)
+	// NEXTGEN Phase 1B: finalize was already called above (right after
+	// the score-band branch was extracted from inline). Calling it here
+	// would clobber the app-health-bridge upgrade and the alert
+	// hysteresis. Tail clamp only — defensive guard for any post-
+	// hysteresis bonus that pushed values out of bounds.
+	if result.PrimaryScore < 0 {
+		result.PrimaryScore = 0
+	}
+	if result.PrimaryScore > 100 {
+		result.PrimaryScore = 100
+	}
+	if result.Confidence < 0 {
+		result.Confidence = 0
+	}
+	if result.Confidence > 100 {
+		result.Confidence = 100
 	}
 	return result
 }

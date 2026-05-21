@@ -48,9 +48,9 @@ func TestFinalizeIdempotent(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			e.finalize(tc.in, nil)
+			e.finalize(tc.in, nil, nil)
 			h1, c1, s1 := tc.in.Health, tc.in.Confidence, tc.in.PrimaryScore
-			e.finalize(tc.in, nil)
+			e.finalize(tc.in, nil, nil)
 			if tc.in.Health != h1 || tc.in.Confidence != c1 || tc.in.PrimaryScore != s1 {
 				t.Errorf("finalize not idempotent: was (%v,%d,%d), got (%v,%d,%d)",
 					h1, c1, s1, tc.in.Health, tc.in.Confidence, tc.in.PrimaryScore)
@@ -73,7 +73,7 @@ func TestFinalizeClamps(t *testing.T) {
 	defer e.Close()
 
 	r := &model.AnalysisResult{PrimaryScore: 250, Confidence: -10}
-	e.finalize(r, nil)
+	e.finalize(r, nil, nil)
 	if r.PrimaryScore != 100 {
 		t.Errorf("PrimaryScore=%d after clamp, want 100", r.PrimaryScore)
 	}
@@ -86,5 +86,5 @@ func TestFinalizeClamps(t *testing.T) {
 func TestFinalizeNilSafe(t *testing.T) {
 	e := NewEngineMode(60, 3, collector.ModeLean)
 	defer e.Close()
-	e.finalize(nil, nil) // must not panic
+	e.finalize(nil, nil, nil) // must not panic
 }
