@@ -195,14 +195,15 @@ func TestVerifier_DefaultGateCount(t *testing.T) {
 		Mechanism:         "smoke",
 		SupportingFactIDs: []string{"x"},
 	}, []model.Fact{makeFact("x", "host", 0.9)}, makeGraph())
-	if len(out.Gates) != 4 {
-		t.Errorf("Default() should have 4 gates today; got %d. Update this test when gates are added.", len(out.Gates))
+	if len(out.Gates) != 5 {
+		t.Errorf("Default() should have 5 gates today; got %d. Update this test when gates are added.", len(out.Gates))
 	}
 }
 
 // TestVerifier_AllGatesPass_TierA asserts a candidate that genuinely
-// passes ALL 4 gates reaches TierA. Requires non-zero Fact.Duration +
-// non-zero BaselineDelta + ownership consistent + signal quality.
+// passes ALL 5 gates reaches TierA. Requires non-zero Fact.Duration +
+// non-zero BaselineDelta + ownership consistent + signal quality +
+// counter-evidence rules satisfied (cpu.busy ≥ 20 for CPU candidates).
 func TestVerifier_AllGatesPass_TierA(t *testing.T) {
 	now := time.Date(2026, 5, 12, 0, 0, 0, 0, time.UTC)
 	mkF := func(id, ent string, conf, val float64, dur time.Duration, baselineDelta float64) model.Fact {
@@ -219,46 +220,48 @@ func TestVerifier_AllGatesPass_TierA(t *testing.T) {
 		Mechanism:         "CPU contention on mongod cgroup",
 		RootEntityID:      "cgroup:/system.slice/mongod.service",
 		Domain:            model.DomainCPU,
-		SupportingFactIDs: []string{"f1", "f2"},
+		SupportingFactIDs: []string{"cpu.psi.avg10", "cpu.busy"},
 	}
 	facts := []model.Fact{
-		// Fact 1: high confidence, kernel-direct, sustained 10s, 30% above baseline
-		mkF("f1", "pid:1234", 0.9, 80, 10*time.Second, 30),
-		// Fact 2: also kernel-direct
-		mkF("f2", "cgroup:/system.slice/mongod.service", 0.85, 70, 8*time.Second, 25),
+		// PSI: sustained, baselined-above
+		mkF("cpu.psi.avg10", "pid:1234", 0.9, 65, 12*time.Second, 50),
+		// cpu.busy: required by counter-evidence rule (≥ 20%)
+		mkF("cpu.busy", "cgroup:/system.slice/mongod.service", 0.85, 85, 10*time.Second, 40),
 	}
 	out := v.Verify(c, facts, makeGraph())
 	if out.Tier != model.TierAConfirmed {
-		t.Errorf("expected TierAConfirmed with all 4 gates passing; got %s. gates=%+v",
+		t.Errorf("expected TierAConfirmed with all 5 gates passing; got %s. gates=%+v",
 			out.Tier, out.Gates)
 	}
 }
 
 // TestVerifier_OneNonCriticalFailure_TierC asserts a candidate that
 // passes signal-quality but fails exactly one OTHER gate reaches
-// Tier C. With 4 gates, that means 3 pass + 1 fails (non-signal-quality).
+// Tier C. With 5 gates, that means 4 pass + 1 fails (non-signal-quality).
 func TestVerifier_OneNonCriticalFailure_TierC(t *testing.T) {
 	now := time.Date(2026, 5, 12, 0, 0, 0, 0, time.UTC)
 	v := Default()
-	// Setup: candidate would pass signal+ownership+temporal but fail
-	// baseline (no BaselineDelta data set).
+	// Setup: candidate passes signal + ownership + temporal +
+	// counter-evidence (cpu.busy supplied), but fails baseline
+	// (no BaselineDelta data on any supporting fact).
 	c := Candidate{
 		Mechanism:         "CPU contention on mongod cgroup",
 		RootEntityID:      "cgroup:/system.slice/mongod.service",
 		Domain:            model.DomainCPU,
-		SupportingFactIDs: []string{"f1", "f2"},
+		SupportingFactIDs: []string{"cpu.psi.avg10", "cpu.busy"},
 	}
-	mkF := func(id, ent string, conf float64, dur time.Duration) model.Fact {
+	mkF := func(id, ent string, conf, val float64, dur time.Duration) model.Fact {
 		return model.Fact{
 			ID: id, Source: "procfs", EntityID: ent, Domain: model.DomainCPU,
-			Metric: id, Value: 60, Confidence: model.FactConfidence(conf),
+			Metric: id, Value: val, Confidence: model.FactConfidence(conf),
 			Severity: model.FactSeverityWarn, MeasuredAt: now,
 			Duration: dur, Kind: model.FactKindSaturation,
+			// no BaselineDelta — baseline gate fails
 		}
 	}
 	facts := []model.Fact{
-		mkF("f1", "pid:1234", 0.9, 10*time.Second),
-		mkF("f2", "cgroup:/system.slice/mongod.service", 0.85, 8*time.Second),
+		mkF("cpu.psi.avg10", "pid:1234", 0.9, 60, 10*time.Second),
+		mkF("cpu.busy", "cgroup:/system.slice/mongod.service", 0.85, 85, 8*time.Second),
 	}
 	out := v.Verify(c, facts, makeGraph())
 	if out.Tier != model.TierCProbable {

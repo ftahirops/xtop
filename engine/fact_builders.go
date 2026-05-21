@@ -78,6 +78,35 @@ func buildFactScoped(
 	return f
 }
 
+// stampFactBaselines fills Fact.BaselineDelta from the engine's EWMA
+// baseline tracker. Delta = current value − baseline mean. A positive
+// delta means the fact's value is above its historical baseline.
+//
+// NEXTGEN Phase 4.5: this unblocks the baseline-deviation gate on real
+// hosts. Without this stamping, BaselineDelta is always 0 and the gate
+// fail-closes on every candidate (correct conservative default; not
+// useful in production).
+//
+// Requires the baseline tracker to be warmed up for the metric. For
+// fresh hosts or new metrics, Get returns ok=false and we leave Delta
+// at 0 (baseline gate will continue to fail closed).
+func stampFactBaselines(result *model.AnalysisResult, hist *History) {
+	if result == nil || hist == nil || hist.Baselines == nil {
+		return
+	}
+	for i := range result.RCA {
+		entry := &result.RCA[i]
+		for j := range entry.Facts {
+			f := &entry.Facts[j]
+			mean, _, ok := hist.Baselines.Get(f.ID)
+			if !ok {
+				continue
+			}
+			f.BaselineDelta = f.Value - mean
+		}
+	}
+}
+
 // stampFactDurations mirrors Evidence.SustainedForSec into the matching
 // Fact.Duration on each RCAEntry. Facts and Evidence share the same ID
 // convention (cpu.psi.avg10 etc.), so the join is by-key.

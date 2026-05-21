@@ -219,6 +219,11 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History, 
 	// by ID — Facts and Evidence share the same ID convention.
 	stampFactDurations(result)
 
+	// NEXTGEN Phase 4.5: fill Fact.BaselineDelta from the EWMA tracker
+	// so the baseline-deviation gate can fire on real hosts. No-op for
+	// metrics that haven't warmed up yet.
+	stampFactBaselines(result, hist)
+
 	// Compute v2 domain confidence for each entry
 	for i := range result.RCA {
 		result.RCA[i].DomainConf = domainConfidence(result.RCA[i].EvidenceV2)
