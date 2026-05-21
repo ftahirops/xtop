@@ -336,6 +336,16 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History, 
 		}
 	}
 
+	// NEXTGEN Phase 2: flatten per-entry Facts into result.Facts so
+	// downstream consumers see a single typed-evidence stream. Domain
+	// analyzers attach Facts to their RCAEntry; this loop hoists them.
+	// Phase 4 will read result.Facts as the verifier input.
+	for i := range result.RCA {
+		if len(result.RCA[i].Facts) > 0 {
+			result.Facts = append(result.Facts, result.RCA[i].Facts...)
+		}
+	}
+
 	// NEXTGEN Phase 1B: the score-band Health decision is owned by
 	// finalize. Call it HERE (not at the end) so the downstream
 	// app-health-bridge and alert hysteresis read a properly-derived

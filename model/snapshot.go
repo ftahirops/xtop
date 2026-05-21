@@ -252,6 +252,13 @@ type AnalysisResult struct {
 	Health     HealthLevel
 	Confidence int // 0-100
 
+	// Facts is the typed-evidence layer (NEXTGEN Phase 2). Each entry
+	// is a single observation with full provenance — see Fact in
+	// model/fact.go. Phase 2 emits these in parallel to the legacy
+	// Evidence/EvidenceV2 fields; Phase 4 makes them the canonical
+	// input to the verifier gates.
+	Facts []Fact `json:"facts,omitempty"`
+
 	// Primary diagnosis
 	PrimaryBottleneck string
 	PrimaryScore      int
@@ -504,6 +511,10 @@ type RCAEntry struct {
 	Chain          []string
 	EvidenceV2     []Evidence      // v2 evidence objects (parallel to legacy Checks)
 	DomainConf     float64         // v2 domain confidence 0..0.98
+	// Facts is the NEXTGEN Phase 2 typed-evidence layer for this domain.
+	// Each entry is one observation. Emitted in parallel to EvidenceV2;
+	// Phase 4 makes Facts the canonical input to verifier gates.
+	Facts []Fact `json:"facts,omitempty"`
 }
 
 // Domain represents a resource domain for v2 evidence.

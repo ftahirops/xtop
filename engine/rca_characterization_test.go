@@ -94,6 +94,31 @@ func TestRCAInvariants(t *testing.T) {
 			if got, want := len(result.USEChecks), 4; got != want {
 				t.Errorf("invariant I9 violated: USEChecks length %d, want %d", got, want)
 			}
+			// I10 (NEXTGEN Phase 2): every Fact emitted is well-formed.
+			// CPU domain is the first migrated; future commits extend
+			// this assertion to memory/io/network as they migrate.
+			for i, f := range result.Facts {
+				if !f.IsValid() {
+					t.Errorf("invariant I10 violated: Facts[%d]=%+v failed IsValid()", i, f)
+				}
+				if f.Confidence < 0 || f.Confidence > 1.0 {
+					t.Errorf("invariant I10 violated: Facts[%d].Confidence=%v out of [0,1]",
+						i, f.Confidence)
+				}
+			}
+			// I11: CPU domain emits at least 6 facts (psi, busy, runqueue,
+			// ctxswitch, steal, cgroup.throttle). If a future commit
+			// removes one, this is intentional and the test should be
+			// updated alongside the change.
+			cpuFacts := 0
+			for _, f := range result.Facts {
+				if f.Domain == model.DomainCPU {
+					cpuFacts++
+				}
+			}
+			if cpuFacts < 6 {
+				t.Errorf("invariant I11 violated: CPU domain emitted %d facts, want >= 6", cpuFacts)
+			}
 		})
 	}
 }

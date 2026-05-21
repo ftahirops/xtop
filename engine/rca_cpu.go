@@ -2,9 +2,36 @@ package engine
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/ftahirops/xtop/model"
 )
+
+// buildCPUFact constructs a model.Fact for a CPU-domain observation.
+// Severity is inferred from value vs warn threshold; verifier gates
+// will refine this in Phase 4. Confidence is per-metric (kernel direct
+// vs derived) — see model.FactConfidence rubric.
+func buildCPUFact(id, metric string, value float64, unit string, warnThreshold float64,
+	conf float64, measuredAt time.Time, tags map[string]string) model.Fact {
+	sev := model.FactSeverityInfo
+	if value >= warnThreshold && warnThreshold > 0 {
+		sev = model.FactSeverityWarn
+	}
+	return model.Fact{
+		ID:         id,
+		Kind:       model.FactKindSaturation,
+		Source:     "procfs",
+		EntityID:   "host",
+		Domain:     model.DomainCPU,
+		Metric:     metric,
+		Value:      value,
+		Unit:       unit,
+		MeasuredAt: measuredAt,
+		Severity:   sev,
+		Confidence: model.FactConfidence(conf),
+		Tags:       tags,
+	}
+}
 
 // ---------- CPU Score ----------
 // Evidence groups: PSI, Run queue, Context switches, Throttling, Steal
@@ -96,6 +123,23 @@ func analyzeCPU(db *AdaptiveThresholdDB, curr *model.Snapshot, rates *model.Rate
 			maxThrottlePct, w5, c5, true, 0.8,
 			fmt.Sprintf("cgroup throttle=%.1f%% (%s)", maxThrottlePct, maxThrottleCg), "1s",
 			nil, map[string]string{"cgroup": maxThrottleCg}),
+	)
+
+	// NEXTGEN Phase 2: emit Facts in parallel to EvidenceV2 — same
+	// measurements, fully-typed. Phase 4 will switch verifier gates
+	// to read Facts and Phase 5 will serialize them for replay.
+	now := curr.Timestamp
+	if now.IsZero() {
+		now = time.Now()
+	}
+	r.Facts = append(r.Facts,
+		buildCPUFact("cpu.psi.avg10", "psi.avg10", cpuSome*100, "%", w, 0.9, now, nil),
+		buildCPUFact("cpu.busy", "busy_pct", busyPct, "%", wb, 0.85, now, nil),
+		buildCPUFact("cpu.runqueue", "runqueue_ratio", rqRatio, "", w2, 0.7, now, nil),
+		buildCPUFact("cpu.ctxswitch", "ctx_switches_per_core", csPerCore, "count/s", w3, 0.6, now, nil),
+		buildCPUFact("cpu.steal", "steal_pct", stealPct, "%", w4, 0.9, now, nil),
+		buildCPUFact("cpu.cgroup.throttle", "cgroup_throttle_pct", maxThrottlePct, "%", w5, 0.8, now,
+			map[string]string{"cgroup": maxThrottleCg}),
 	)
 
 	// .NET GC pause evidence: high time-in-GC adds CPU contention
