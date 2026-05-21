@@ -9,22 +9,17 @@ import (
 	"github.com/ftahirops/xtop/model"
 )
 
-// Package-level remnants for backward compat with external tooling.
+// Package-level remnant for backward compat with external tooling that
+// inspects the probabilistic causal graph.
 //
 // NEXTGEN Phase 1 + 1A removed the dependency on these globals from
 // the engine code itself:
 //   - adaptiveThresholdDB: deleted — DB now threaded explicitly through
 //     AnalyzeRCA → analyze{IO,CPU,Memory,Network} + InjectAppEvidence
-//   - probabilisticCausalGraph: read via e.probabilisticCausalGraph
-//   - topologyCorrelator: never read outside initialization
-//
-// The two globals below stay so that any out-of-tree code that inspects
-// them keeps working; remove in NEXTGEN Phase 2+ once the public API
-// surfaces are formalized.
-var (
-	probabilisticCausalGraph *ProbabilisticCausalGraph
-	topologyCorrelator       *TopologyCorrelator
-)
+//   - probabilisticCausalGraph: read via e.probabilisticCausalGraph;
+//     global stays for any out-of-tree inspector
+//   - topologyCorrelator: deleted (zero readers)
+var probabilisticCausalGraph *ProbabilisticCausalGraph
 
 const (
 	BottleneckIO      = "IO Starvation"

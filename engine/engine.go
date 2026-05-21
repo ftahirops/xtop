@@ -234,10 +234,10 @@ func NewEngineMode(historySize, intervalSec int, mode collector.Mode) *Engine {
 	e.adaptiveThresholdDB = adaptiveDB
 	e.probabilisticCausalGraph = causalGraph
 	e.topologyCorrelator = topology
-	// NEXTGEN Phase 1A: adaptiveThresholdDB global removed — the DB is
-	// threaded through AnalyzeRCA → domain analyzers explicitly.
+	// NEXTGEN Phase 1A: adaptiveThresholdDB + topologyCorrelator
+	// globals removed. probabilisticCausalGraph global retained for
+	// out-of-tree inspectors.
 	probabilisticCausalGraph = causalGraph
-	topologyCorrelator = topology
 
 	// FastPulse: sub-second PSI sampler that refines per-evidence
 	// SustainedForSec. Off by default in lean (agent) mode to keep the
