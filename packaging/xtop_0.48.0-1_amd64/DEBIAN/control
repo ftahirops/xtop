@@ -1,0 +1,60 @@
+Package: xtop
+Version: 0.48.0-1
+Section: admin
+Priority: optional
+Architecture: amd64
+Depends: libc6
+Recommends: postgresql, journalctl
+Installed-Size: 37740
+Maintainer: Farhan Tahir <farhan.003@gmail.com>
+Homepage: https://github.com/ftahirops/xtop
+Description: Incident-first root-cause analysis console for Linux
+ v0.48.0 — NEXTGEN architecture milestone. The RCA engine now has
+ the structural primitives of an enterprise-grade proof system:
+ typed evidence, entity graph, multi-gate verifier with strict
+ abstention, and an offline replay corpus.
+ .
+ Five phases of NEXTGEN_RCA_ARCHITECTURE.md are now in production:
+ .
+   Phase 1 — Correctness & Stability
+     * 3 package-global RCA state pieces removed
+     * single finalization point (Engine.finalize)
+     * two engines in one process verified isolated by test
+ .
+   Phase 2 — Typed Fact evidence
+     * new model.Fact with 18 fields + provenance
+     * 23 typed facts emitted per tick (CPU 6, Memory 7, IO 6,
+       Network 4) with per-metric Confidence scores
+     * lossless JSON roundtrip — facts are replay-ready
+ .
+   Phase 3 — Entity graph
+     * new model.Entity + model.EntityGraph with O(1) lookup
+     * BuildEntityGraph() each tick from process+cgroup tree
+     * Fact.EntityID resolves through the graph for ownership
+       reasoning
+ .
+   Phase 4 — Multi-gate verifier with 4-tier output
+     * Tier A/B/C/D output with full gate audit trail
+     * 5 gates: signal_quality, ownership_consistency,
+       temporal_ordering, baseline_deviation, counter_evidence
+     * abstain-by-default semantics — engine refuses to commit
+       to a strong verdict when proof is weak
+ .
+   Phase 5 — Replay corpus + measurement harness
+     * automatic capture to ~/.xtop/incidents/
+     * new xtop replay subcommand with per-mechanism precision
+       rollup, single-frame audit, deterministic replay
+ .
+ 18 structural invariants now run on every analysis tick.
+ New packages: engine/verifier (5 gate impls + framework),
+ engine/replay (offline harness).
+ .
+ HONEST ABOUT PRECISION: the 0.1% false-positive design target
+ from NEXTGEN is now ARCHITECTURALLY ACHIEVABLE but NOT YET
+ MEASURED. Architecturally because every primitive is in place;
+ not measured because that requires operators to label the captured
+ corpus. See docs/NEXTGEN_STATUS.md for full details.
+ .
+ All v0.47.x features (PHP-FPM diagnostics, Plesk/cPanel multi-pool
+ support, ghost-site detection, web-shell scanner with defensive-
+ code detection, etc.) remain intact.

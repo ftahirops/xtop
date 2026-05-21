@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/xtop-v0.47.11-00d4aa?style=for-the-badge&logo=linux&logoColor=white" alt="version"/>
+  <img src="https://img.shields.io/badge/xtop-v0.48.0-00d4aa?style=for-the-badge&logo=linux&logoColor=white" alt="version"/>
   <img src="https://img.shields.io/badge/Go-1.25+-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="go"/>
   <img src="https://img.shields.io/badge/eBPF-Powered-ff6600?style=for-the-badge&logo=linux&logoColor=white" alt="ebpf"/>
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="license"/>
@@ -38,6 +38,22 @@
 </p>
 
 ---
+
+## What is new in v0.48.0
+
+**NEXTGEN architecture milestone — five phases of the proof-system refactor land in production.** The RCA engine now has typed evidence, an entity graph, a 5-gate verifier with strict abstention, and an offline replay corpus. The structural primitives required for a 0.1% false-positive precision target are all in place; what remains is operator-driven calibration via the captured corpus. See `docs/NEXTGEN_STATUS.md` for the honest per-phase landing report.
+
+- **Phase 1 — Correctness & Stability.** Removed 2 of 3 package-global RCA state pieces. Single finalization point (`Engine.finalize`) — score-band Health decision in one place, hysteresis as a separate late-stage call. Two engines in one process verified isolated by test.
+- **Phase 2 — Typed Fact evidence.** New `model.Fact` with 18 fields + JSON tags + provenance. Every signal becomes a Fact with per-metric Confidence (1.0 kernel-direct → 0.6 interpretation). 23 typed facts emitted per tick at full coverage (CPU 6, Memory 7, IO 6, Network 4). Lossless JSON roundtrip — facts are replay-ready.
+- **Phase 3 — Entity graph.** New `model.Entity` + `model.EntityGraph` with O(1) lookup, cycle-guarded ancestor walk. `BuildEntityGraph()` constructs process + cgroup ownership tree each tick (~100µs on 500-proc host). Fact.EntityID resolves through the graph for ownership reasoning.
+- **Phase 4 — Multi-gate verifier with 4-tier output.** `model.VerifiedCause` carrying Tier A confirmed / B verified / C probable / D inconclusive with full per-gate audit trail. 5 gates: `signal_quality`, `ownership_consistency`, `temporal_ordering`, `baseline_deviation`, `counter_evidence`. Abstain-by-default semantics — engine refuses to commit when proof is weak. Tier A reachable only when all 5 gates pass.
+- **Phase 5 — Replay corpus.** Automatic capture of non-OK ticks to `~/.xtop/incidents/`. New `xtop replay` subcommand replays captured frames against the current verifier and reports per-mechanism tier-match (determinism check). When operators add labels (TP/FP/FN/TN), the harness computes per-mechanism precision — the substrate of the NEXTGEN §7 precision program.
+
+**Honest about the 0.1% target.** The architecture is achievable; the number isn't yet measured. Operators must label the captured corpus to convert "the engine abstains a lot" into "FP rate is 0.X% per mechanism on a 500-incident labeled corpus." Anyone claiming the number without showing the labeled corpus is selling fiction.
+
+**18 structural invariants** now run on every analysis tick — protecting RCA shape (I1-9), fact well-formedness (I10-11), entity graph integrity (I12-14), verifier output contract (I15-17), and replay-harness contract (I18).
+
+All v0.47.x features (PHP-FPM diagnostics, Plesk/cPanel multi-pool support, ghost-site detection, web-shell scanner with defensive-code detection, ClickHouse renderer) remain intact and unchanged.
 
 ## What is new in v0.47.11
 
@@ -678,12 +694,12 @@ xtop -cron-install
 
 ```bash
 # Ubuntu/Debian (amd64)
-wget https://github.com/ftahirops/xtop/releases/download/v0.47.11/xtop_0.47.11-1_amd64.deb
-sudo dpkg -i xtop_0.47.11-1_amd64.deb
+wget https://github.com/ftahirops/xtop/releases/download/v0.48.0/xtop_0.48.0-1_amd64.deb
+sudo dpkg -i xtop_0.48.0-1_amd64.deb
 
 # RHEL/Rocky/Fedora (x86_64)
-wget https://github.com/ftahirops/xtop/releases/download/v0.47.11/xtop-0.47.11-1.x86_64.rpm
-sudo rpm -i xtop-0.47.11-1.x86_64.rpm
+wget https://github.com/ftahirops/xtop/releases/download/v0.48.0/xtop-0.48.0-1.x86_64.rpm
+sudo rpm -i xtop-0.48.0-1.x86_64.rpm
 
 # Arch Linux
 git clone https://github.com/ftahirops/xtop.git
@@ -695,7 +711,7 @@ cd xtop/packaging/archlinux && makepkg -si
 ```bash
 git clone https://github.com/ftahirops/xtop.git
 cd xtop
-CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.47.11" -o xtop .
+CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.48.0" -o xtop .
 sudo install -m 755 xtop /usr/local/bin/xtop
 ```
 
@@ -727,15 +743,15 @@ sudo xtop -json | jq   # JSON for scripting
 ### From .deb Package (Ubuntu 22.04/24.04, Debian)
 
 ```bash
-wget https://github.com/ftahirops/xtop/releases/download/v0.47.11/xtop_0.47.11-1_amd64.deb
-sudo dpkg -i xtop_0.47.11-1_amd64.deb
+wget https://github.com/ftahirops/xtop/releases/download/v0.48.0/xtop_0.48.0-1_amd64.deb
+sudo dpkg -i xtop_0.48.0-1_amd64.deb
 ```
 
 ### From .rpm Package (Rocky Linux, RHEL, AlmaLinux, Fedora)
 
 ```bash
-wget https://github.com/ftahirops/xtop/releases/download/v0.47.11/xtop-0.47.11-1.x86_64.rpm
-sudo rpm -i xtop-0.47.11-1.x86_64.rpm
+wget https://github.com/ftahirops/xtop/releases/download/v0.48.0/xtop-0.48.0-1.x86_64.rpm
+sudo rpm -i xtop-0.48.0-1.x86_64.rpm
 ```
 
 ### Arch Linux (PKGBUILD)
@@ -757,7 +773,7 @@ Builds from source automatically. Optional dependencies: `nvidia-utils` (GPU mon
 ```bash
 git clone https://github.com/ftahirops/xtop.git
 cd xtop
-CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.47.11" -o xtop .
+CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.48.0" -o xtop .
 sudo install -m 755 xtop /usr/local/bin/xtop
 ```
 
