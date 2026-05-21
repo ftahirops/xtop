@@ -64,7 +64,12 @@ func threshold(id string, defaultWarn, defaultCrit float64) (float64, float64) {
 // thresholdAdaptive is like threshold but also checks the adaptive threshold
 // DB when a current snapshot is available. Callers from the domain detectors
 // should use this to get workload-aware thresholds.
-func thresholdAdaptive(id string, defaultWarn, defaultCrit float64, curr *model.Snapshot) (float64, float64) {
+// thresholdAdaptive consults the static threshold profile then the
+// adaptive DB. NEXTGEN Phase 1A: the DB is now a first-class parameter
+// (not a package global), so callers must thread it from the Engine.
+// Pass nil when no adaptive DB is available (tests, fallback paths) —
+// the static profile + defaults are still honored.
+func thresholdAdaptive(db *AdaptiveThresholdDB, id string, defaultWarn, defaultCrit float64, curr *model.Snapshot) (float64, float64) {
 	// Check static profile first
 	if ActiveProfile != nil {
 		if ov, ok := ActiveProfile[id]; ok {
@@ -72,8 +77,8 @@ func thresholdAdaptive(id string, defaultWarn, defaultCrit float64, curr *model.
 		}
 	}
 	// Check adaptive DB
-	if adaptiveThresholdDB != nil && curr != nil {
-		w, c := AdaptiveThreshold(adaptiveThresholdDB, curr, id, defaultWarn, defaultCrit)
+	if db != nil && curr != nil {
+		w, c := AdaptiveThreshold(db, curr, id, defaultWarn, defaultCrit)
 		if w != defaultWarn || c != defaultCrit {
 			return w, c
 		}

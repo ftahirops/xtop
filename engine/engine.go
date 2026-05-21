@@ -234,7 +234,8 @@ func NewEngineMode(historySize, intervalSec int, mode collector.Mode) *Engine {
 	e.adaptiveThresholdDB = adaptiveDB
 	e.probabilisticCausalGraph = causalGraph
 	e.topologyCorrelator = topology
-	adaptiveThresholdDB = adaptiveDB
+	// NEXTGEN Phase 1A: adaptiveThresholdDB global removed — the DB is
+	// threaded through AnalyzeRCA → domain analyzers explicitly.
 	probabilisticCausalGraph = causalGraph
 	topologyCorrelator = topology
 

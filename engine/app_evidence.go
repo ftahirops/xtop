@@ -32,14 +32,14 @@ func appFloat(m map[string]string, key string) (float64, bool) {
 
 // InjectIOEvidence scans app metrics and appends IO-domain evidence.
 // Called from analyzeIO after system-level evidence is gathered.
-func (aei *AppEvidenceInjector) InjectIOEvidence(curr *model.Snapshot, r *model.RCAEntry) {
+func (aei *AppEvidenceInjector) InjectIOEvidence(db *AdaptiveThresholdDB, curr *model.Snapshot, r *model.RCAEntry) {
 	for _, app := range curr.Global.Apps.Instances {
 		switch app.AppType {
 		case "mysql", "mariadb":
 			if ratio, ok := appFloat(app.DeepMetrics, "buffer_pool_hit_ratio"); ok && ratio > 0 {
 				missPct := (1 - ratio) * 100
 				if missPct >= 5 {
-					w, c := thresholdAdaptive("app.mysql.buffer_miss", 5, 15, curr)
+					w, c := thresholdAdaptive(db, "app.mysql.buffer_miss", 5, 15, curr)
 					conf := 0.85
 					if missPct >= 15 {
 						conf = 0.95
@@ -52,7 +52,7 @@ func (aei *AppEvidenceInjector) InjectIOEvidence(curr *model.Snapshot, r *model.
 			}
 			if pending, ok := appFloat(app.DeepMetrics, "innodb_pending_flushes"); ok && pending > 0 {
 				if pending >= 10 {
-					w, c := thresholdAdaptive("app.mysql.flush_pressure", 10, 50, curr)
+					w, c := thresholdAdaptive(db, "app.mysql.flush_pressure", 10, 50, curr)
 					r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("app.mysql.flush_pressure", model.DomainIO,
 						pending, w, c, true, 0.9,
 						fmt.Sprintf("MySQL flush pressure: %.0f pending flushes", pending), "1s",
@@ -61,7 +61,7 @@ func (aei *AppEvidenceInjector) InjectIOEvidence(curr *model.Snapshot, r *model.
 			}
 			if slow, ok := appFloat(app.DeepMetrics, "slow_queries_rate"); ok && slow > 0 {
 				if slow >= 1 {
-					w, c := thresholdAdaptive("app.mysql.slow_queries", 1, 10, curr)
+					w, c := thresholdAdaptive(db, "app.mysql.slow_queries", 1, 10, curr)
 					r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("app.mysql.slow_queries", model.DomainIO,
 						slow, w, c, true, 0.8,
 						fmt.Sprintf("MySQL slow queries=%.1f/s", slow), "1s",
@@ -72,7 +72,7 @@ func (aei *AppEvidenceInjector) InjectIOEvidence(curr *model.Snapshot, r *model.
 		case "mongodb":
 			if dirty, ok := appFloat(app.DeepMetrics, "wiredtiger_cache_dirty_pct"); ok && dirty > 0 {
 				if dirty >= 10 {
-					w, c := thresholdAdaptive("app.mongodb.dirty_cache", 10, 25, curr)
+					w, c := thresholdAdaptive(db, "app.mongodb.dirty_cache", 10, 25, curr)
 					r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("app.mongodb.dirty_cache", model.DomainIO,
 						dirty, w, c, true, 0.9,
 						fmt.Sprintf("MongoDB WiredTiger dirty cache %.1f%%", dirty), "1s",
@@ -81,7 +81,7 @@ func (aei *AppEvidenceInjector) InjectIOEvidence(curr *model.Snapshot, r *model.
 			}
 			if tickets, ok := appFloat(app.DeepMetrics, "wiredtiger_read_tickets"); ok && tickets > 0 {
 				if tickets >= 100 {
-					w, c := thresholdAdaptive("app.mongodb.ticket_exhaustion", 100, 200, curr)
+					w, c := thresholdAdaptive(db, "app.mongodb.ticket_exhaustion", 100, 200, curr)
 					r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("app.mongodb.ticket_exhaustion", model.DomainIO,
 						tickets, w, c, true, 0.85,
 						fmt.Sprintf("MongoDB read tickets=%.0f (cache contention)", tickets), "1s",
@@ -90,7 +90,7 @@ func (aei *AppEvidenceInjector) InjectIOEvidence(curr *model.Snapshot, r *model.
 			}
 			if pageFaults, ok := appFloat(app.DeepMetrics, "page_faults_delta"); ok && pageFaults > 0 {
 				if pageFaults >= 100 {
-					w, c := thresholdAdaptive("app.mongodb.page_faults", 100, 500, curr)
+					w, c := thresholdAdaptive(db, "app.mongodb.page_faults", 100, 500, curr)
 					r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("app.mongodb.page_faults", model.DomainIO,
 						pageFaults, w, c, true, 0.8,
 						fmt.Sprintf("MongoDB page faults=%.0f/s", pageFaults), "1s",
@@ -101,7 +101,7 @@ func (aei *AppEvidenceInjector) InjectIOEvidence(curr *model.Snapshot, r *model.
 		case "elasticsearch":
 			if merge, ok := appFloat(app.DeepMetrics, "merge_current"); ok && merge > 0 {
 				if merge >= 5 {
-					w, c := thresholdAdaptive("app.es.merge_io", 5, 20, curr)
+					w, c := thresholdAdaptive(db, "app.es.merge_io", 5, 20, curr)
 					r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("app.es.merge_io", model.DomainIO,
 						merge, w, c, true, 0.75,
 						fmt.Sprintf("ES merge operations=%.0f active", merge), "1s",
@@ -113,13 +113,13 @@ func (aei *AppEvidenceInjector) InjectIOEvidence(curr *model.Snapshot, r *model.
 }
 
 // InjectMemoryEvidence scans app metrics and appends Memory-domain evidence.
-func (aei *AppEvidenceInjector) InjectMemoryEvidence(curr *model.Snapshot, r *model.RCAEntry) {
+func (aei *AppEvidenceInjector) InjectMemoryEvidence(db *AdaptiveThresholdDB, curr *model.Snapshot, r *model.RCAEntry) {
 	for _, app := range curr.Global.Apps.Instances {
 		switch app.AppType {
 		case "redis":
 			if usedPct, ok := appFloat(app.DeepMetrics, "used_memory_pct"); ok && usedPct > 0 {
 				if usedPct >= 80 {
-					w, c := thresholdAdaptive("app.redis.memory_pressure", 80, 95, curr)
+					w, c := thresholdAdaptive(db, "app.redis.memory_pressure", 80, 95, curr)
 					conf := 0.85
 					if usedPct >= 95 {
 						conf = 0.95
@@ -132,7 +132,7 @@ func (aei *AppEvidenceInjector) InjectMemoryEvidence(curr *model.Snapshot, r *mo
 			}
 			if evict, ok := appFloat(app.DeepMetrics, "evicted_keys_delta"); ok && evict > 0 {
 				if evict >= 10 {
-					w, c := thresholdAdaptive("app.redis.evictions", 10, 1000, curr)
+					w, c := thresholdAdaptive(db, "app.redis.evictions", 10, 1000, curr)
 					r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("app.redis.evictions", model.DomainMemory,
 						evict, w, c, true, 0.9,
 						fmt.Sprintf("Redis evictions=%.0f keys/s", evict), "1s",
@@ -143,7 +143,7 @@ func (aei *AppEvidenceInjector) InjectMemoryEvidence(curr *model.Snapshot, r *mo
 		case "mysql", "mariadb":
 			if bpUsage, ok := appFloat(app.DeepMetrics, "buffer_pool_used_pct"); ok && bpUsage > 0 {
 				if bpUsage >= 95 {
-					w, c := thresholdAdaptive("app.mysql.buffer_full", 95, 99, curr)
+					w, c := thresholdAdaptive(db, "app.mysql.buffer_full", 95, 99, curr)
 					r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("app.mysql.buffer_full", model.DomainMemory,
 						bpUsage, w, c, true, 0.8,
 						fmt.Sprintf("MySQL buffer pool %.1f%% full", bpUsage), "1s",
@@ -154,7 +154,7 @@ func (aei *AppEvidenceInjector) InjectMemoryEvidence(curr *model.Snapshot, r *mo
 		case "mongodb":
 			if cachePct, ok := appFloat(app.DeepMetrics, "wiredtiger_cache_usage_pct"); ok && cachePct > 0 {
 				if cachePct >= 90 {
-					w, c := thresholdAdaptive("app.mongodb.cache_pressure", 90, 98, curr)
+					w, c := thresholdAdaptive(db, "app.mongodb.cache_pressure", 90, 98, curr)
 					conf := 0.85
 					if cachePct >= 98 {
 						conf = 0.95
@@ -169,7 +169,7 @@ func (aei *AppEvidenceInjector) InjectMemoryEvidence(curr *model.Snapshot, r *mo
 		case "elasticsearch":
 			if heapPct, ok := appFloat(app.DeepMetrics, "jvm_heap_used_pct"); ok && heapPct > 0 {
 				if heapPct >= 85 {
-					w, c := thresholdAdaptive("app.es.heap_pressure", 85, 95, curr)
+					w, c := thresholdAdaptive(db, "app.es.heap_pressure", 85, 95, curr)
 					r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("app.es.heap_pressure", model.DomainMemory,
 						heapPct, w, c, true, 0.85,
 						fmt.Sprintf("ES JVM heap %.1f%%", heapPct), "1s",
@@ -180,7 +180,7 @@ func (aei *AppEvidenceInjector) InjectMemoryEvidence(curr *model.Snapshot, r *mo
 		case "memcached":
 			if bytesPct, ok := appFloat(app.DeepMetrics, "bytes_used_pct"); ok && bytesPct > 0 {
 				if bytesPct >= 90 {
-					w, c := thresholdAdaptive("app.memcached.memory_pressure", 90, 98, curr)
+					w, c := thresholdAdaptive(db, "app.memcached.memory_pressure", 90, 98, curr)
 					r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("app.memcached.memory_pressure", model.DomainMemory,
 						bytesPct, w, c, true, 0.8,
 						fmt.Sprintf("Memcached memory %.1f%%", bytesPct), "1s",
@@ -192,13 +192,13 @@ func (aei *AppEvidenceInjector) InjectMemoryEvidence(curr *model.Snapshot, r *mo
 }
 
 // InjectCPUEvidence scans app metrics and appends CPU-domain evidence.
-func (aei *AppEvidenceInjector) InjectCPUEvidence(curr *model.Snapshot, r *model.RCAEntry) {
+func (aei *AppEvidenceInjector) InjectCPUEvidence(db *AdaptiveThresholdDB, curr *model.Snapshot, r *model.RCAEntry) {
 	for _, app := range curr.Global.Apps.Instances {
 		switch app.AppType {
 		case "mysql", "mariadb":
 			if threads, ok := appFloat(app.DeepMetrics, "threads_running"); ok && threads > 0 {
 				if threads >= 20 {
-					w, c := thresholdAdaptive("app.mysql.thread_contention", 20, 100, curr)
+					w, c := thresholdAdaptive(db, "app.mysql.thread_contention", 20, 100, curr)
 					r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("app.mysql.thread_contention", model.DomainCPU,
 						threads, w, c, true, 0.8,
 						fmt.Sprintf("MySQL threads_running=%.0f", threads), "1s",
@@ -209,7 +209,7 @@ func (aei *AppEvidenceInjector) InjectCPUEvidence(curr *model.Snapshot, r *model
 		case "mongodb":
 			if lockQueue, ok := appFloat(app.DeepMetrics, "lock_queue_total"); ok && lockQueue > 0 {
 				if lockQueue >= 5 {
-					w, c := thresholdAdaptive("app.mongodb.lock_contention", 5, 20, curr)
+					w, c := thresholdAdaptive(db, "app.mongodb.lock_contention", 5, 20, curr)
 					r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("app.mongodb.lock_contention", model.DomainCPU,
 						lockQueue, w, c, true, 0.85,
 						fmt.Sprintf("MongoDB lock queue=%.0f", lockQueue), "1s",
@@ -218,7 +218,7 @@ func (aei *AppEvidenceInjector) InjectCPUEvidence(curr *model.Snapshot, r *model
 			}
 			if active, ok := appFloat(app.DeepMetrics, "global_lock_active_clients"); ok && active > 0 {
 				if active >= 50 {
-					w, c := thresholdAdaptive("app.mongodb.active_clients", 50, 200, curr)
+					w, c := thresholdAdaptive(db, "app.mongodb.active_clients", 50, 200, curr)
 					r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("app.mongodb.active_clients", model.DomainCPU,
 						active, w, c, true, 0.75,
 						fmt.Sprintf("MongoDB active clients=%.0f", active), "1s",
@@ -231,7 +231,7 @@ func (aei *AppEvidenceInjector) InjectCPUEvidence(curr *model.Snapshot, r *model
 				if max, ok := appFloat(app.DeepMetrics, "max_connections"); ok && max > 0 {
 					pct := active / max * 100
 					if pct >= 80 {
-						w, c := thresholdAdaptive("app.pgsql.connection_pressure", 80, 95, curr)
+						w, c := thresholdAdaptive(db, "app.pgsql.connection_pressure", 80, 95, curr)
 						r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("app.pgsql.connection_pressure", model.DomainCPU,
 							pct, w, c, true, 0.8,
 							fmt.Sprintf("PostgreSQL connections %.0f/%.0f (%.0f%%)", active, max, pct), "1s",
@@ -245,7 +245,7 @@ func (aei *AppEvidenceInjector) InjectCPUEvidence(curr *model.Snapshot, r *model
 				if max, ok := appFloat(app.DeepMetrics, "max_children"); ok && max > 0 {
 					pct := active / max * 100
 					if pct >= 80 {
-						w, c := thresholdAdaptive("app.phpfpm.worker_saturation", 80, 95, curr)
+						w, c := thresholdAdaptive(db, "app.phpfpm.worker_saturation", 80, 95, curr)
 						r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("app.phpfpm.worker_saturation", model.DomainCPU,
 							pct, w, c, true, 0.85,
 							fmt.Sprintf("PHP-FPM workers %.0f/%.0f (%.0f%%)", active, max, pct), "1s",
@@ -258,13 +258,13 @@ func (aei *AppEvidenceInjector) InjectCPUEvidence(curr *model.Snapshot, r *model
 }
 
 // InjectNetworkEvidence scans app metrics and appends Network-domain evidence.
-func (aei *AppEvidenceInjector) InjectNetworkEvidence(curr *model.Snapshot, r *model.RCAEntry) {
+func (aei *AppEvidenceInjector) InjectNetworkEvidence(db *AdaptiveThresholdDB, curr *model.Snapshot, r *model.RCAEntry) {
 	for _, app := range curr.Global.Apps.Instances {
 		switch app.AppType {
 		case "nginx":
 			if drops, ok := appFloat(app.DeepMetrics, "dropped_connections"); ok && drops > 0 {
 				if drops >= 1 {
-					w, c := thresholdAdaptive("app.nginx.dropped_conns", 1, 50, curr)
+					w, c := thresholdAdaptive(db, "app.nginx.dropped_conns", 1, 50, curr)
 					r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("app.nginx.dropped_conns", model.DomainNetwork,
 						drops, w, c, true, 0.85,
 						fmt.Sprintf("Nginx dropped connections=%.0f/s", drops), "1s",
@@ -275,7 +275,7 @@ func (aei *AppEvidenceInjector) InjectNetworkEvidence(curr *model.Snapshot, r *m
 				if maxConn, ok := appFloat(app.DeepMetrics, "max_connections"); ok && maxConn > 0 {
 					pct := waiting / maxConn * 100
 					if pct >= 80 {
-						w, c := thresholdAdaptive("app.nginx.conn_saturation", 80, 95, curr)
+						w, c := thresholdAdaptive(db, "app.nginx.conn_saturation", 80, 95, curr)
 						r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("app.nginx.conn_saturation", model.DomainNetwork,
 							pct, w, c, true, 0.8,
 							fmt.Sprintf("Nginx waiting=%.0f max=%.0f (%.0f%%)", waiting, maxConn, pct), "1s",
@@ -287,7 +287,7 @@ func (aei *AppEvidenceInjector) InjectNetworkEvidence(curr *model.Snapshot, r *m
 		case "mysql", "mariadb":
 			if aborted, ok := appFloat(app.DeepMetrics, "aborted_connects_delta"); ok && aborted > 0 {
 				if aborted >= 1 {
-					w, c := thresholdAdaptive("app.mysql.aborted_conns", 1, 10, curr)
+					w, c := thresholdAdaptive(db, "app.mysql.aborted_conns", 1, 10, curr)
 					r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("app.mysql.aborted_conns", model.DomainNetwork,
 						aborted, w, c, true, 0.75,
 						fmt.Sprintf("MySQL aborted connects=%.0f/s", aborted), "1s",
@@ -298,7 +298,7 @@ func (aei *AppEvidenceInjector) InjectNetworkEvidence(curr *model.Snapshot, r *m
 		case "redis":
 			if rejected, ok := appFloat(app.DeepMetrics, "rejected_connections_delta"); ok && rejected > 0 {
 				if rejected >= 1 {
-					w, c := thresholdAdaptive("app.redis.rejected_conns", 1, 10, curr)
+					w, c := thresholdAdaptive(db, "app.redis.rejected_conns", 1, 10, curr)
 					r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("app.redis.rejected_conns", model.DomainNetwork,
 						rejected, w, c, true, 0.85,
 						fmt.Sprintf("Redis rejected connections=%.0f/s", rejected), "1s",
@@ -312,7 +312,7 @@ func (aei *AppEvidenceInjector) InjectNetworkEvidence(curr *model.Snapshot, r *m
 			}
 			if queue, ok := appFloat(app.DeepMetrics, "thread_pool_search_queue"); ok && queue > 0 {
 				if queue >= 50 {
-					w, c := thresholdAdaptive("app.es.search_queue", 50, 200, curr)
+					w, c := thresholdAdaptive(db, "app.es.search_queue", 50, 200, curr)
 					r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("app.es.search_queue", model.DomainNetwork,
 						queue, w, c, true, 0.75,
 						fmt.Sprintf("ES search queue=%.0f", queue), "1s",

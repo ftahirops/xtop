@@ -8,7 +8,7 @@ import (
 
 // ---------- CPU Score ----------
 // Evidence groups: PSI, Run queue, Context switches, Throttling, Steal
-func analyzeCPU(curr *model.Snapshot, rates *model.RateSnapshot, sp systemProfile) model.RCAEntry {
+func analyzeCPU(db *AdaptiveThresholdDB, curr *model.Snapshot, rates *model.RateSnapshot, sp systemProfile) model.RCAEntry {
 	r := model.RCAEntry{Bottleneck: BottleneckCPU}
 
 	cpuSome := curr.Global.PSI.CPU.Some.Avg10 / 100
@@ -65,12 +65,12 @@ func analyzeCPU(curr *model.Snapshot, rates *model.RateSnapshot, sp systemProfil
 	}
 
 	// --- v2 evidence ---
-	w, c := thresholdAdaptive("cpu.psi", 5, 20, curr)
-	wb, cb := thresholdAdaptive("cpu.busy", 60, 90, curr)
-	w2, c2 := thresholdAdaptive("cpu.runqueue", 1.0, 2.0, curr)
-	w3, c3 := thresholdAdaptive("cpu.ctxswitch", 2000, 10000, curr)
-	w4, c4 := thresholdAdaptive("cpu.steal", 5, 15, curr)
-	w5, c5 := thresholdAdaptive("cpu.cgroup.throttle", 5, 25, curr)
+	w, c := thresholdAdaptive(db, "cpu.psi", 5, 20, curr)
+	wb, cb := thresholdAdaptive(db, "cpu.busy", 60, 90, curr)
+	w2, c2 := thresholdAdaptive(db, "cpu.runqueue", 1.0, 2.0, curr)
+	w3, c3 := thresholdAdaptive(db, "cpu.ctxswitch", 2000, 10000, curr)
+	w4, c4 := thresholdAdaptive(db, "cpu.steal", 5, 15, curr)
+	w5, c5 := thresholdAdaptive(db, "cpu.cgroup.throttle", 5, 25, curr)
 	r.EvidenceV2 = append(r.EvidenceV2,
 		emitEvidence("cpu.psi", model.DomainCPU,
 			cpuSome*100, w, c, true, 0.9,
@@ -163,7 +163,7 @@ func analyzeCPU(curr *model.Snapshot, rates *model.RateSnapshot, sp systemProfil
 
 	// IOWait evidence: CPU time waiting on IO (cross-domain signal, Gregg USE: Errors for CPU)
 	if iowaitPct > cpuIOWaitMinPct {
-		w6, c6 := thresholdAdaptive("cpu.iowait", 10, 30, curr)
+		w6, c6 := thresholdAdaptive(db, "cpu.iowait", 10, 30, curr)
 		r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("cpu.iowait", model.DomainCPU,
 			iowaitPct, w6, c6, true, 0.8,
 			fmt.Sprintf("CPU iowait=%.1f%%", iowaitPct), "1s",
@@ -172,7 +172,7 @@ func analyzeCPU(curr *model.Snapshot, rates *model.RateSnapshot, sp systemProfil
 
 	// IRQ imbalance: single CPU handling disproportionate softIRQ load (Gregg: check /proc/softirqs)
 	if irqImbalanceRatio > cpuIRQImbalanceMinRatio {
-		w7, c7 := thresholdAdaptive("cpu.irq.imbalance", 5, 10, curr)
+		w7, c7 := thresholdAdaptive(db, "cpu.irq.imbalance", 5, 10, curr)
 		r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("cpu.irq.imbalance", model.DomainCPU,
 			irqImbalanceRatio, w7, c7, true, 0.65,
 			fmt.Sprintf("softIRQ imbalance ratio=%.1fx (one CPU hot)", irqImbalanceRatio), "1s",
@@ -191,7 +191,7 @@ func analyzeCPU(curr *model.Snapshot, rates *model.RateSnapshot, sp systemProfil
 
 	// Phase 1: app-aware evidence injection
 	appInjector := NewAppEvidenceInjector()
-	appInjector.InjectCPUEvidence(curr, &r)
+	appInjector.InjectCPUEvidence(db, curr, &r)
 
 	// v2 scoring
 	v2Score := weightedDomainScore(r.EvidenceV2)

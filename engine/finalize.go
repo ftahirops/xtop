@@ -4,25 +4,27 @@ import "github.com/ftahirops/xtop/model"
 
 // finalize is the single, idempotent mutation point for the three
 // "summary" fields on AnalysisResult: PrimaryScore, Health, and
-// Confidence. Per NEXTGEN Phase 1 task 4, all other pipeline stages
-// must treat these as inputs to read, not values to write — and the
-// last statement of AnalyzeRCA is e.finalize(result, hist).
+// Confidence. Per NEXTGEN Phase 1 task 4 + Phase 1A task 3, all other
+// pipeline stages should treat these as inputs to read, not values to
+// write — and the last statement of AnalyzeRCA is e.finalize(result, hist).
 //
-// This file deliberately starts MINIMAL. The current behavior of
-// AnalyzeRCA mutates these fields at ~10 scattered sites; migrating
-// each one is a separate, characterizable step. Phase 1 ships the
-// SHAPE of the contract (a centralized hook + tests guarding its
-// properties) without forcing a wholesale move that risks behavior
-// regression.
-//
-// Properties this function guarantees (and the tests verify):
+// Properties this function guarantees (verified by tests):
 //   - Idempotent: calling finalize twice on the same result is a no-op.
-//   - Score-bounded: PrimaryScore is clamped to [0,100] before return.
+//   - Score-bounded: PrimaryScore is clamped to [0,100].
 //   - Confidence-bounded: Confidence is clamped to [0,100].
+//   - OK-when-zero invariant: PrimaryScore == 0 implies Health == OK
+//     AND Confidence == rcaHealthOKConfidence (this is the I6 invariant
+//     from rca_characterization_test.go, now enforced as a contract by
+//     the finalizer rather than as a side-effect of scattered branches).
 //
-// Properties this function does NOT yet enforce (Phase 1A follow-up):
-//   - Single-source-of-truth for Health derivation. Currently scattered.
-//   - Deterministic Confidence (currently subject to map-iteration order).
+// Properties NOT yet enforced (Phase 1A follow-up):
+//   - The Health-decision block at engine/rca.go L348-365 still runs
+//     in-line. Migrating it requires introducing a finalizationCtx
+//     carrying primary.DomainConf, hasCritEvidence, trust-gate output —
+//     a meaningful design move. Until then, finalize and the inline
+//     branches both compute the same values and finalize wins last.
+//   - Deterministic Confidence (still subject to map-iteration order
+//     upstream).
 func (e *Engine) finalize(result *model.AnalysisResult, hist *History) {
 	if result == nil {
 		return
@@ -38,5 +40,13 @@ func (e *Engine) finalize(result *model.AnalysisResult, hist *History) {
 	}
 	if result.Confidence > 100 {
 		result.Confidence = 100
+	}
+	// OK-when-zero contract: a zero PrimaryScore means no bottleneck
+	// fired — Health must be OK and Confidence must be the well-known
+	// OK constant. This is the I6 invariant promoted from spot-check
+	// to contract.
+	if result.PrimaryScore == 0 {
+		result.Health = model.HealthOK
+		result.Confidence = rcaHealthOKConfidence
 	}
 }

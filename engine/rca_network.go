@@ -72,7 +72,7 @@ func dropReasonImpact(reason string) string {
 	}
 }
 
-func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot, sp systemProfile) model.RCAEntry {
+func analyzeNetwork(db *AdaptiveThresholdDB, curr *model.Snapshot, rates *model.RateSnapshot, sp systemProfile) model.RCAEntry {
 	r := model.RCAEntry{Bottleneck: BottleneckNetwork}
 	if rates == nil {
 		return r
@@ -125,10 +125,10 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot, sp systemPr
 		totalTxDrops += nr.TxDropsPS
 	}
 
-	w, c := thresholdAdaptive("net.drops", 1, 100, curr)
-	w2, c2 := thresholdAdaptive("net.tcp.retrans", 1, 5, curr)
-	w3, c3 := thresholdAdaptive("net.conntrack", 70, 95, curr)
-	w4, c4 := thresholdAdaptive("net.softirq", 5, 25, curr)
+	w, c := thresholdAdaptive(db, "net.drops", 1, 100, curr)
+	w2, c2 := thresholdAdaptive(db, "net.tcp.retrans", 1, 5, curr)
+	w3, c3 := thresholdAdaptive(db, "net.conntrack", 70, 95, curr)
+	w4, c4 := thresholdAdaptive(db, "net.softirq", 5, 25, curr)
 	r.EvidenceV2 = append(r.EvidenceV2,
 		emitEvidence("net.drops", model.DomainNetwork,
 			totalDrops, w, c, true, 0.8,
@@ -150,14 +150,14 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot, sp systemPr
 
 	// Split RX/TX drop evidence for directional diagnosis
 	if totalRxDrops > netDropSplitMinRate {
-		wRx, cRx := thresholdAdaptive("net.drops.rx", 1, 100, curr)
+		wRx, cRx := thresholdAdaptive(db, "net.drops.rx", 1, 100, curr)
 		r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("net.drops.rx", model.DomainNetwork,
 			totalRxDrops, wRx, cRx, true, 0.85,
 			fmt.Sprintf("RX drops=%.0f/s (inbound buffer overflow)", totalRxDrops), "1s",
 			nil, nil))
 	}
 	if totalTxDrops > netDropSplitMinRate {
-		wTx, cTx := thresholdAdaptive("net.drops.tx", 1, 50, curr)
+		wTx, cTx := thresholdAdaptive(db, "net.drops.tx", 1, 50, curr)
 		r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("net.drops.tx", model.DomainNetwork,
 			totalTxDrops, wTx, cTx, true, 0.7,
 			fmt.Sprintf("TX drops=%.0f/s (outbound queue full)", totalTxDrops), "1s",
@@ -166,14 +166,14 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot, sp systemPr
 
 	// Split TIME_WAIT and SYN_SENT into separate evidence (different root causes)
 	if st.TimeWait > netTimeWaitEvidenceMin {
-		wTw, cTw := thresholdAdaptive("net.tcp.timewait", 3000, 15000, curr)
+		wTw, cTw := thresholdAdaptive(db, "net.tcp.timewait", 3000, 15000, curr)
 		r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("net.tcp.timewait", model.DomainNetwork,
 			float64(st.TimeWait), wTw, cTw, true, 0.6,
 			fmt.Sprintf("TIME_WAIT=%d (connection churn)", st.TimeWait), "1s",
 			nil, nil))
 	}
 	if st.SynSent > netSynSentEvidenceMin {
-		wSs, cSs := thresholdAdaptive("net.tcp.synsent", 10, 100, curr)
+		wSs, cSs := thresholdAdaptive(db, "net.tcp.synsent", 10, 100, curr)
 		r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("net.tcp.synsent", model.DomainNetwork,
 			float64(st.SynSent), wSs, cSs, true, 0.85,
 			fmt.Sprintf("SYN_SENT=%d (upstream unreachable/slow)", st.SynSent), "1s",
@@ -182,7 +182,7 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot, sp systemPr
 
 	// Ephemeral port exhaustion (Gregg USE: Saturation for network stack)
 	if ephPct > netEphemeralEvidenceMinPct {
-		wEph, cEph := thresholdAdaptive("net.ephemeral", 50, 85, curr)
+		wEph, cEph := thresholdAdaptive(db, "net.ephemeral", 50, 85, curr)
 		r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("net.ephemeral", model.DomainNetwork,
 			ephPct, wEph, cEph, true, 0.9,
 			fmt.Sprintf("ephemeral ports=%.0f%% (%d/%d)", ephPct, eph.InUse, ephRange), "1s",
@@ -191,7 +191,7 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot, sp systemPr
 
 	// UDP errors (USE: Errors for UDP)
 	if rates.UDPErrRate > netUDPErrMinRate {
-		wUdp, cUdp := thresholdAdaptive("net.udp.errors", 1, 50, curr)
+		wUdp, cUdp := thresholdAdaptive(db, "net.udp.errors", 1, 50, curr)
 		r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("net.udp.errors", model.DomainNetwork,
 			rates.UDPErrRate, wUdp, cUdp, true, 0.7,
 			fmt.Sprintf("UDP errors=%.1f/s (InErrors+RcvbufErrors)", rates.UDPErrRate), "1s",
@@ -200,7 +200,7 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot, sp systemPr
 
 	// TCP resets (connection rejections / aborts — Google SRE: Error signal)
 	if rates.TCPResetRate > netTCPResetMinRate {
-		wRst, cRst := thresholdAdaptive("net.tcp.resets", 5, 100, curr)
+		wRst, cRst := thresholdAdaptive(db, "net.tcp.resets", 5, 100, curr)
 		r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("net.tcp.resets", model.DomainNetwork,
 			rates.TCPResetRate, wRst, cRst, true, 0.75,
 			fmt.Sprintf("TCP RSTs=%.0f/s", rates.TCPResetRate), "1s",
@@ -209,7 +209,7 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot, sp systemPr
 
 	// TCP connection attempt failures (Google SRE: Error signal)
 	if rates.TCPAttemptFailRate > netTCPAttemptFailMinRate {
-		wAf, cAf := thresholdAdaptive("net.tcp.attemptfails", 5, 100, curr)
+		wAf, cAf := thresholdAdaptive(db, "net.tcp.attemptfails", 5, 100, curr)
 		r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("net.tcp.attemptfails", model.DomainNetwork,
 			rates.TCPAttemptFailRate, wAf, cAf, true, 0.8,
 			fmt.Sprintf("TCP attempt fails=%.0f/s", rates.TCPAttemptFailRate), "1s",
@@ -282,15 +282,15 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot, sp systemPr
 	}
 
 	// Conntrack kernel failure rates
-	w6a, c6a := thresholdAdaptive("net.conntrack.drops", 1, 100, curr)
-	w6b, c6b := thresholdAdaptive("net.conntrack.insertfail", 0.1, 10, curr)
+	w6a, c6a := thresholdAdaptive(db, "net.conntrack.drops", 1, 100, curr)
+	w6b, c6b := thresholdAdaptive(db, "net.conntrack.insertfail", 0.1, 10, curr)
 	ctGrowth := rates.ConntrackGrowthRate
 	if ctGrowth < 0 {
 		ctGrowth = 0 // only fire evidence on positive growth
 	}
-	w6c, c6c := thresholdAdaptive("net.conntrack.growth", 100, 1000, curr)
-	w6d, c6d := thresholdAdaptive("net.conntrack.invalid", 10, 500, curr)
-	w6e, c6e := thresholdAdaptive("net.conntrack.hashcontention", 100, 5000, curr)
+	w6c, c6c := thresholdAdaptive(db, "net.conntrack.growth", 100, 1000, curr)
+	w6d, c6d := thresholdAdaptive(db, "net.conntrack.invalid", 10, 500, curr)
+	w6e, c6e := thresholdAdaptive(db, "net.conntrack.hashcontention", 100, 5000, curr)
 	r.EvidenceV2 = append(r.EvidenceV2,
 		emitEvidence("net.conntrack.drops", model.DomainNetwork,
 			rates.ConntrackDropRate, w6a, c6a, true, 0.95,
@@ -315,7 +315,7 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot, sp systemPr
 	)
 
 	// Dedicated CLOSE_WAIT evidence with per-PID attribution
-	w6, c6 := thresholdAdaptive("net.closewait", 50, 500, curr)
+	w6, c6 := thresholdAdaptive(db, "net.closewait", 50, 500, curr)
 	cwMsg := fmt.Sprintf("CLOSE_WAIT=%d", st.CloseWait)
 	if len(curr.Global.CloseWaitLeakers) > 0 {
 		top := curr.Global.CloseWaitLeakers[0]
@@ -472,7 +472,7 @@ func analyzeNetwork(curr *model.Snapshot, rates *model.RateSnapshot, sp systemPr
 
 	// Phase 1: app-aware evidence injection
 	appInjector := NewAppEvidenceInjector()
-	appInjector.InjectNetworkEvidence(curr, &r)
+	appInjector.InjectNetworkEvidence(db, curr, &r)
 
 	// v2 scoring
 	v2Score := weightedDomainScore(r.EvidenceV2)

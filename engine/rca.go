@@ -9,23 +9,19 @@ import (
 	"github.com/ftahirops/xtop/model"
 )
 
-// Package-level optional components for advanced RCA.
+// Package-level remnants for backward compat with external tooling.
 //
-// NEXTGEN Phase 1 task 3: probabilisticCausalGraph is now READ via the
-// Engine pointer plumbed into AnalyzeRCA — the global is retained only
-// to remain in scope for the assignment in NewEngineMode (so existing
-// tooling that pokes at the global for inspection still works).
+// NEXTGEN Phase 1 + 1A removed the dependency on these globals from
+// the engine code itself:
+//   - adaptiveThresholdDB: deleted — DB now threaded explicitly through
+//     AnalyzeRCA → analyze{IO,CPU,Memory,Network} + InjectAppEvidence
+//   - probabilisticCausalGraph: read via e.probabilisticCausalGraph
+//   - topologyCorrelator: never read outside initialization
 //
-// adaptiveThresholdDB is still read directly by thresholdAdaptive()
-// from ~30 call sites across rca_memory.go / rca_cpu.go / rca_io.go /
-// rca_network.go / app_evidence.go. Threading the engine through every
-// site is deferred to a dedicated follow-up plan (NEXTGEN Phase 1A.5).
-//
-// topologyCorrelator has zero readers outside of initialization. Kept
-// for symmetry; can be dropped when topology data flows through the
-// entity-graph layer (Phase 3).
+// The two globals below stay so that any out-of-tree code that inspects
+// them keeps working; remove in NEXTGEN Phase 2+ once the public API
+// surfaces are formalized.
 var (
-	adaptiveThresholdDB      *AdaptiveThresholdDB
 	probabilisticCausalGraph *ProbabilisticCausalGraph
 	topologyCorrelator       *TopologyCorrelator
 )
@@ -203,11 +199,17 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History, 
 	result := &model.AnalysisResult{}
 
 	sp := buildSystemProfile(curr)
+	// NEXTGEN Phase 1A: thread the adaptive-threshold DB explicitly.
+	// nil engine → nil db → analyzers fall back to static profile + defaults.
+	var db *AdaptiveThresholdDB
+	if e != nil {
+		db = e.adaptiveThresholdDB
+	}
 	result.RCA = []model.RCAEntry{
-		analyzeIO(curr, rates, sp),
-		analyzeMemory(curr, rates, sp),
-		analyzeCPU(curr, rates, sp),
-		analyzeNetwork(curr, rates, sp),
+		analyzeIO(db, curr, rates, sp),
+		analyzeMemory(db, curr, rates, sp),
+		analyzeCPU(db, curr, rates, sp),
+		analyzeNetwork(db, curr, rates, sp),
 	}
 
 	// Stamp sustained-duration on every fired Evidence using History.signalOnsets.

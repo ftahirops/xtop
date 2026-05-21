@@ -8,7 +8,7 @@ import (
 
 // ---------- Memory Score ----------
 // Evidence groups: PSI, Low available, Swap active, Direct reclaim, Major faults, OOM
-func analyzeMemory(curr *model.Snapshot, rates *model.RateSnapshot, sp systemProfile) model.RCAEntry {
+func analyzeMemory(db *AdaptiveThresholdDB, curr *model.Snapshot, rates *model.RateSnapshot, sp systemProfile) model.RCAEntry {
 	r := model.RCAEntry{Bottleneck: BottleneckMemory}
 
 	memSome := curr.Global.PSI.Memory.Some.Avg10 / 100
@@ -97,11 +97,11 @@ func analyzeMemory(curr *model.Snapshot, rates *model.RateSnapshot, sp systemPro
 		reclaimConf = memReclaimNoPSIConf // much less confident without PSI confirmation
 	}
 
-	w, c := thresholdAdaptive("mem.psi", 5, 20, curr)
-	w2, c2 := thresholdAdaptive("mem.available.low", availWarn, availCrit, curr)
-	w3, c3 := thresholdAdaptive("mem.reclaim.direct", 10, 500, curr)
-	w5, c5 := thresholdAdaptive("mem.major.faults", 10, 200, curr)
-	w6, c6 := thresholdAdaptive("mem.oom.kills", 1, 1, curr)
+	w, c := thresholdAdaptive(db, "mem.psi", 5, 20, curr)
+	w2, c2 := thresholdAdaptive(db, "mem.available.low", availWarn, availCrit, curr)
+	w3, c3 := thresholdAdaptive(db, "mem.reclaim.direct", 10, 500, curr)
+	w5, c5 := thresholdAdaptive(db, "mem.major.faults", 10, 200, curr)
+	w6, c6 := thresholdAdaptive(db, "mem.oom.kills", 1, 1, curr)
 	r.EvidenceV2 = append(r.EvidenceV2,
 		emitEvidence("mem.psi", model.DomainMemory,
 			memSome*100, w, c, true, 0.9,
@@ -222,7 +222,7 @@ func analyzeMemory(curr *model.Snapshot, rates *model.RateSnapshot, sp systemPro
 
 	// Phase 1: app-aware evidence injection
 	appInjector := NewAppEvidenceInjector()
-	appInjector.InjectMemoryEvidence(curr, &r)
+	appInjector.InjectMemoryEvidence(db, curr, &r)
 
 	// v2 scoring
 	v2Score := weightedDomainScore(r.EvidenceV2)
