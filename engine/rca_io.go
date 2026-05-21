@@ -114,6 +114,24 @@ func analyzeIO(db *AdaptiveThresholdDB, curr *model.Snapshot, rates *model.RateS
 		float64(mem.Writeback), w, c, true, 0.7,
 		fmt.Sprintf("writeback=%s", formatB(mem.Writeback)), "1s",
 		nil, nil))
+
+	// NEXTGEN Phase 2: emit typed Facts in parallel to EvidenceV2.
+	now := curr.Timestamp
+	psiWarn, _ := thresholdAdaptive(db, "io.psi", 5, 20, curr)
+	dstateWarn, _ := thresholdAdaptive(db, "io.dstate", 1, 10, curr)
+	latWarn, _ := thresholdAdaptive(db, "io.disk.latency", 20, 80, curr)
+	utilWarn, _ := thresholdAdaptive(db, "io.disk.util", 70, 95, curr)
+	qdWarn, _ := thresholdAdaptive(db, "io.disk.queuedepth", 4, 16, curr)
+	wbWarn, _ := thresholdAdaptive(db, "io.writeback", 5, 20, curr)
+	r.Facts = append(r.Facts,
+		buildFact("io.psi.avg10", "psi.avg10", model.DomainIO, ioSome*100, "%", psiWarn, 0.9, now, "procfs", nil),
+		buildFact("io.dstate", "dstate_tasks", model.DomainIO, float64(dCount), "count", dstateWarn, 0.7, now, "procfs", nil),
+		buildFact("io.disk.latency", "await_ms", model.DomainIO, worstAwait, "ms", latWarn, 0.8, now, "diskstats", map[string]string{"device": worstDev}),
+		buildFact("io.disk.util", "util_pct", model.DomainIO, worstUtil, "%", utilWarn, 0.85, now, "diskstats", nil),
+		buildFact("io.disk.queuedepth", "queue_depth", model.DomainIO, float64(worstQueueDepth), "count", qdWarn, 0.75, now, "diskstats", map[string]string{"device": worstQueueDev}),
+		buildFact("io.writeback", "writeback_bytes", model.DomainIO, float64(mem.Writeback), "bytes", wbWarn, 0.7, now, "procfs", nil),
+	)
+
 	// Filesystem full: only fire if there is actual growth (not just a large static FS)
 	if fsFull {
 		w, c = thresholdAdaptive(db, "io.fsfull", 85, 95, curr)

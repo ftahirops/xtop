@@ -134,6 +134,18 @@ func analyzeMemory(db *AdaptiveThresholdDB, curr *model.Snapshot, rates *model.R
 			nil, nil),
 	)
 
+	// NEXTGEN Phase 2: emit typed Facts in parallel to EvidenceV2.
+	now := curr.Timestamp
+	r.Facts = append(r.Facts,
+		buildFact("mem.psi.avg10", "psi.avg10", model.DomainMemory, memSome*100, "%", w, 0.9, now, "procfs", nil),
+		buildFact("mem.available.low", "available_pct_used", model.DomainMemory, usedPct, "%", w2, 0.9, now, "procfs", nil),
+		buildFact("mem.reclaim.direct", "direct_reclaim_pages_per_sec", model.DomainMemory, directReclaimRate, "count/s", w3, reclaimConf, now, "vmstat", nil),
+		buildFact("mem.swap.in", "swap_in_mb_per_sec", model.DomainMemory, swapInRate, "MB/s", 1, 0.85, now, "vmstat", nil),
+		buildFact("mem.swap.out", "swap_out_mb_per_sec", model.DomainMemory, swapOutRate, "MB/s", 2, 0.7, now, "vmstat", nil),
+		buildFact("mem.major.faults", "major_faults_per_sec", model.DomainMemory, majFaultRate, "count/s", w5, 0.7, now, "vmstat", nil),
+		buildFact("mem.oom.kills", "oom_kills", model.DomainMemory, oomVal, "count", w6, 1.0, now, "vmstat", nil),
+	)
+
 	// PSI acceleration: rapid onset detection (Meta TSA: detect rate-of-change)
 	if psiAcceleration {
 		r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("mem.psi.acceleration", model.DomainMemory,

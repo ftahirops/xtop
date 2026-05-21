@@ -106,18 +106,31 @@ func TestRCAInvariants(t *testing.T) {
 						i, f.Confidence)
 				}
 			}
-			// I11: CPU domain emits at least 6 facts (psi, busy, runqueue,
-			// ctxswitch, steal, cgroup.throttle). If a future commit
-			// removes one, this is intentional and the test should be
-			// updated alongside the change.
-			cpuFacts := 0
+			// I11: each of the 4 standard domains emits at least one
+			// Fact. Per-domain minimums codify the Phase 2 migration:
+			//   CPU     >= 6  (psi, busy, runqueue, ctxswitch, steal, throttle)
+			//   Memory  >= 7  (psi, available, reclaim, swap_in, swap_out, faults, oom)
+			//   IO      >= 6  (psi, dstate, latency, util, queue, writeback)
+			//   Network >= 4  (drops, retrans, conntrack, softirq)
+			// If a future commit removes one, update both the analyzer
+			// and the corresponding bound here in the same commit.
+			byDomain := map[model.Domain]int{}
 			for _, f := range result.Facts {
-				if f.Domain == model.DomainCPU {
-					cpuFacts++
-				}
+				byDomain[f.Domain]++
 			}
-			if cpuFacts < 6 {
-				t.Errorf("invariant I11 violated: CPU domain emitted %d facts, want >= 6", cpuFacts)
+			for _, c := range []struct {
+				dom model.Domain
+				min int
+			}{
+				{model.DomainCPU, 6},
+				{model.DomainMemory, 7},
+				{model.DomainIO, 6},
+				{model.DomainNetwork, 4},
+			} {
+				if got := byDomain[c.dom]; got < c.min {
+					t.Errorf("invariant I11 violated: domain %q emitted %d facts, want >= %d",
+						c.dom, got, c.min)
+				}
 			}
 		})
 	}
@@ -173,19 +186,28 @@ func buildCharacterizationFixtures() map[string]characterizationCase {
 	mkBase := func() *model.Snapshot {
 		return &model.Snapshot{HostID: "char-test", Timestamp: base}
 	}
-	idleCurr := mkBase()
+	// Every realistic host has memory; the memory analyzer early-
+	// returns when Total==0 and consumers (Phase 2 Fact emission)
+	// would see no memory facts. Set a baseline 16 GiB across all
+	// fixtures so memory data is always present.
+	withMem := func(s *model.Snapshot) *model.Snapshot {
+		s.Global.Memory.Total = 16 * 1024 * 1024 * 1024
+		s.Global.Memory.Available = 12 * 1024 * 1024 * 1024
+		return s
+	}
+
+	idleCurr := withMem(mkBase())
 	idleCurr.Timestamp = base.Add(time.Second)
 	idleCurr.Global.CPU.NumCPUs = 4
 	idleCurr.Global.CPU.LoadAvg.Load1 = 0.1
 
-	loadedCurr := mkBase()
+	loadedCurr := withMem(mkBase())
 	loadedCurr.Timestamp = base.Add(time.Second)
 	loadedCurr.Global.CPU.NumCPUs = 4
 	loadedCurr.Global.CPU.LoadAvg.Load1 = 8.0
-	loadedCurr.Global.Memory.Total = 16 * 1024 * 1024 * 1024
-	loadedCurr.Global.Memory.Available = 1 * 1024 * 1024 * 1024
+	loadedCurr.Global.Memory.Available = 1 * 1024 * 1024 * 1024 // override: stressed
 
-	withProc := mkBase()
+	withProc := withMem(mkBase())
 	withProc.Timestamp = base.Add(time.Second)
 	withProc.Global.CPU.NumCPUs = 2
 	withProc.Processes = []model.ProcessMetrics{{PID: 1234, Comm: "synthproc"}}

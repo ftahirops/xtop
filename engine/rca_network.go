@@ -148,6 +148,15 @@ func analyzeNetwork(db *AdaptiveThresholdDB, curr *model.Snapshot, rates *model.
 			nil, nil),
 	)
 
+	// NEXTGEN Phase 2: emit typed Facts in parallel to EvidenceV2.
+	now := curr.Timestamp
+	r.Facts = append(r.Facts,
+		buildFact("net.drops", "drops_per_sec", model.DomainNetwork, totalDrops, "count/s", w, 0.8, now, "procfs", nil),
+		buildFact("net.tcp.retrans", "retrans_ratio_pct", model.DomainNetwork, retransRatio, "%", w2, retransConf, now, "procfs", nil),
+		buildFact("net.conntrack", "fill_pct", model.DomainNetwork, conntrackPct*100, "%", w3, 0.9, now, "procfs", nil),
+		buildFact("net.softirq", "cpu_pct", model.DomainNetwork, rates.CPUSoftIRQPct, "%", w4, 0.6, now, "derived", nil),
+	)
+
 	// Split RX/TX drop evidence for directional diagnosis
 	if totalRxDrops > netDropSplitMinRate {
 		wRx, cRx := thresholdAdaptive(db, "net.drops.rx", 1, 100, curr)
