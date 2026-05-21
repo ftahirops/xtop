@@ -169,6 +169,38 @@ func TestRCAInvariants(t *testing.T) {
 					}
 				}
 			}
+			// I15 (NEXTGEN Phase 4): every VerifiedCause has a non-empty
+			// Mechanism, a valid Tier, and a deterministic Confidence
+			// in [0,100]. Gates list is non-empty (the verifier runs
+			// every configured gate).
+			for i, vc := range result.VerifiedCauses {
+				if vc.Mechanism == "" {
+					t.Errorf("invariant I15 violated: VerifiedCauses[%d].Mechanism is empty", i)
+				}
+				switch vc.Tier {
+				case model.TierAConfirmed, model.TierBVerified,
+					model.TierCProbable, model.TierDInconclusive:
+				default:
+					t.Errorf("invariant I15 violated: VerifiedCauses[%d].Tier=%q is not a defined tier", i, vc.Tier)
+				}
+				if vc.Confidence < 0 || vc.Confidence > 100 {
+					t.Errorf("invariant I15 violated: VerifiedCauses[%d].Confidence=%d out of [0,100]", i, vc.Confidence)
+				}
+				if len(vc.Gates) == 0 {
+					t.Errorf("invariant I15 violated: VerifiedCauses[%d] has empty Gates", i)
+				}
+			}
+			// I16: signal-quality failure MUST yield Tier D. This is
+			// the abstention contract — verifier never claims a strong
+			// verdict when the foundational gate failed.
+			for i, vc := range result.VerifiedCauses {
+				for _, g := range vc.Gates {
+					if g.GateID == "signal_quality" && !g.Passed && vc.Tier != model.TierDInconclusive {
+						t.Errorf("invariant I16 violated: VerifiedCauses[%d] signal-quality failed but Tier=%q (must be D)",
+							i, vc.Tier)
+					}
+				}
+			}
 		})
 	}
 }

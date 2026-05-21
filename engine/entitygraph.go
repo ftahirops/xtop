@@ -9,6 +9,40 @@ import (
 	"github.com/ftahirops/xtop/model"
 )
 
+// domainFromBottleneck maps a legacy bottleneck-name string to the
+// model.Domain it belongs to. Used by the Phase 4 verifier wiring to
+// build Candidates from RCAEntries.
+func domainFromBottleneck(b string) model.Domain {
+	switch b {
+	case BottleneckCPU:
+		return model.DomainCPU
+	case BottleneckMemory:
+		return model.DomainMemory
+	case BottleneckIO:
+		return model.DomainIO
+	case BottleneckNetwork:
+		return model.DomainNetwork
+	}
+	return ""
+}
+
+// domainNameFromBottleneck returns a human-readable domain label.
+func domainNameFromBottleneck(b string) string {
+	return string(domainFromBottleneck(b))
+}
+
+// factIDsForDomain returns the IDs of every Fact in the given domain.
+// O(len(facts)) per call — fine at ~30 facts/tick.
+func factIDsForDomain(facts []model.Fact, d model.Domain) []string {
+	var ids []string
+	for _, f := range facts {
+		if f.Domain == d {
+			ids = append(ids, f.ID)
+		}
+	}
+	return ids
+}
+
 // BuildEntityGraph constructs the host-local entity graph for one tick.
 // NEXTGEN Phase 3 step 1 of the rollout: only process + cgroup nodes
 // for now, with ownership edges. Future commits add service nodes,

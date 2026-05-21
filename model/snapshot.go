@@ -265,6 +265,12 @@ type AnalysisResult struct {
 	// radius checks. Built once per tick from snap.Processes + cgroups.
 	Entities *EntityGraph `json:"entities,omitempty"`
 
+	// VerifiedCauses is the verifier's output (NEXTGEN Phase 4). One
+	// entry per candidate cause that went through the multi-level
+	// gate system. Tier A entries are the only ones counted toward
+	// the engine's precision target — everything weaker is abstention.
+	VerifiedCauses []VerifiedCause `json:"verified_causes,omitempty"`
+
 	// Primary diagnosis
 	PrimaryBottleneck string
 	PrimaryScore      int

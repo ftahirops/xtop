@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ftahirops/xtop/engine/verifier"
 	"github.com/ftahirops/xtop/model"
 )
 
@@ -351,6 +352,36 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History, 
 	// answer to "who owns what". Cost is O(P + C) ≈ 100µs on a 500-
 	// proc host — within the engine's per-tick budget.
 	result.Entities = BuildEntityGraph(curr)
+
+	// NEXTGEN Phase 4: derive candidates from each RCA entry and run
+	// them through the verifier. Output is VerifiedCauses — abstaining
+	// by default (Tier D) when proof is weak. Runs additive to the
+	// existing verdict; legacy callers see no change unless they look
+	// at result.VerifiedCauses.
+	v := verifier.Default()
+	for _, entry := range result.RCA {
+		if entry.Score == 0 {
+			// Nothing fired in this domain — no candidate to verify.
+			continue
+		}
+		// Build a candidate from this RCA entry.
+		c := verifier.Candidate{
+			Mechanism: fmt.Sprintf("%s in domain %s (score=%d)",
+				entry.Bottleneck, domainNameFromBottleneck(entry.Bottleneck), entry.Score),
+			Domain:            domainFromBottleneck(entry.Bottleneck),
+			SupportingFactIDs: factIDsForDomain(result.Facts, domainFromBottleneck(entry.Bottleneck)),
+		}
+		// If the entry already named a top cgroup or process, use it
+		// as the candidate root. The hypothesis engine in a future
+		// phase will refine this.
+		switch {
+		case entry.TopPID > 0:
+			c.RootEntityID = fmt.Sprintf("pid:%d", entry.TopPID)
+		case entry.TopCgroup != "":
+			c.RootEntityID = "cgroup:" + entry.TopCgroup
+		}
+		result.VerifiedCauses = append(result.VerifiedCauses, v.Verify(c, result.Facts, result.Entities))
+	}
 
 	// NEXTGEN Phase 1B: the score-band Health decision is owned by
 	// finalize. Call it HERE (not at the end) so the downstream
