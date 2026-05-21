@@ -211,6 +211,26 @@ func TestRCAInvariants(t *testing.T) {
 						i, len(vc.Gates))
 				}
 			}
+			// I18 (NEXTGEN Phase 5): every VerifiedCause's gate audit
+			// is enough to reconstruct the verifier input — the
+			// FactsUsed lists across all gates must reference only
+			// IDs that exist in result.Facts. This is the contract
+			// the replay harness relies on (it derives candidates
+			// from these very Gates).
+			factIDs := map[string]bool{}
+			for _, f := range result.Facts {
+				factIDs[f.ID] = true
+			}
+			for i, vc := range result.VerifiedCauses {
+				for _, g := range vc.Gates {
+					for _, fid := range g.FactsUsed {
+						if !factIDs[fid] {
+							t.Errorf("invariant I18 violated: VerifiedCauses[%d].Gates[%s].FactsUsed contains %q not in result.Facts",
+								i, g.GateID, fid)
+						}
+					}
+				}
+			}
 		})
 	}
 }

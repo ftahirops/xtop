@@ -606,6 +606,14 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History, 
 	if result.Confidence > 100 {
 		result.Confidence = 100
 	}
+
+	// NEXTGEN Phase 5: persist the frame to the corpus for offline
+	// replay. Best-effort, dedup'd to 1 write/sec, only triggers on
+	// non-OK results with a Tier A/B/C VerifiedCause. nil engine
+	// (test path) skips entirely — no side effects on tests.
+	if e != nil && e.corpus != nil {
+		e.corpus.capture(curr, result, "")
+	}
 	return result
 }
 

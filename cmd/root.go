@@ -192,6 +192,7 @@ var subcommands = map[string]func([]string) error{
 	"loadshare":  runLoadshare,
 	"apps":       runLoadshare, // alias — natural name
 	"phpfpm":     runPHPFPM,
+	"replay":     runReplayHarness, // NEXTGEN Phase 5 offline harness
 }
 
 // Run parses flags and starts the application.

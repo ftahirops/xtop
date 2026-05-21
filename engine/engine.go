@@ -67,6 +67,11 @@ type Engine struct {
 	adaptiveThresholdDB      *AdaptiveThresholdDB
 	probabilisticCausalGraph *ProbabilisticCausalGraph
 	topologyCorrelator       *TopologyCorrelator
+
+	// NEXTGEN Phase 5: per-engine corpus writer. Captures non-OK
+	// ticks to disk so the replay harness can re-verify them offline
+	// and measure per-mechanism precision.
+	corpus *incidentCorpus
 }
 
 // NewEngine creates a new engine with all collectors registered.
@@ -238,6 +243,14 @@ func NewEngineMode(historySize, intervalSec int, mode collector.Mode) *Engine {
 	// globals removed. probabilisticCausalGraph global retained for
 	// out-of-tree inspectors.
 	probabilisticCausalGraph = causalGraph
+
+	// NEXTGEN Phase 5: initialize the incident corpus writer. Disabled
+	// when XTOP_CORPUS=0 (test/CI hosts that don't want to leave
+	// frames behind). Default is on — capture is cheap, ~1ms per
+	// frame, dedup'd to 1/sec.
+	if os.Getenv("XTOP_CORPUS") != "0" {
+		e.corpus = newIncidentCorpus(filepath.Join(dataDir, "incidents"))
+	}
 
 	// FastPulse: sub-second PSI sampler that refines per-evidence
 	// SustainedForSec. Off by default in lean (agent) mode to keep the
