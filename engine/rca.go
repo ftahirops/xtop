@@ -10,7 +10,20 @@ import (
 )
 
 // Package-level optional components for advanced RCA.
-// Set by Engine during initialization; nil disables the feature.
+//
+// NEXTGEN Phase 1 task 3: probabilisticCausalGraph is now READ via the
+// Engine pointer plumbed into AnalyzeRCA — the global is retained only
+// to remain in scope for the assignment in NewEngineMode (so existing
+// tooling that pokes at the global for inspection still works).
+//
+// adaptiveThresholdDB is still read directly by thresholdAdaptive()
+// from ~30 call sites across rca_memory.go / rca_cpu.go / rca_io.go /
+// rca_network.go / app_evidence.go. Threading the engine through every
+// site is deferred to a dedicated follow-up plan (NEXTGEN Phase 1A.5).
+//
+// topologyCorrelator has zero readers outside of initialization. Kept
+// for symmetry; can be dropped when topology data flows through the
+// entity-graph layer (Phase 3).
 var (
 	adaptiveThresholdDB      *AdaptiveThresholdDB
 	probabilisticCausalGraph *ProbabilisticCausalGraph
@@ -181,7 +194,12 @@ func buildSystemProfile(snap *model.Snapshot) systemProfile {
 
 // AnalyzeRCA runs all bottleneck detectors and builds the full analysis result.
 // peerIncidents provides cross-host correlation data (may be nil).
-func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History, peerIncidents map[string]*model.HostIncident) *model.AnalysisResult {
+// AnalyzeRCA runs the RCA pass. NEXTGEN Phase 1 task 3: takes an
+// optional *Engine for per-engine state. Pass nil for unit tests that
+// don't need adaptive thresholds or causal-graph learning (the function
+// falls back to the legacy package globals when e is nil — those will
+// be removed in a follow-up plan once thresholdAdaptive is migrated).
+func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History, peerIncidents map[string]*model.HostIncident, e *Engine) *model.AnalysisResult {
 	result := &model.AnalysisResult{}
 
 	sp := buildSystemProfile(curr)
@@ -439,9 +457,15 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History, 
 		if hist != nil {
 			learner = hist.CausalLearner
 		}
+		// Resolve causal graph: prefer the engine's per-instance graph,
+		// fall back to the package global for nil-engine callers (tests).
+		causal := probabilisticCausalGraph
+		if e != nil && e.probabilisticCausalGraph != nil {
+			causal = e.probabilisticCausalGraph
+		}
 		var dag *model.CausalDAG
-		if probabilisticCausalGraph != nil && len(probabilisticCausalGraph.history) >= 50 {
-			dag = BuildProbabilisticDAG(result, probabilisticCausalGraph, learner)
+		if causal != nil && len(causal.history) >= 50 {
+			dag = BuildProbabilisticDAG(result, causal, learner)
 		} else {
 			dag = buildCausalDAG(result, learner)
 		}
@@ -451,19 +475,19 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History, 
 		}
 		// Throttled observation: only learn when health is not OK
 		// (saves ~0.1ms CPU per tick during normal operation)
-		if probabilisticCausalGraph != nil && result.Health != model.HealthOK {
+		if causal != nil && result.Health != model.HealthOK {
 			fired := make(map[string]float64)
 			for _, rca := range result.RCA {
-				for _, e := range rca.EvidenceV2 {
-					if e.Strength >= 0.35 {
-						if existing, ok := fired[e.ID]; !ok || e.Strength > existing {
-							fired[e.ID] = e.Strength
+				for _, ev := range rca.EvidenceV2 {
+					if ev.Strength >= 0.35 {
+						if existing, ok := fired[ev.ID]; !ok || ev.Strength > existing {
+							fired[ev.ID] = ev.Strength
 						}
 					}
 				}
 			}
 			if len(fired) >= 2 {
-				probabilisticCausalGraph.Observe(fired)
+				causal.Observe(fired)
 			}
 		}
 	}

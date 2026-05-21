@@ -140,7 +140,7 @@ type characterizationCase struct {
 func runCharacterizationCase(c characterizationCase) *model.AnalysisResult {
 	rates := ComputeRates(c.prev, c.curr)
 	hist := NewHistory(60, 1)
-	return AnalyzeRCA(c.curr, &rates, hist, nil)
+	return AnalyzeRCA(c.curr, &rates, hist, nil, nil)
 }
 
 func buildCharacterizationFixtures() map[string]characterizationCase {

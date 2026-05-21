@@ -504,7 +504,7 @@ func (e *Engine) Tick() (*model.Snapshot, *model.RateSnapshot, *model.AnalysisRe
 
 		// Get peer incidents for cross-host correlation
 		peers := e.GetPeerIncidents()
-		result = AnalyzeRCA(snap, rates, e.History, peers)
+		result = AnalyzeRCA(snap, rates, e.History, peers, e)
 
 		// Change detection: track new/stopped processes and recent package changes
 		if e.changeDetector != nil {
