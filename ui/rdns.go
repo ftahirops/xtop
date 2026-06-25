@@ -22,6 +22,33 @@ type rdnsCacheEntry struct {
 
 const rdnsTTL = 5 * time.Minute
 
+// maxRDNS is the upper bound on the number of entries the rdns cache may hold.
+// When exceeded, expired entries are purged first; if still over, arbitrary
+// entries are dropped until the map is at or under the cap.
+const maxRDNS = 2048
+
+// rdnsPruneIfNeeded must be called under rdnsCache.Lock (write lock).
+// It is a no-op when len(entries) <= maxRDNS.
+func rdnsPruneIfNeeded() {
+	if len(rdnsCache.entries) <= maxRDNS {
+		return
+	}
+	// First pass: remove entries whose TTL has expired.
+	now := time.Now()
+	for k, e := range rdnsCache.entries {
+		if now.After(e.expires) {
+			delete(rdnsCache.entries, k)
+		}
+	}
+	// Second pass: if still over cap, evict arbitrary entries one at a time.
+	for len(rdnsCache.entries) > maxRDNS {
+		for k := range rdnsCache.entries {
+			delete(rdnsCache.entries, k)
+			break
+		}
+	}
+}
+
 var hostsMap = struct {
 	sync.Once
 	m map[string]string
@@ -94,6 +121,7 @@ func rdnsLookup(ip string) string {
 	if h, ok := getHostsMap()[ip]; ok {
 		rdnsCache.Lock()
 		rdnsCache.entries[ip] = rdnsCacheEntry{name: h, expires: time.Now().Add(rdnsTTL)}
+		rdnsPruneIfNeeded()
 		rdnsCache.Unlock()
 		return h
 	}
@@ -111,6 +139,7 @@ func rdnsLookup(ip string) string {
 
 	rdnsCache.Lock()
 	rdnsCache.entries[ip] = rdnsCacheEntry{name: name, expires: time.Now().Add(rdnsTTL)}
+	rdnsPruneIfNeeded()
 	rdnsCache.Unlock()
 	return name
 }
