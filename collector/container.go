@@ -81,6 +81,24 @@ type dockerContainerInfo struct {
 	Names []string `json:"Names"`
 }
 
+// buildContainerCache builds a fresh container ID to name mapping from a list of container info.
+// This helper is extracted for clean testability — it has no locking or I/O.
+func buildContainerCache(containers []dockerContainerInfo) map[string]string {
+	cache := make(map[string]string, len(containers))
+	for _, c := range containers {
+		shortID := c.ID
+		if len(shortID) > 12 {
+			shortID = shortID[:12]
+		}
+		name := shortID
+		if len(c.Names) > 0 {
+			name = strings.TrimPrefix(c.Names[0], "/")
+		}
+		cache[shortID] = name
+	}
+	return cache
+}
+
 func (cr *ContainerResolver) loadContainers() {
 	cr.lastLoad = time.Now()
 	resp, err := cr.client.Get("http://localhost/containers/json?all=true")
@@ -95,15 +113,7 @@ func (cr *ContainerResolver) loadContainers() {
 	if err := json.NewDecoder(resp.Body).Decode(&containers); err != nil {
 		return
 	}
-	for _, c := range containers {
-		shortID := c.ID
-		if len(shortID) > 12 {
-			shortID = shortID[:12]
-		}
-		name := shortID
-		if len(c.Names) > 0 {
-			name = strings.TrimPrefix(c.Names[0], "/")
-		}
-		cr.cache[shortID] = name
-	}
+	// Build fresh cache from current containers, replacing the old one entirely.
+	// This removes any stale entries for deleted containers.
+	cr.cache = buildContainerCache(containers)
 }
