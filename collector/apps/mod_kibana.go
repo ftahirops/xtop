@@ -3,7 +3,6 @@
 package apps
 
 import (
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -35,7 +34,7 @@ func NewKibanaModule() AppModule {
 	return &kibanaModule{
 		client: &http.Client{
 			Timeout:   5 * time.Second,
-			Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},
+			Transport: &http.Transport{TLSClientConfig: probeTLS(probeInsecure)},
 		},
 		prev: make(map[int]kibanaPrev),
 	}

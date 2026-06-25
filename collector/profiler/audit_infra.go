@@ -382,7 +382,7 @@ func checkCertExpiry(port int) *model.AuditRule {
 		&net.Dialer{Timeout: 3 * time.Second},
 		"tcp",
 		fmt.Sprintf("127.0.0.1:%d", port),
-		&tls.Config{InsecureSkipVerify: true},
+		&tls.Config{InsecureSkipVerify: true}, // intentional: inspecting a potentially untrusted/expiring cert; must connect even if invalid
 	)
 	if err != nil {
 		return nil

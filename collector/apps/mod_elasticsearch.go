@@ -3,7 +3,6 @@
 package apps
 
 import (
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -589,7 +588,7 @@ func esHTTPClient() *http.Client {
 	return &http.Client{
 		Timeout: 3 * time.Second,
 		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			TLSClientConfig: probeTLS(probeInsecure),
 		},
 	}
 }

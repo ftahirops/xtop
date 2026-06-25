@@ -1,7 +1,6 @@
 package collector
 
 import (
-	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
@@ -19,7 +18,7 @@ import (
 var sharedHTTPClient = &http.Client{
 	Timeout: 5 * time.Second,
 	Transport: &http.Transport{
-		TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
+		TLSClientConfig:   ProbeTLS(probeInsecure),
 		MaxIdleConns:      20,
 		IdleConnTimeout:   30 * time.Second,
 		DisableKeepAlives: false,
