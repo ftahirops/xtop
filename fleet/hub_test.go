@@ -2,10 +2,14 @@ package fleet
 
 import (
 	"crypto/subtle"
+	"database/sql"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/ftahirops/xtop/model"
+	_ "modernc.org/sqlite"
 )
 
 func TestRequireAuthRejectsWrongToken(t *testing.T) {
@@ -73,5 +77,65 @@ func TestNewHubAllowsEmptyTokenWhenAllowNoAuth(t *testing.T) {
 	const forbidden = "fleet hub: refusing to start with no auth token"
 	if len(err.Error()) >= len(forbidden) && err.Error()[:len(forbidden)] == forbidden {
 		t.Fatalf("auth guard fired even though AllowNoAuth=true: %v", err)
+	}
+}
+
+// newTestHub creates a Hub with minimal configuration for testing.
+// It sets up stub databases to avoid nil pointer panics in goroutines.
+func newTestHub(t *testing.T, cfg model.FleetHubConfig) *Hub {
+	// Create in-memory SQLite databases for testing.
+	tmpfile, err := os.CreateTemp("", "test-hub-*.db")
+	if err != nil {
+		t.Fatalf("failed to create temp db: %v", err)
+	}
+	tmpfile.Close()
+	defer os.Remove(tmpfile.Name())
+
+	pg, err := sql.Open("sqlite", tmpfile.Name())
+	if err != nil {
+		t.Fatalf("failed to open test postgres db: %v", err)
+	}
+
+	cache, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open test cache db: %v", err)
+	}
+
+	h := &Hub{
+		cfg:    cfg,
+		pg:     pg,
+		cache:  cache,
+		hosts:  make(map[string]*model.FleetHost),
+		subs:   make(map[int]chan []byte),
+		quitCh: make(chan struct{}),
+	}
+	t.Cleanup(func() {
+		pg.Close()
+		cache.Close()
+	})
+	return h
+}
+
+func TestHeartbeatRejectsHugeBody(t *testing.T) {
+	h := newTestHub(t, model.FleetHubConfig{AllowNoAuth: true})
+	big := strings.NewReader(`{"hostname":"x","agent_id":"` + strings.Repeat("a", 20<<20) + `"}`)
+	r := httptest.NewRequest("POST", "/v1/heartbeat", big)
+	w := httptest.NewRecorder()
+	h.handleHeartbeat(w, r)
+	if w.Code != 400 && w.Code != 413 {
+		t.Logf("Response code: %d", w.Code)
+		t.Fatalf("want 400/413 for oversized body, got %d", w.Code)
+	}
+}
+
+func TestIncidentRejectsHugeBody(t *testing.T) {
+	h := newTestHub(t, model.FleetHubConfig{AllowNoAuth: true})
+	big := strings.NewReader(`{"incident_id":"x","agent_id":"` + strings.Repeat("a", 20<<20) + `"}`)
+	r := httptest.NewRequest("POST", "/v1/incident", big)
+	w := httptest.NewRecorder()
+	h.handleIncident(w, r)
+	if w.Code != 400 && w.Code != 413 {
+		t.Logf("Response code: %d", w.Code)
+		t.Fatalf("want 400/413 for oversized body, got %d", w.Code)
 	}
 }

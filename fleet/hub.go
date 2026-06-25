@@ -216,6 +216,10 @@ func (h *Hub) requireAuth(w http.ResponseWriter, r *http.Request) bool {
 // any JavaScript token-handling logic.
 const webTokenCookie = "xtop_token"
 
+// maxFleetBody is the maximum size (in bytes) for request bodies to prevent
+// OOM DoS attacks. Set to 5 MiB.
+const maxFleetBody = 5 << 20
+
 // ─── Endpoints ───────────────────────────────────────────────────────────────
 
 func (h *Hub) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -234,6 +238,7 @@ func (h *Hub) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	if !h.requireAuth(w, r) {
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxFleetBody)
 	var hb model.FleetHeartbeat
 	if err := json.NewDecoder(r.Body).Decode(&hb); err != nil {
 		http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
@@ -263,6 +268,7 @@ func (h *Hub) handleIncident(w http.ResponseWriter, r *http.Request) {
 	if !h.requireAuth(w, r) {
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxFleetBody)
 	var inc model.FleetIncident
 	if err := json.NewDecoder(r.Body).Decode(&inc); err != nil {
 		http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
