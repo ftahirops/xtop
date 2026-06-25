@@ -216,6 +216,15 @@ func (h *Hub) requireAuth(w http.ResponseWriter, r *http.Request) bool {
 // any JavaScript token-handling logic.
 const webTokenCookie = "xtop_token"
 
+// clientError logs an internal error but sends a generic message to the client
+// to prevent leaking implementation details.
+func clientError(w http.ResponseWriter, status int, msg string, err error) {
+	if err != nil {
+		log.Printf("xtop-hub: %s: %v", msg, err)
+	}
+	http.Error(w, msg, status)
+}
+
 // maxFleetBody is the maximum size (in bytes) for request bodies to prevent
 // OOM DoS attacks. Set to 5 MiB.
 const maxFleetBody = 5 << 20
@@ -241,7 +250,7 @@ func (h *Hub) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxFleetBody)
 	var hb model.FleetHeartbeat
 	if err := json.NewDecoder(r.Body).Decode(&hb); err != nil {
-		http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
+		clientError(w, http.StatusBadRequest, "invalid json", err)
 		return
 	}
 	if hb.Hostname == "" || hb.AgentID == "" {
@@ -271,7 +280,7 @@ func (h *Hub) handleIncident(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxFleetBody)
 	var inc model.FleetIncident
 	if err := json.NewDecoder(r.Body).Decode(&inc); err != nil {
-		http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
+		clientError(w, http.StatusBadRequest, "invalid json", err)
 		return
 	}
 	if inc.IncidentID == "" || inc.AgentID == "" {
@@ -412,7 +421,7 @@ func (h *Hub) handleListIncidents(w http.ResponseWriter, r *http.Request) {
 			ORDER BY started_at DESC LIMIT $2`, sinceCutoff, limit)
 	}
 	if err != nil {
-		http.Error(w, "db error: "+err.Error(), http.StatusInternalServerError)
+		clientError(w, http.StatusInternalServerError, "internal error", err)
 		return
 	}
 	defer rows.Close()
