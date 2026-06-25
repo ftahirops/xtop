@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -125,12 +126,16 @@ func NewFleetClient(cfg model.FleetAgentConfig) *FleetClient {
 		quality:   defaultFleetQuality(),
 	}
 
+	if cfg.InsecureSkipVerify {
+		log.Printf("xtop: WARNING — hub TLS verification disabled")
+	}
+
 	// HTTP client with short timeout — we never want to block RCA collection.
 	fc.httpClient = &http.Client{
 		Timeout: 5 * time.Second,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: cfg.InsecureSkipVerify,
+				InsecureSkipVerify: cfg.InsecureSkipVerify, //nolint:gosec // explicit opt-in via --insecure
 			},
 			MaxIdleConns:        5,
 			MaxIdleConnsPerHost: 2,

@@ -277,7 +277,7 @@ func Run() error {
 	var fleetInsecure bool
 	flag.StringVar(&fleetHub, "fleet-hub", "", "xtop hub URL to push heartbeats/incidents to (e.g. https://hub:9200)")
 	flag.StringVar(&fleetToken, "fleet-token", "", "Auth token for the xtop hub")
-	flag.BoolVar(&fleetInsecure, "fleet-insecure", true, "Skip TLS verification for the fleet hub (default true for self-signed)")
+	flag.BoolVar(&fleetInsecure, "fleet-insecure", false, "DANGER: skip hub TLS verification (self-signed lab only)")
 
 	flag.Usage = printUsage
 	flag.Parse()

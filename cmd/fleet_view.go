@@ -27,7 +27,7 @@ func runFleetView(args []string) error {
 	var (
 		hub      = fs.String("hub", "", "hub URL (default: $XTOP_FLEET_HUB or ~/.xtop/fleet.json)")
 		token    = fs.String("token", "", "auth token")
-		insecure = fs.Bool("insecure", true, "skip TLS verification (for self-signed certs)")
+		insecure = fs.Bool("insecure", false, "DANGER: skip hub TLS verification (self-signed lab only)")
 		once     = fs.Bool("once", false, "print current host list as JSON and exit")
 		refresh  = fs.Duration("refresh", 1*time.Second, "screen refresh cadence")
 	)

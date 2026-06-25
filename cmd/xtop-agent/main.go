@@ -55,7 +55,7 @@ func run() error {
 	var (
 		hubURL   = flag.String("hub", os.Getenv("XTOP_FLEET_HUB"), "Hub URL (also XTOP_FLEET_HUB env). Required.")
 		token    = flag.String("token", os.Getenv("XTOP_FLEET_TOKEN"), "Hub auth token (also XTOP_FLEET_TOKEN env).")
-		insecure = flag.Bool("insecure", os.Getenv("XTOP_FLEET_INSECURE") == "1", "Skip TLS verification (self-signed hub certs).")
+		insecure = flag.Bool("insecure", os.Getenv("XTOP_FLEET_INSECURE") == "1", "DANGER: skip hub TLS verification (self-signed lab only).")
 		interval = flag.Int("interval", 10, "Tick interval in seconds. 10s is a good default for agents (hub aggregates).")
 		dataDir  = flag.String("datadir", defaultDataDir(), "Where to keep state files (~/.xtop/ by default).")
 		version  = flag.Bool("version", false, "Print version and exit.")

@@ -43,9 +43,7 @@ func buildFleetClient(dataDir, cliHub, cliToken string, cliInsecure bool) *engin
 	if cliToken != "" {
 		cfg.Token = cliToken
 	}
-	// The insecure flag defaults to true, so only overwrite when the caller
-	// explicitly flipped it to false on the CLI — but we keep it simple here
-	// and just take the CLI value.
+	// CLI value wins; default is false (secure). Only --fleet-insecure sets true.
 	cfg.InsecureSkipVerify = cliInsecure
 
 	if cfg.HubURL == "" {

@@ -248,7 +248,7 @@ type FleetAgentConfig struct {
 	Tags         []string `json:"tags,omitempty"`
 	QueuePath    string   `json:"queue_path,omitempty"` // offline queue, default ~/.xtop/fleet-queue.jsonl
 	MaxQueueSize int      `json:"max_queue_size,omitempty"` // default 10_000
-	// InsecureSkipVerify allows self-signed certs for the hub (default true for
-	// first-run ease; flip off in prod).
+	// InsecureSkipVerify allows self-signed certs for the hub. Defaults to
+	// false (secure); only set via --insecure / --fleet-insecure flags.
 	InsecureSkipVerify bool `json:"insecure_skip_verify,omitempty"`
 }
