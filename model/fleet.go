@@ -226,7 +226,8 @@ type FleetHubConfig struct {
 	ListenAddr string `json:"listen_addr"` // default ":9200"
 	TLSCert    string `json:"tls_cert,omitempty"`
 	TLSKey     string `json:"tls_key,omitempty"`
-	AuthToken  string `json:"auth_token"` // shared secret for all agents
+	AuthToken   string `json:"auth_token"`              // shared secret for all agents
+	AllowNoAuth bool   `json:"allow_no_auth,omitempty"` // skip empty-token guard (NOT for production)
 
 	// Postgres connection (e.g. "postgres://xtop:pw@localhost/xtopfleet")
 	PostgresDSN string `json:"postgres_dsn"`

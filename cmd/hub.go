@@ -46,7 +46,7 @@ Usage:
   xtop hub reset-token        Rotate the token (invalidates existing agents).
 
 Flags for the server (xtop hub):
-  --listen, --postgres, --token, --tls-cert, --tls-key, --config, --print-config`)
+  --listen, --postgres, --token, --tls-cert, --tls-key, --config, --print-config, --allow-no-auth`)
 }
 
 // runHubStatus prints the service status + a health probe result.
@@ -117,6 +117,7 @@ func runHub(args []string) error {
 		tlsCert     = fs.String("tls-cert", "", "TLS certificate file")
 		tlsKey      = fs.String("tls-key", "", "TLS key file")
 		printConfig = fs.Bool("print-config", false, "print loaded config and exit")
+		allowNoAuth = fs.Bool("allow-no-auth", false, "allow hub to start without an auth token (NOT for production)")
 	)
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, `xtop hub — start the central fleet aggregator
@@ -174,6 +175,9 @@ Config file format (~/.xtop/hub.json):
 	}
 	if *tlsKey != "" {
 		cfg.TLSKey = *tlsKey
+	}
+	if *allowNoAuth {
+		cfg.AllowNoAuth = true
 	}
 
 	if *printConfig {

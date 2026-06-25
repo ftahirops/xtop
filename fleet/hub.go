@@ -5,6 +5,7 @@ package fleet
 
 import (
 	"context"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -53,8 +54,18 @@ type Hub struct {
 	wg     sync.WaitGroup
 }
 
+// eqToken compares two tokens in constant time to prevent timing attacks.
+func eqToken(a, b string) bool {
+	return len(a) == len(b) && subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
 // NewHub creates a new hub with the given configuration.
 func NewHub(cfg model.FleetHubConfig) (*Hub, error) {
+	// Refuse to start with no auth unless explicitly allowed.
+	if cfg.AuthToken == "" && !cfg.AllowNoAuth {
+		return nil, fmt.Errorf("fleet hub: refusing to start with no auth token; set --token or pass --allow-no-auth to run open (NOT for production)")
+	}
+
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = fmt.Sprintf(":%d", model.FleetDefaultPort)
 	}
@@ -187,12 +198,13 @@ func (h *Hub) logMiddleware(next http.Handler) http.Handler {
 // second secret.
 func (h *Hub) requireAuth(w http.ResponseWriter, r *http.Request) bool {
 	if h.cfg.AuthToken == "" {
+		// AllowNoAuth was set — let everything through.
 		return true
 	}
-	if tok := r.Header.Get(model.FleetAuthHeader); tok == h.cfg.AuthToken {
+	if tok := r.Header.Get(model.FleetAuthHeader); eqToken(tok, h.cfg.AuthToken) {
 		return true
 	}
-	if c, err := r.Cookie(webTokenCookie); err == nil && c.Value == h.cfg.AuthToken {
+	if c, err := r.Cookie(webTokenCookie); err == nil && eqToken(c.Value, h.cfg.AuthToken) {
 		return true
 	}
 	http.Error(w, "invalid token", http.StatusUnauthorized)
