@@ -155,6 +155,9 @@ func (l *LogsCollector) discoverServices() {
 			l.trackedUnits = append(l.trackedUnits, unit)
 		}
 	}
+
+	// Prune history for services no longer tracked
+	l.pruneHistory()
 }
 
 func (l *LogsCollector) discoverServicesFallback() {
@@ -169,6 +172,9 @@ func (l *LogsCollector) discoverServicesFallback() {
 			l.trackedUnits = append(l.trackedUnits, unit)
 		}
 	}
+
+	// Prune history for services no longer tracked
+	l.pruneHistory()
 }
 
 // errorKeywords matches case-insensitively against log lines.
@@ -210,6 +216,27 @@ func (l *LogsCollector) queryJournal(unit string, sinceSec int) (errors, warns i
 		}
 	}
 	return
+}
+
+// pruneHistory removes history entries for services no longer in trackedUnits.
+// This prevents the history map from growing unbounded when services are removed.
+func (l *LogsCollector) pruneHistory() {
+	if l.history == nil {
+		return
+	}
+
+	// Build a map of currently tracked units for O(1) lookup
+	tracked := make(map[string]struct{}, len(l.trackedUnits))
+	for _, u := range l.trackedUnits {
+		tracked[u] = struct{}{}
+	}
+
+	// Remove any history entries not in the tracked set
+	for u := range l.history {
+		if _, ok := tracked[u]; !ok {
+			delete(l.history, u)
+		}
+	}
 }
 
 func copyRing(buf []float64, idx uint64) []float64 {
