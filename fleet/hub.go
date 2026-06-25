@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/ftahirops/xtop/model"
+	"golang.org/x/time/rate"
 
 	// Registers the "pgx" driver with database/sql
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -48,6 +49,11 @@ type Hub struct {
 	// bounded without a background goroutine.
 	dedupeMu sync.Mutex
 	dedupe   map[string]time.Time
+
+	// Per-agent token-bucket rate limiters for ingest endpoints.
+	// Lazily created; pruned alongside expired hosts in updateStaleStatus.
+	limMu    sync.Mutex
+	limiters map[string]*rate.Limiter
 
 	// Tracks stale/expired hosts in background
 	quitCh chan struct{}
@@ -82,10 +88,11 @@ func NewHub(cfg model.FleetHubConfig) (*Hub, error) {
 	_ = os.MkdirAll(filepath.Dir(cfg.SQLiteCachePath), 0o755)
 
 	h := &Hub{
-		cfg:    cfg,
-		hosts:  make(map[string]*model.FleetHost),
-		subs:   make(map[int]chan []byte),
-		quitCh: make(chan struct{}),
+		cfg:      cfg,
+		hosts:    make(map[string]*model.FleetHost),
+		subs:     make(map[int]chan []byte),
+		limiters: make(map[string]*rate.Limiter),
+		quitCh:   make(chan struct{}),
 	}
 
 	// Open Postgres (required)
@@ -229,6 +236,23 @@ func clientError(w http.ResponseWriter, status int, msg string, err error) {
 // OOM DoS attacks. Set to 5 MiB.
 const maxFleetBody = 5 << 20
 
+// allow returns true if the given agentID is within its per-agent rate limit
+// (50 requests/s with a burst of 100). Limiters are created lazily and pruned
+// when the corresponding host expires from the registry (see updateStaleStatus).
+func (h *Hub) allow(agentID string) bool {
+	h.limMu.Lock()
+	lim, ok := h.limiters[agentID]
+	if !ok {
+		if h.limiters == nil {
+			h.limiters = make(map[string]*rate.Limiter)
+		}
+		lim = rate.NewLimiter(rate.Limit(50), 100)
+		h.limiters[agentID] = lim
+	}
+	h.limMu.Unlock()
+	return lim.Allow()
+}
+
 // ─── Endpoints ───────────────────────────────────────────────────────────────
 
 func (h *Hub) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -255,6 +279,10 @@ func (h *Hub) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 	if hb.Hostname == "" || hb.AgentID == "" {
 		http.Error(w, "hostname and agent_id required", http.StatusBadRequest)
+		return
+	}
+	if !h.allow(hb.AgentID) {
+		clientError(w, http.StatusTooManyRequests, "rate limited", nil)
 		return
 	}
 	// Update in-memory registry
@@ -285,6 +313,10 @@ func (h *Hub) handleIncident(w http.ResponseWriter, r *http.Request) {
 	}
 	if inc.IncidentID == "" || inc.AgentID == "" {
 		http.Error(w, "incident_id and agent_id required", http.StatusBadRequest)
+		return
+	}
+	if !h.allow(inc.AgentID) {
+		clientError(w, http.StatusTooManyRequests, "rate limited", nil)
 		return
 	}
 	// Ingest quality gate — the agent-side gate in v0.43+ blocks these at
@@ -643,6 +675,15 @@ func (h *Hub) updateStaleStatus() {
 	}
 	for _, id := range expired {
 		delete(h.hosts, id)
+	}
+
+	// Prune rate limiters for expired agents to keep the map bounded.
+	if len(expired) > 0 {
+		h.limMu.Lock()
+		for _, id := range expired {
+			delete(h.limiters, id)
+		}
+		h.limMu.Unlock()
 	}
 }
 

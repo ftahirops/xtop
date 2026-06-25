@@ -139,3 +139,38 @@ func TestIncidentRejectsHugeBody(t *testing.T) {
 		t.Fatalf("want 400/413 for oversized body, got %d", w.Code)
 	}
 }
+
+func TestHeartbeatRateLimited(t *testing.T) {
+	h := newTestHub(t, model.FleetHubConfig{AllowNoAuth: true})
+	got429 := false
+	for i := 0; i < 500; i++ {
+		w := httptest.NewRecorder()
+		body := strings.NewReader(`{"hostname":"h","agent_id":"a"}`)
+		h.handleHeartbeat(w, httptest.NewRequest("POST", "/v1/heartbeat", body))
+		if w.Code == 429 {
+			got429 = true
+			break
+		}
+	}
+	if !got429 {
+		t.Fatal("expected rate limiting to trigger after 500 heartbeats from one agent_id")
+	}
+}
+
+func TestIncidentRateLimited(t *testing.T) {
+	h := newTestHub(t, model.FleetHubConfig{AllowNoAuth: true})
+	got429 := false
+	for i := 0; i < 500; i++ {
+		w := httptest.NewRecorder()
+		// Use different signatures to avoid dedup gate; confidence is int in model
+		body := strings.NewReader(`{"incident_id":"inc1","agent_id":"b","peak_score":80,"confidence":90,"update_type":"started","signature":"sig` + strings.Repeat("x", i%10) + `"}`)
+		h.handleIncident(w, httptest.NewRequest("POST", "/v1/incident", body))
+		if w.Code == 429 {
+			got429 = true
+			break
+		}
+	}
+	if !got429 {
+		t.Fatal("expected rate limiting to trigger after 500 incidents from one agent_id")
+	}
+}
