@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -202,17 +203,40 @@ func FindProfile(name string) (ModuleProfile, bool) {
 
 // ── Config persistence ───────────────────────────────────────────────────────
 
+// collectorRuntimeDir returns a per-user runtime directory created with mode 0700.
+// Priority: $XDG_RUNTIME_DIR/xtop → /run/xtop (root) → /tmp/xtop-<uid>.
+func collectorRuntimeDir() string {
+	if xdg := os.Getenv("XDG_RUNTIME_DIR"); xdg != "" {
+		dir := filepath.Join(xdg, "xtop")
+		_ = os.MkdirAll(dir, 0o700)
+		return dir
+	}
+	if os.Geteuid() == 0 {
+		dir := "/run/xtop"
+		_ = os.MkdirAll(dir, 0o700)
+		return dir
+	}
+	dir := filepath.Join(os.TempDir(), "xtop-"+strconv.Itoa(os.Getuid()))
+	_ = os.MkdirAll(dir, 0o700)
+	return dir
+}
+
 // ModuleConfigPath returns the on-disk location for the persisted config.
 // Defaults to ~/.xtop/modules.json; respects $XTOP_MODULES_PATH for tests.
+// Falls back to XDG_RUNTIME_DIR/xtop or /tmp/xtop-<uid> (mode 0700) when
+// the home directory is unavailable.
 func ModuleConfigPath() string {
 	if v := os.Getenv("XTOP_MODULES_PATH"); v != "" {
 		return v
 	}
 	home, err := os.UserHomeDir()
-	if err != nil {
-		return "/tmp/xtop-modules.json"
+	if err == nil {
+		dir := filepath.Join(home, ".xtop")
+		if err := os.MkdirAll(dir, 0o700); err == nil {
+			return filepath.Join(dir, "modules.json")
+		}
 	}
-	return filepath.Join(home, ".xtop", "modules.json")
+	return filepath.Join(collectorRuntimeDir(), "xtop-modules.json")
 }
 
 var moduleConfigMu sync.Mutex

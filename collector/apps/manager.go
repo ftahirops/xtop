@@ -2,7 +2,6 @@ package apps
 
 import (
 	"fmt"
-	"os"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -120,48 +119,11 @@ func (m *Manager) Collect(snap *model.Snapshot) error {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	// File-based debug log — TUI hides stderr, so use a file. Activated by
-	// XTOP_DEBUG_APPS_TUI=1 (same flag as the UI panel debug).
-	dbg := os.Getenv("XTOP_DEBUG_APPS_TUI") == "1"
-	if dbg {
-		if f, ferr := os.OpenFile("/tmp/xtop_apps_mgr.log",
-			os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); ferr == nil {
-			fmt.Fprintf(f, "[%s] Collect ENTER modules=%d detected=%d tickCount=%d\n",
-				time.Now().Format("15:04:05.000"),
-				len(m.modules), len(m.detected), m.tickCount)
-			f.Close()
-		}
-	}
-	defer func() {
-		if dbg {
-			if f, ferr := os.OpenFile("/tmp/xtop_apps_mgr.log",
-				os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); ferr == nil {
-				fmt.Fprintf(f, "[%s] Collect EXIT  detected=%d instances=%d\n",
-					time.Now().Format("15:04:05.000"),
-					len(m.detected), len(instances))
-				f.Close()
-			}
-		}
-	}()
 
 	// Run detection scan periodically using a full /proc scan
 	// (snap.Processes is filtered to top N by CPU/IO — idle apps would be missed)
 	if time.Since(m.lastScan) >= appScanInterval || m.detected == nil {
 		allProcs := scanAllProcesses()
-		if dbg {
-			if f, ferr := os.OpenFile("/tmp/xtop_apps_mgr.log",
-				os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); ferr == nil {
-				mongo := 0
-				for _, p := range allProcs {
-					if p.Comm == "mongod" || p.Comm == "mongos" {
-						mongo++
-					}
-				}
-				fmt.Fprintf(f, "[%s]   detection: scanAllProcesses got %d procs, %d are mongod\n",
-					time.Now().Format("15:04:05.000"), len(allProcs), mongo)
-				f.Close()
-			}
-		}
 		// Bug fix: a single transient /proc read failure used to wipe
 		// m.detected entirely (apps would vanish from the UI for up to 30s
 		// until the next scan). Only rebuild detection if the new scan

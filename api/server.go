@@ -230,20 +230,37 @@ type StatusResponse struct {
 	MemPct         float64     `json:"mem_pct"`
 }
 
-// DefaultSockPath returns the preferred socket path.
+// xtopRuntimeDir returns a per-user runtime directory created with mode 0700.
+// Priority: $XDG_RUNTIME_DIR/xtop → /run/xtop (root) → /tmp/xtop-<uid>.
+func xtopRuntimeDir() string {
+	if xdg := os.Getenv("XDG_RUNTIME_DIR"); xdg != "" {
+		dir := filepath.Join(xdg, "xtop")
+		_ = os.MkdirAll(dir, 0o700)
+		return dir
+	}
+	if os.Geteuid() == 0 {
+		dir := "/run/xtop"
+		_ = os.MkdirAll(dir, 0o700)
+		return dir
+	}
+	dir := filepath.Join(os.TempDir(), "xtop-"+strconv.Itoa(os.Getuid()))
+	_ = os.MkdirAll(dir, 0o700)
+	return dir
+}
+
+// DefaultSockPath returns the preferred socket path under a 0700 runtime directory.
 func DefaultSockPath() string {
-	// Try /run first (requires root)
-	if _, err := os.Stat("/run"); err == nil {
-		if os.Geteuid() == 0 {
-			return "/run/xtop.sock"
+	// Non-root: prefer ~/.xtop which the user owns exclusively.
+	if os.Geteuid() != 0 {
+		if home, err := os.UserHomeDir(); err == nil {
+			dir := filepath.Join(home, ".xtop")
+			if err := os.MkdirAll(dir, 0o700); err == nil {
+				return filepath.Join(dir, "xtop.sock")
+			}
 		}
 	}
-	// Fallback to user home
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "/tmp/xtop.sock"
-	}
-	return filepath.Join(home, ".xtop", "xtop.sock")
+	// Root or home unavailable: use the XDG/run-based runtime dir.
+	return filepath.Join(xtopRuntimeDir(), "xtop.sock")
 }
 
 // DaemonSnapshotProvider wraps engine state for the API.

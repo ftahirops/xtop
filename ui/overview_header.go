@@ -2,11 +2,9 @@ package ui
 
 import (
 	"fmt"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/ftahirops/xtop/model"
 )
@@ -170,24 +168,6 @@ func renderOverviewAppsSummary(snap *model.Snapshot, width int) string {
 		sb.WriteString(boxRow(dimStyle.Render("  collecting..."), innerW) + "\n")
 		sb.WriteString(boxBot(innerW) + "\n")
 		return sb.String()
-	}
-	// DEBUG (XTOP_DEBUG_APPS_TUI=1): log every render's view of apps so we
-	// can verify whether snap.Global.Apps.Instances reaches the TUI panel.
-	if os.Getenv("XTOP_DEBUG_APPS_TUI") == "1" {
-		if f, err := os.OpenFile("/tmp/xtop_tui_apps.log",
-			os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
-			fmt.Fprintf(f, "[%s] render: snap=%p ident=%d apps=%d\n",
-				time.Now().Format("15:04:05"), snap,
-				len(snap.Global.AppIdentities),
-				len(snap.Global.Apps.Instances))
-			if len(snap.Global.Apps.Instances) > 0 {
-				for _, a := range snap.Global.Apps.Instances {
-					fmt.Fprintf(f, "  -> %s pid=%d cpu=%.1f rss=%.0fMB\n",
-						a.DisplayName, a.PID, a.CPUPct, a.RSSMB)
-				}
-			}
-			f.Close()
-		}
 	}
 	if len(snap.Global.Apps.Instances) == 0 {
 		identCount := len(snap.Global.AppIdentities)
