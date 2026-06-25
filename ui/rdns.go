@@ -5,6 +5,7 @@ import (
 	"context"
 	"net"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -23,8 +24,8 @@ type rdnsCacheEntry struct {
 const rdnsTTL = 5 * time.Minute
 
 // maxRDNS is the upper bound on the number of entries the rdns cache may hold.
-// When exceeded, expired entries are purged first; if still over, arbitrary
-// entries are dropped until the map is at or under the cap.
+// When exceeded, expired entries are purged first; if still over, the oldest
+// entries (earliest expires) are dropped until the map is at or under the cap.
 const maxRDNS = 2048
 
 // rdnsPruneIfNeeded must be called under rdnsCache.Lock (write lock).
@@ -40,11 +41,22 @@ func rdnsPruneIfNeeded() {
 			delete(rdnsCache.entries, k)
 		}
 	}
-	// Second pass: if still over cap, evict arbitrary entries one at a time.
-	for len(rdnsCache.entries) > maxRDNS {
-		for k := range rdnsCache.entries {
-			delete(rdnsCache.entries, k)
-			break
+	// Second pass: if still over cap, evict the oldest entries (earliest expiry)
+	// in one sorted pass to avoid O(n^2) map iteration.
+	if excess := len(rdnsCache.entries) - maxRDNS; excess > 0 {
+		type kv struct {
+			key     string
+			expires time.Time
+		}
+		pairs := make([]kv, 0, len(rdnsCache.entries))
+		for k, e := range rdnsCache.entries {
+			pairs = append(pairs, kv{k, e.expires})
+		}
+		sort.Slice(pairs, func(i, j int) bool {
+			return pairs[i].expires.Before(pairs[j].expires)
+		})
+		for _, p := range pairs[:excess] {
+			delete(rdnsCache.entries, p.key)
 		}
 	}
 }

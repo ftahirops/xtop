@@ -67,3 +67,49 @@ func TestRDNSCacheBoundMixed(t *testing.T) {
 		t.Errorf("cache has %d entries after mixed prune, want <= %d", n, maxRDNS)
 	}
 }
+
+// TestRDNSOldestEvicted verifies that when the cache exceeds maxRDNS with only
+// live entries, the second-pass eviction removes the OLDEST entries (earliest
+// expires) rather than arbitrary ones.
+func TestRDNSOldestEvicted(t *testing.T) {
+	rdnsCache.Lock()
+	rdnsCache.entries = make(map[string]rdnsCacheEntry)
+
+	// Insert maxRDNS+100 live entries with staggered expiry times.
+	// Entries 0..99   → expires in 1 minute  (oldest, should be evicted)
+	// Entries 100..maxRDNS+99 → expires in 10 minutes (newer, should survive)
+	total := maxRDNS + 100
+	now := time.Now()
+	for i := 0; i < total; i++ {
+		ip := fmt.Sprintf("10.%d.%d.%d", i/65536, (i/256)%256, i%256)
+		var exp time.Time
+		if i < 100 {
+			exp = now.Add(1 * time.Minute) // oldest
+		} else {
+			exp = now.Add(10 * time.Minute) // newer
+		}
+		rdnsCache.entries[ip] = rdnsCacheEntry{name: ip, expires: exp}
+	}
+	rdnsCache.Unlock()
+
+	rdnsCache.Lock()
+	rdnsPruneIfNeeded()
+	rdnsCache.Unlock()
+
+	rdnsCache.RLock()
+	defer rdnsCache.RUnlock()
+
+	// (a) cache must be at cap
+	if got := len(rdnsCache.entries); got != maxRDNS {
+		t.Errorf("cache len = %d, want %d", got, maxRDNS)
+	}
+
+	// (b) the 100 short-expiry entries must have been evicted; only 10-minute
+	// entries should remain.
+	for i := 0; i < 100; i++ {
+		ip := fmt.Sprintf("10.%d.%d.%d", i/65536, (i/256)%256, i%256)
+		if _, ok := rdnsCache.entries[ip]; ok {
+			t.Errorf("entry %s (oldest) survived eviction but should have been removed", ip)
+		}
+	}
+}
