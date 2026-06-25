@@ -3,6 +3,7 @@ package fleet
 import (
 	"crypto/subtle"
 	"database/sql"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
@@ -172,5 +173,36 @@ func TestIncidentRateLimited(t *testing.T) {
 	}
 	if !got429 {
 		t.Fatal("expected rate limiting to trigger after 500 incidents from one agent_id")
+	}
+}
+
+func TestHandleGetHostValidatesPathTraversal(t *testing.T) {
+	h := newTestHub(t, model.FleetHubConfig{AllowNoAuth: true})
+
+	// Test 1: Path traversal attempt should return 400
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/v1/host/../../etc/passwd", nil)
+	h.handleGetHost(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("path traversal should return 400, got %d", w.Code)
+	}
+
+	// Test 2: Valid hostname (not in registry) should return 404, not 400
+	w = httptest.NewRecorder()
+	r = httptest.NewRequest("GET", "/v1/host/localhost", nil)
+	h.handleGetHost(w, r)
+	if w.Code == http.StatusBadRequest {
+		t.Fatalf("valid hostname should not return 400, got %d", w.Code)
+	}
+	if w.Code != http.StatusNotFound {
+		t.Logf("expected 404 for missing host, got %d", w.Code)
+	}
+
+	// Test 3: Valid hostname with dots, dashes, and underscores
+	w = httptest.NewRecorder()
+	r = httptest.NewRequest("GET", "/v1/host/my-host.example_01", nil)
+	h.handleGetHost(w, r)
+	if w.Code == http.StatusBadRequest {
+		t.Fatalf("valid hostname with dots/dashes/underscores should not return 400, got %d", w.Code)
 	}
 }

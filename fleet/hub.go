@@ -232,6 +232,26 @@ func clientError(w http.ResponseWriter, status int, msg string, err error) {
 	http.Error(w, msg, status)
 }
 
+// validHostname returns true if s is a valid hostname:
+// - length 1..253
+// - contains only [A-Za-z0-9._-]
+// - does not contain ".."
+func validHostname(s string) bool {
+	if len(s) < 1 || len(s) > 253 {
+		return false
+	}
+	if strings.Contains(s, "..") {
+		return false
+	}
+	for _, c := range s {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+			c == '.' || c == '_' || c == '-') {
+			return false
+		}
+	}
+	return true
+}
+
 // maxFleetBody is the maximum size (in bytes) for request bodies to prevent
 // OOM DoS attacks. Set to 5 MiB.
 const maxFleetBody = 5 << 20
@@ -393,6 +413,10 @@ func (h *Hub) handleGetHost(w http.ResponseWriter, r *http.Request) {
 	hostname = strings.Trim(hostname, "/")
 	if hostname == "" {
 		http.Error(w, "hostname required", http.StatusBadRequest)
+		return
+	}
+	if !validHostname(hostname) {
+		clientError(w, http.StatusBadRequest, "invalid hostname", nil)
 		return
 	}
 	h.hostsMu.RLock()
