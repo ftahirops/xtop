@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"os/exec"
 	"regexp"
@@ -87,6 +89,24 @@ func runCmd(name string, args ...string) (string, error) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
 	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+// haproxySocketCmd sends a single HAProxy admin command over a Unix socket and
+// returns the response. No shell or socat dependency — stdlib net only.
+func haproxySocketCmd(socketPath, cmd string) (string, error) {
+	conn, err := net.DialTimeout("unix", socketPath, 2*time.Second)
+	if err != nil {
+		return "", err
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		return "", err
+	}
+	if _, err := fmt.Fprintf(conn, "%s\n", cmd); err != nil {
+		return "", err
+	}
+	out, err := io.ReadAll(conn)
 	return string(out), err
 }
 
@@ -748,15 +768,9 @@ func DiagHAProxy() model.ServiceDiag {
 		}
 	}
 
-	hasSocat := false
-	if _, err := exec.LookPath("socat"); err == nil {
-		hasSocat = true
-	}
-
-	if socketPath != "" && hasSocat {
+	if socketPath != "" {
 		// show stat
-		statOut, err := runCmd("bash", "-c",
-			fmt.Sprintf(`echo "show stat" | socat unix-connect:%s stdio`, socketPath))
+		statOut, err := haproxySocketCmd(socketPath, "show stat")
 		if err == nil {
 			downBackends := 0
 			var total5xx, totalReq int64
@@ -812,8 +826,7 @@ func DiagHAProxy() model.ServiceDiag {
 		}
 
 		// show info
-		infoOut, err := runCmd("bash", "-c",
-			fmt.Sprintf(`echo "show info" | socat unix-connect:%s stdio`, socketPath))
+		infoOut, err := haproxySocketCmd(socketPath, "show info")
 		if err == nil {
 			info := parseKV(infoOut, ":")
 			currConns := atoiSafe(info["CurrConns"])
@@ -831,7 +844,7 @@ func DiagHAProxy() model.ServiceDiag {
 	} else {
 		addFinding(&sd, model.DiagInfo, "config",
 			"Stats socket not available",
-			"Install socat and configure HAProxy stats socket for full diagnostics",
+			"Configure HAProxy stats socket for full diagnostics",
 			"")
 	}
 
