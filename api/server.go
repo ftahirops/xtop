@@ -250,16 +250,19 @@ func xtopRuntimeDir() string {
 
 // DefaultSockPath returns the preferred socket path under a 0700 runtime directory.
 func DefaultSockPath() string {
+	// Root: use the original /run/xtop.sock path for backward compatibility.
+	if os.Geteuid() == 0 {
+		return "/run/xtop.sock"
+	}
+
 	// Non-root: prefer ~/.xtop which the user owns exclusively.
-	if os.Geteuid() != 0 {
-		if home, err := os.UserHomeDir(); err == nil {
-			dir := filepath.Join(home, ".xtop")
-			if err := os.MkdirAll(dir, 0o700); err == nil {
-				return filepath.Join(dir, "xtop.sock")
-			}
+	if home, err := os.UserHomeDir(); err == nil {
+		dir := filepath.Join(home, ".xtop")
+		if err := os.MkdirAll(dir, 0o700); err == nil {
+			return filepath.Join(dir, "xtop.sock")
 		}
 	}
-	// Root or home unavailable: use the XDG/run-based runtime dir.
+	// Non-root fallback: use the XDG/run-based runtime dir.
 	return filepath.Join(xtopRuntimeDir(), "xtop.sock")
 }
 
