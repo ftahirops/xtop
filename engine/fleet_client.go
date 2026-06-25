@@ -479,7 +479,7 @@ func buildHeartbeat(snap *model.Snapshot, result *model.AnalysisResult, agentID,
 		hb.PrimaryBottleneck = result.PrimaryBottleneck
 		hb.PrimaryScore = result.PrimaryScore
 		hb.Confidence = result.Confidence
-		hb.CulpritProcess = result.PrimaryProcess
+		hb.CulpritProcess = ScrubCmdline(result.PrimaryProcess)
 		hb.CulpritPID = result.PrimaryPID
 		hb.CulpritApp = result.PrimaryAppName
 		// Self-resource reporting — published whenever the engine has
@@ -564,7 +564,7 @@ func buildIncident(snap *model.Snapshot, result *model.AnalysisResult, agentID, 
 		inc.PeakScore = result.PrimaryScore
 		inc.Confidence = result.Confidence
 		inc.Health = result.Health
-		inc.Culprit = result.PrimaryProcess
+		inc.Culprit = ScrubCmdline(result.PrimaryProcess)
 		inc.CulpritPID = result.PrimaryPID
 		inc.CulpritApp = result.PrimaryAppName
 		inc.Signature = fleetSignatureFromResult(result)
