@@ -18,3 +18,10 @@ type AppModule interface {
 	Detect(processes []model.ProcessMetrics) []DetectedApp
 	Collect(app *DetectedApp, secrets *AppSecrets) model.AppInstance
 }
+
+// AppPruner is an optional interface for modules that cache per-PID delta state.
+// Manager.Collect calls Prune once per tick with the full set of live PIDs so
+// that stale entries for dead processes do not accumulate unboundedly.
+type AppPruner interface {
+	Prune(live map[int]bool)
+}

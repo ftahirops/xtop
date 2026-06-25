@@ -32,6 +32,12 @@ func NewMySQLModule() AppModule {
 func (m *mysqlModule) Type() string        { return "mysql" }
 func (m *mysqlModule) DisplayName() string { return "MySQL" }
 
+// Prune removes delta state for PIDs that are no longer live.
+func (m *mysqlModule) Prune(live map[int]bool) {
+	prunePIDMap(m.prevStatus, live)
+	prunePIDMap(m.prevTime, live)
+}
+
 func (m *mysqlModule) Detect(processes []model.ProcessMetrics) []DetectedApp {
 	var apps []DetectedApp
 	for _, p := range processes {

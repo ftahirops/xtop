@@ -259,6 +259,20 @@ func (m *Manager) Collect(snap *model.Snapshot) error {
 			instances = append(instances, inst)
 		}()
 	}
+	// Prune dead-PID delta state from modules that implement AppPruner.
+	// Build the live-PID set from the current detected entries, then let each
+	// pruning-aware module evict stale per-PID map entries. This prevents
+	// unbounded growth when PIDs exit between detection scans.
+	livePIDs := make(map[int]bool, len(m.detected))
+	for _, e := range m.detected {
+		livePIDs[e.app.PID] = true
+	}
+	for _, mod := range m.modules {
+		if p, ok := mod.(AppPruner); ok {
+			p.Prune(livePIDs)
+		}
+	}
+
 	// snap.Global.Apps assignment is in the deferred function at the top of
 	// Collect — that ensures it runs even if any iteration above panics.
 	return nil

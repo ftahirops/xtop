@@ -49,6 +49,9 @@ func (m *logstashModule) Close() {
 	}
 }
 
+// Prune removes delta state for PIDs that are no longer live.
+func (m *logstashModule) Prune(live map[int]bool) { prunePIDMap(m.prev, live) }
+
 func (m *logstashModule) Type() string        { return "logstash" }
 func (m *logstashModule) DisplayName() string { return "Logstash" }
 

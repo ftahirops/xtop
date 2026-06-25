@@ -46,6 +46,9 @@ func (m *kibanaModule) Close() {
 	}
 }
 
+// Prune removes delta state for PIDs that are no longer live.
+func (m *kibanaModule) Prune(live map[int]bool) { prunePIDMap(m.prev, live) }
+
 func (m *kibanaModule) Type() string        { return "kibana" }
 func (m *kibanaModule) DisplayName() string { return "Kibana" }
 
