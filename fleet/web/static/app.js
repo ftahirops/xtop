@@ -15,6 +15,12 @@
     lastUpdate: null,
   };
 
+  // Set to true when host data changes; cleared after a full renderHosts().
+  // The 5-second interval only rebuilds the grid when this is true; otherwise
+  // it runs the cheap refreshTimeAgo() pass so "Ns ago" stays current without
+  // touching the rest of the DOM.
+  let hostsDirty = false;
+
   const $ = (sel) => document.querySelector(sel);
   const $$ = (sel) => document.querySelectorAll(sel);
 
@@ -235,6 +241,7 @@
           class: 'host-meta',
           style: 'margin-top:6px',
           title: 'last heartbeat: ' + fmtLocalDateTime(h.last_seen),
+          dataset: { seenAt: h.last_seen || '', incidentId: h.active_incident_id || '' },
         },
         'seen ' + seenWithExact(h.last_seen) +
         (h.active_incident_id ? ' · incident ' + shortID(h.active_incident_id) : '')),
@@ -458,6 +465,20 @@
     );
   }
 
+  // ── Lightweight time-ago refresh ───────────────────────────
+  // Updates only the textContent of the "seen …" row in each host card.
+  // No DOM nodes are created or removed — just a textContent write per card.
+  // This keeps relative timestamps ("3s ago", "2m ago") current between
+  // full renderHosts() rebuilds, without the DOM thrash of rebuilding cards.
+  function refreshTimeAgo() {
+    $$('[data-seen-at]').forEach(node => {
+      const iso = node.dataset.seenAt;
+      const incId = node.dataset.incidentId;
+      node.textContent = 'seen ' + seenWithExact(iso) +
+        (incId ? ' · incident ' + shortID(incId) : '');
+    });
+  }
+
   // ── SSE stream ─────────────────────────────────────────────
   function connectStream() {
     const es = new EventSource('/v1/stream');
@@ -467,7 +488,9 @@
         state.hosts.clear();
         for (const h of hosts) state.hosts.set(h.agent_id, h);
         markConnected();
+        hostsDirty = true;
         renderHosts();
+        hostsDirty = false;
       } catch (e) { console.error(e); }
     });
     es.addEventListener('heartbeat', (ev) => {
@@ -475,7 +498,9 @@
         const hb = JSON.parse(ev.data);
         applyHeartbeat(hb);
         markConnected();
+        hostsDirty = true;
         renderHosts();
+        hostsDirty = false;
       } catch (e) { console.error(e); }
     });
     es.addEventListener('incident', () => {
@@ -545,6 +570,11 @@
 
     loadIncidents();
     connectStream();
-    setInterval(renderHosts, 5000);
+    // Every 5 s: rebuild the grid only if host data changed (hostsDirty),
+    // otherwise just refresh the relative "Ns ago" timestamps in-place.
+    setInterval(() => {
+      if (hostsDirty) { renderHosts(); hostsDirty = false; }
+      else { refreshTimeAgo(); }
+    }, 5000);
   });
 })();
