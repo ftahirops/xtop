@@ -49,12 +49,15 @@ func TestUsageRecorderConcurrentFlushAndPrune(t *testing.T) {
 		go func(g int) {
 			defer wg.Done()
 			for m := 0; m < minutesPerGoroutine; m++ {
+				// Prepare bytes under r.mu (clears samples), then write outside r.mu.
 				r.mu.Lock()
-				// Set a unique minute so each flush writes a distinct line.
 				r.currentMin = time.Now().UTC().Add(-time.Duration(m+g*minutesPerGoroutine) * time.Minute)
 				r.samples = []usageSample{{CPU: float64(g*100 + m), Mem: 50, IO: 10, LoadRatio: 0.5}}
-				r.flushLocked(4, 8*1024*1024*1024)
-				r.mu.Unlock()
+				payload, ok := r.prepareFlushLocked(4, 8*1024*1024*1024)
+				r.mu.Unlock() // released before any file IO
+				if ok {
+					r.writeFlush(payload)
+				}
 				flushed.Add(1)
 				// Tiny pause to let pruner interleave.
 				time.Sleep(time.Microsecond)
@@ -122,12 +125,15 @@ func TestUsageRecorderObserveAndPruneRace(t *testing.T) {
 		defer wg.Done()
 		// Observe calls with different minutes to trigger flush paths.
 		for i := 0; i < 200; i++ {
-			// Directly set currentMin to force a rollover on every call.
+			// Prepare bytes under r.mu, write outside r.mu.
 			r.mu.Lock()
 			r.currentMin = time.Now().UTC().Add(-time.Duration(i+1) * time.Minute)
 			r.samples = []usageSample{{CPU: float64(i % 100), Mem: 50}}
-			r.flushLocked(4, 0)
-			r.mu.Unlock()
+			payload, ok := r.prepareFlushLocked(4, 0)
+			r.mu.Unlock() // released before file IO
+			if ok {
+				r.writeFlush(payload)
+			}
 			time.Sleep(time.Microsecond)
 		}
 		close(done)
