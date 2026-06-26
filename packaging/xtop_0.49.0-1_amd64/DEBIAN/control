@@ -1,0 +1,35 @@
+Package: xtop
+Version: 0.49.0-1
+Section: admin
+Priority: optional
+Architecture: amd64
+Depends: libc6
+Recommends: postgresql, journalctl
+Installed-Size: 37740
+Maintainer: Farhan Tahir <farhan.003@gmail.com>
+Homepage: https://github.com/ftahirops/xtop
+Description: Incident-first root-cause analysis console for Linux
+ v0.49.0 — Security hardening, memory/concurrency fixes, test + CI
+ infrastructure. Groundwork for Phase 2 journal-driven service RCA and
+ Phase 4 config-drift detection.
+ .
+ This release solidifies the Phase 1 proof-system architecture with:
+ .
+   Security & Stability
+     * buffer overflow fix in SMART parser
+     * race condition fixes in host tracking (fleet hub)
+     * proper resource cleanup in engine shutdown
+     * unbounded cache eviction in kubepods tracking
+ .
+   Test Infrastructure
+     * test coverage improvements
+     * integration test harness for RCA replay
+ .
+   Groundwork for Phase 2 & Phase 4
+     * journal entry types and structured JSON parsing
+     * config snapshot collector framework
+     * ready for service RCA via systemd journal findings
+     * ready for config-drift detection vs baseline
+ .
+ All v0.48.0 features (NEXTGEN proof-system, multi-gate verifier,
+ entity graph, replay corpus) remain intact and unchanged.

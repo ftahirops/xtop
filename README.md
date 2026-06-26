@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/xtop-v0.48.0-00d4aa?style=for-the-badge&logo=linux&logoColor=white" alt="version"/>
+  <img src="https://img.shields.io/badge/xtop-v0.49.0-00d4aa?style=for-the-badge&logo=linux&logoColor=white" alt="version"/>
   <img src="https://img.shields.io/badge/Go-1.25+-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="go"/>
   <img src="https://img.shields.io/badge/eBPF-Powered-ff6600?style=for-the-badge&logo=linux&logoColor=white" alt="ebpf"/>
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="license"/>
@@ -38,6 +38,15 @@
 </p>
 
 ---
+
+## What is new in v0.49.0
+
+**Security hardening, memory/concurrency fixes, and groundwork for Phase 2 (journal-driven service RCA) and Phase 4 (config-drift detection).**
+
+- **Security & Stability.** Fixed buffer overflow in SMART disk-health parser. Fixed race condition in fleet hub host-state tracking. Proper resource cleanup in engine shutdown (AdaptiveThresholdDB close). Unbounded cache eviction fix in kubepods cgroup tracking.
+- **Test Infrastructure.** Enhanced integration test coverage. Replay harness for RCA verification. Groundwork for Phase 2 journal-driven findings and Phase 4 config-drift correlation.
+
+All v0.48.0 features (NEXTGEN proof-system, multi-gate verifier, entity graph, replay corpus) remain intact and unchanged.
 
 ## What is new in v0.48.0
 
@@ -694,12 +703,12 @@ xtop -cron-install
 
 ```bash
 # Ubuntu/Debian (amd64)
-wget https://github.com/ftahirops/xtop/releases/download/v0.48.0/xtop_0.48.0-1_amd64.deb
-sudo dpkg -i xtop_0.48.0-1_amd64.deb
+wget https://github.com/ftahirops/xtop/releases/download/v0.49.0/xtop_0.49.0-1_amd64.deb
+sudo dpkg -i xtop_0.49.0-1_amd64.deb
 
 # RHEL/Rocky/Fedora (x86_64)
-wget https://github.com/ftahirops/xtop/releases/download/v0.48.0/xtop-0.48.0-1.x86_64.rpm
-sudo rpm -i xtop-0.48.0-1.x86_64.rpm
+wget https://github.com/ftahirops/xtop/releases/download/v0.49.0/xtop-0.49.0-1.x86_64.rpm
+sudo rpm -i xtop-0.49.0-1.x86_64.rpm
 
 # Arch Linux
 git clone https://github.com/ftahirops/xtop.git
@@ -711,7 +720,7 @@ cd xtop/packaging/archlinux && makepkg -si
 ```bash
 git clone https://github.com/ftahirops/xtop.git
 cd xtop
-CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.48.0" -o xtop .
+CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.49.0" -o xtop .
 sudo install -m 755 xtop /usr/local/bin/xtop
 ```
 
@@ -743,15 +752,15 @@ sudo xtop -json | jq   # JSON for scripting
 ### From .deb Package (Ubuntu 22.04/24.04, Debian)
 
 ```bash
-wget https://github.com/ftahirops/xtop/releases/download/v0.48.0/xtop_0.48.0-1_amd64.deb
-sudo dpkg -i xtop_0.48.0-1_amd64.deb
+wget https://github.com/ftahirops/xtop/releases/download/v0.49.0/xtop_0.49.0-1_amd64.deb
+sudo dpkg -i xtop_0.49.0-1_amd64.deb
 ```
 
 ### From .rpm Package (Rocky Linux, RHEL, AlmaLinux, Fedora)
 
 ```bash
-wget https://github.com/ftahirops/xtop/releases/download/v0.48.0/xtop-0.48.0-1.x86_64.rpm
-sudo rpm -i xtop-0.48.0-1.x86_64.rpm
+wget https://github.com/ftahirops/xtop/releases/download/v0.49.0/xtop-0.49.0-1.x86_64.rpm
+sudo rpm -i xtop-0.49.0-1.x86_64.rpm
 ```
 
 ### Arch Linux (PKGBUILD)
@@ -773,7 +782,7 @@ Builds from source automatically. Optional dependencies: `nvidia-utils` (GPU mon
 ```bash
 git clone https://github.com/ftahirops/xtop.git
 cd xtop
-CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.48.0" -o xtop .
+CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/ftahirops/xtop/cmd.Version=0.49.0" -o xtop .
 sudo install -m 755 xtop /usr/local/bin/xtop
 ```
 
