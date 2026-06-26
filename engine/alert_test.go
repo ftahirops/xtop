@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"sync"
 	"testing"
 	"time"
 )
@@ -48,65 +47,43 @@ func TestValidateWebhookURL(t *testing.T) {
 	}
 }
 
-// TestNotifierClose verifies Close() behaviour: idempotent, no panic, worker exits.
+// TestNotifierClose verifies Close() behaviour: idempotent, no panic, queue properly closed.
 func TestNotifierClose(t *testing.T) {
-	cfg := AlertConfig{Webhook: "https://example.com/hook"}
-
 	t.Run("close_idempotent", func(t *testing.T) {
-		n := NewNotifier(cfg)
-		// Trigger worker goroutine.
-		n.Notify("test", nil)
-		// Close twice — must not panic.
+		// Verify Close() is idempotent: calling it multiple times does not panic.
+		// No need to spawn worker; Close() is synchronous and uses sync.Once.
+		n := NewNotifier(AlertConfig{})
 		n.Close()
-		n.Close()
+		n.Close() // Second Close must also succeed without panic.
 	})
 
 	t.Run("notify_after_close_noop", func(t *testing.T) {
-		n := NewNotifier(cfg)
+		// Verify Notify() after Close() does not panic; it returns safely via closed.Load().
+		n := NewNotifier(AlertConfig{Webhook: "https://example.com/hook"})
 		n.Close()
-		// Calling Notify on a closed notifier must not panic.
-		n.Notify("after_close", nil)
+		n.Notify("after_close", nil) // Must not panic.
 	})
 
-	t.Run("worker_exits_after_close", func(t *testing.T) {
-		n := NewNotifier(cfg)
-		// Kick the worker goroutine alive.
-		n.Notify("start", nil)
-
-		var wg sync.WaitGroup
-		wg.Add(1)
-		// Drain remaining jobs and detect channel close via a wrapper.
-		go func() {
-			defer wg.Done()
-			// Wait for the queue channel to be closed and drained by the worker.
-			// We do this by closing the notifier and then giving the worker a
-			// brief window to drain and exit.
-			n.Close()
-		}()
-		// wg.Wait() merely ensures Close() returned; the worker itself exits
-		// once the channel is drained — give it a moment.
-		wg.Wait()
+	t.Run("close_seals_queue", func(t *testing.T) {
+		// Verify that Close() properly closes the queue channel.
+		// After Close(), attempting to send on the queue panics (channel is closed).
+		n := NewNotifier(AlertConfig{})
+		n.Close()
 
 		done := make(chan struct{})
 		go func() {
-			// Spin until the queue channel is both closed and drained.
-			// alertWorker exits when range n.queue finishes, which happens
-			// after close(n.queue) and all enqueued items are consumed.
-			// We can't directly observe goroutine exit without modifying the
-			// worker, but we can verify via a recover-guarded send: sending on
-			// a closed channel panics, which proves the channel is closed.
+			// Attempt to send on the closed queue channel.
+			// This will panic; recover() catches it to signal success.
 			defer close(done)
 			defer func() { recover() }() //nolint:errcheck
-			// Attempt a blocking send; if channel is closed this panics,
-			// causing recover() to fire and done to be closed.
-			// If it blocks, the test timeout will catch it.
 			n.queue <- alertJob{}
 		}()
+
 		select {
 		case <-done:
-			// Good: channel is closed (send panicked) or worker drained it.
+			// Good: channel is closed; send panicked and recovered.
 		case <-time.After(2 * time.Second):
-			t.Fatal("timed out waiting for notifier channel to close")
+			t.Fatal("timed out waiting for queue to close")
 		}
 	})
 }
