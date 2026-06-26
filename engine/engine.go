@@ -15,6 +15,7 @@ import (
 	"github.com/ftahirops/xtop/collector/apps"
 	cgcollector "github.com/ftahirops/xtop/collector/cgroup"
 	bpf "github.com/ftahirops/xtop/collector/ebpf"
+	"github.com/ftahirops/xtop/collector/journal"
 	"github.com/ftahirops/xtop/collector/phpfpm"
 	"github.com/ftahirops/xtop/collector/profiler"
 	rt "github.com/ftahirops/xtop/collector/runtime"
@@ -76,6 +77,13 @@ type Engine struct {
 
 	// Operator-tunable RCA scoring thresholds (set via ApplyRCAThresholds).
 	rcaT effectiveRCAThresholds
+
+	// P2.4: Tier-1 journal RCA.
+	// journalQueryFn is the injectable journalctl query function. Default is
+	// journal.Query (no-op stub on non-Linux). Overridable in tests.
+	journalQueryFn JournalQueryFn
+	// journalCache holds per-unit journal findings for the 30s TTL cache.
+	journalCache *journalTier1Cache
 }
 
 // NewEngine creates a new engine with all collectors registered.
@@ -211,6 +219,8 @@ func NewEngineMode(historySize, intervalSec int, mode collector.Mode) *Engine {
 		intervalSec:      intervalSec,
 		mode:             mode,
 		memReliefQuit:    make(chan struct{}),
+		journalQueryFn:   journal.Query,
+		journalCache:     newJournalTier1Cache(),
 	}
 	// Initialize RCA thresholds to compiled-in defaults. Callers may
 	// override via ApplyRCAThresholds after construction.

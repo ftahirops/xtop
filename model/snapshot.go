@@ -434,6 +434,11 @@ type AnalysisResult struct {
 
 	// Cross-host correlation: related incidents on other hosts
 	CrossHostCorrelation string `json:"cross_host_correlation,omitempty"` // e.g. "Host db-server also reports IO bottleneck (score 78)"
+
+	// JournalFindings are structured log findings for the top suspect services
+	// under active RCA investigation (Tier-1 journal evidence, P2.4).
+	// Each entry is a single finding extracted from systemd journald.
+	JournalFindings []DiagFinding `json:"journal_findings,omitempty"`
 }
 
 // USECheck represents one USE method check for a resource (Utilization, Saturation, Errors).

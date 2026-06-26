@@ -608,6 +608,12 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History, 
 		result.Confidence = 100
 	}
 
+	// P2.4: Tier-1 journal RCA — on-demand journal evidence for the top
+	// suspect services identified above. Runs AFTER all suspects are known
+	// and AFTER result.Entities is built so InjectJournalEvidence can scope
+	// Facts to the right entity. Best-effort: never fails the tick.
+	injectJournalTier1(result, curr, e)
+
 	// NEXTGEN Phase 5: persist the frame to the corpus for offline
 	// replay. Best-effort, dedup'd to 1 write/sec, only triggers on
 	// non-OK results with a Tier A/B/C VerifiedCause. nil engine
