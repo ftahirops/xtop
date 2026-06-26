@@ -294,8 +294,10 @@ func parseJournalctl() []ForensicsEvent {
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 256*1024), 1024*1024)
 
+	earlyBreak := false
 	for scanner.Scan() {
 		if len(events) >= maxForensicsEvents {
+			earlyBreak = true
 			break
 		}
 
@@ -348,6 +350,12 @@ func parseJournalctl() []ForensicsEvent {
 				Detail:   truncateForensics(msg, 200),
 			})
 		}
+	}
+
+	// If we broke early due to hitting the event cap, kill the journalctl process
+	// to prevent it from blocking on a full pipe and causing cmd.Wait() to hang.
+	if earlyBreak && cmd.Process != nil {
+		_ = cmd.Process.Kill()
 	}
 
 	return events
