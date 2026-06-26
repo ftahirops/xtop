@@ -33,14 +33,21 @@ func UpdateSignalOnsets(hist *History, result *model.AnalysisResult) {
 		}
 	}
 
-	// CRITICAL FIX: Never delete onsets. Temporal ordering must be preserved
-	// even after a signal stops firing, so causal chains remain valid.
-	// e.g. if mem.reclaim.direct fires at T+0 and stops at T+10, but
-	// io.disk.latency starts at T+15, we still need to know reclaim came first.
-	// Onsets are cleared only when the entire incident resolves (no RCA firing).
-	if !hasAnyActiveRCA(result) {
-		// Full incident resolved — reset all onsets for next incident
+	// Prune onsets for signals that are no longer firing. This keeps the map
+	// bounded even during long-running incidents where many distinct evidence IDs
+	// fire and stop over time. Active onsets (in currentlyFiring) are never
+	// removed, so duration tracking and causal ordering for live signals remain
+	// correct. When no signal fires at all, reset the whole map — clean slate
+	// for the next incident.
+	if len(currentlyFiring) == 0 {
+		// Full incident resolved — reset all onsets for next incident.
 		hist.signalOnsets = make(map[string]time.Time)
+	} else {
+		for id := range hist.signalOnsets {
+			if !currentlyFiring[id] {
+				delete(hist.signalOnsets, id)
+			}
+		}
 	}
 }
 
