@@ -8,6 +8,7 @@ package engine
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -155,7 +156,7 @@ func TestJournalTier1_SuspectUnitQueried(t *testing.T) {
 	// The crash_restart_loop signature must appear.
 	sigFound := false
 	for _, jf := range result.JournalFindings {
-		if journalContains(jf.Summary, "crash_restart_loop") {
+		if strings.Contains(jf.Summary, "crash_restart_loop") {
 			sigFound = true
 			break
 		}
@@ -167,7 +168,8 @@ func TestJournalTier1_SuspectUnitQueried(t *testing.T) {
 
 // ─── TestJournalTier1_NonSuspectNotQueried ────────────────────────────────────
 //
-// Verifies that units NOT in the suspect set are never queried.
+// Verifies that units NOT in the suspect set are never queried (unrelated unit
+// absent from the snapshot entirely).
 
 func TestJournalTier1_NonSuspectNotQueried(t *testing.T) {
 	const targetUnit = "mysql.service"
@@ -186,6 +188,90 @@ func TestJournalTier1_NonSuspectNotQueried(t *testing.T) {
 		if u == unrelatedUnit {
 			t.Errorf("stub was unexpectedly called for non-suspect unit %q", unrelatedUnit)
 		}
+	}
+}
+
+// ─── TestJournalTier1_ScoreFilterGatesQuery ───────────────────────────────────
+//
+// Verifies the minSuspectScore gate: a unit that appears in result.RCA with
+// Score < minSuspectScore must NEVER be queried, while a unit with a high
+// score IS queried. This is tested by driving injectJournalTier1 directly
+// with a hand-crafted AnalysisResult so we can set exact scores.
+
+func TestJournalTier1_ScoreFilterGatesQuery(t *testing.T) {
+	const highUnit = "highscore-daemon.service"
+	const lowUnit = "lowscore-daemon.service"
+
+	var mu sync.Mutex
+	queriedUnits := map[string]int{}
+	fn := func(_ context.Context, unit string, _ time.Time) ([]journal.Entry, error) {
+		mu.Lock()
+		queriedUnits[unit]++
+		mu.Unlock()
+		return nil, nil
+	}
+
+	e := makeEngineWithStub(fn)
+
+	// Craft a result with one high-score entry and one zero-score entry.
+	result := &model.AnalysisResult{
+		RCA: []model.RCAEntry{
+			{
+				Bottleneck: "CPU Contention",
+				Score:      80, // above minSuspectScore → must be queried
+				TopCgroup:  "/system.slice/" + highUnit,
+			},
+			{
+				Bottleneck: "Disk I/O",
+				Score:      0, // below minSuspectScore → must NOT be queried
+				TopCgroup:  "/system.slice/" + lowUnit,
+			},
+		},
+	}
+
+	// Use a minimal snapshot and call injectJournalTier1 directly.
+	injectJournalTier1(result, nil, e)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if queriedUnits[lowUnit] > 0 {
+		t.Errorf("low-score unit %q was queried %d time(s); score filter not working",
+			lowUnit, queriedUnits[lowUnit])
+	}
+	if queriedUnits[highUnit] == 0 {
+		t.Errorf("high-score unit %q was never queried; expected at least one call", highUnit)
+	}
+}
+
+// ─── TestJournalTier1_DeadlineExpiry ─────────────────────────────────────────
+//
+// A blocking stub (that respects ctx cancellation) should be cut off by the
+// 1.5 s journalDeadline. The overall tick must return in well under 1.7 s,
+// proving the deadline fired rather than the 5 s timer.
+
+func TestJournalTier1_DeadlineExpiry(t *testing.T) {
+	fn := func(ctx context.Context, _ string, _ time.Time) ([]journal.Entry, error) {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(5 * time.Second):
+			return nil, nil
+		}
+	}
+
+	e := makeEngineWithStub(fn)
+	snap, rates := cpuSnapWithCgroup("/system.slice/mysql.service", "mysql")
+	h := newTestHistory()
+	feedHistory(h, snap, rates, 10)
+
+	start := time.Now()
+	AnalyzeRCA(snap, rates, h, nil, e)
+	elapsed := time.Since(start)
+
+	const maxExpected = 1700 * time.Millisecond
+	if elapsed > maxExpected {
+		t.Errorf("AnalyzeRCA took %v; expected deadline to fire within ~%v", elapsed, maxExpected)
 	}
 }
 
@@ -381,17 +467,3 @@ func TestJournalTier1_RCAEntryFacts(t *testing.T) {
 	}
 }
 
-// ─── helpers ─────────────────────────────────────────────────────────────────
-
-func journalContains(s, sub string) bool {
-	return len(s) >= len(sub) && (s == sub || len(sub) == 0 || journalFindStr(s, sub))
-}
-
-func journalFindStr(s, sub string) bool {
-	for i := 0; i <= len(s)-len(sub); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
-}

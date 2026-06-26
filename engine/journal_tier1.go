@@ -27,7 +27,6 @@ package engine
 import (
 	"context"
 	"fmt"
-	"path"
 	"strings"
 	"sync"
 	"time"
@@ -93,13 +92,8 @@ func (c *journalTier1Cache) set(unit string, findings []journal.JournalFinding) 
 //  2. TopAppName: sanitise (to lower, collapse spaces → "-") + ".service".
 //  3. TopProcess: as-is + ".service".
 func unitFromRCAEntry(entry model.RCAEntry) string {
-	// 1. Cgroup path — look for trailing *.service component.
+	// 1. Cgroup path — scan components right-to-left for a *.service suffix.
 	if entry.TopCgroup != "" {
-		base := path.Base(entry.TopCgroup)
-		if strings.HasSuffix(base, ".service") {
-			return base
-		}
-		// Some cgroups: system.slice/mysql.service — use last component.
 		parts := strings.Split(entry.TopCgroup, "/")
 		for i := len(parts) - 1; i >= 0; i-- {
 			if strings.HasSuffix(parts[i], ".service") {
@@ -160,6 +154,14 @@ func baselineRateForUnit(curr *model.Snapshot, unit string) float64 {
 	return 0
 }
 
+// queryOneSuspect wraps journalQueryFn with a per-call deadline. The defer
+// ensures cancel() fires even if journalQueryFn panics.
+func (e *Engine) queryOneSuspect(unit string, since time.Time) ([]journal.Entry, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), journalDeadline)
+	defer cancel()
+	return e.journalQueryFn(ctx, unit, since)
+}
+
 // injectJournalTier1 is called from AnalyzeRCA after suspects are known. It
 // fetches journal evidence for the top suspect services, classifies it, and
 // attaches the resulting Facts + DiagFindings to result.
@@ -208,10 +210,7 @@ func injectJournalTier1(result *model.AnalysisResult, curr *model.Snapshot, e *E
 		// Cache check.
 		findings, hit := e.journalCache.get(s.unit)
 		if !hit {
-			// Query with per-unit deadline.
-			ctx, cancel := context.WithTimeout(context.Background(), journalDeadline)
-			entries, err := e.journalQueryFn(ctx, s.unit, since)
-			cancel()
+			entries, err := e.queryOneSuspect(s.unit, since)
 			if err != nil {
 				// best-effort: skip on error
 				continue
