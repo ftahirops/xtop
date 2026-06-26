@@ -208,22 +208,33 @@ func TestFmtLargeNum(t *testing.T) {
 // ────────────────────────────────────────────────────────────────────────────
 
 func TestFmtBytes(t *testing.T) {
+	// Test happy-path cases with exact value assertions.
+	// fmtBytes thresholds: >=1e12 TB, >=1e9 GB, >=1e6 MB, >=1e3 KB, else B.
+	// Format: "%.1f <unit>" for KB/MB/GB/TB; "%.0f B" for bytes.
 	cases := []struct {
 		in   interface{}
 		want string
 	}{
-		{float64(500), "500.0 KB"}, // 500 < 1e3? wait — 500 < 1000 yes so "500 B"... let me check
 		{float64(0), "0 B"},
+		{float64(500), "500 B"},
+		{float64(1000), "1.0 KB"},
+		{float64(1500), "1.5 KB"},
 		{float64(1_000_000), "1.0 MB"},
+		{float64(2_500_000), "2.5 MB"},
 		{float64(1_000_000_000), "1.0 GB"},
+		{float64(5_500_000_000), "5.5 GB"},
 		{float64(1_000_000_000_000), "1.0 TB"},
+		{float64(2_500_000_000_000), "2.5 TB"},
 	}
-	// Adjust expectation for 500 — fmtBytes thresholds: >=1e12 TB, >=1e9 GB, >=1e6 MB, >=1e3 KB, else B
-	// 500 < 1000 → "500 B" (with %.1f → "500.0 B")
-	// but let's check dynamically to not hardcode the format string
-	_ = cases
-	// Just verify it doesn't panic for edge cases and produces non-empty strings
-	edgeCases := []interface{}{float64(0), float64(-1), float64(1e15), "notanumber", nil}
+	for _, c := range cases {
+		got := fmtBytes(c.in)
+		if got != c.want {
+			t.Errorf("fmtBytes(%v) = %q, want %q", c.in, got, c.want)
+		}
+	}
+
+	// Test malformed/edge cases: must not panic, must produce non-empty strings.
+	edgeCases := []interface{}{"notanumber", nil, float64(-1), float64(1e15)}
 	for _, v := range edgeCases {
 		got := fmtBytes(v)
 		if got == "" {
