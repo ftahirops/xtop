@@ -21,6 +21,11 @@
   // touching the rest of the DOM.
   let hostsDirty = false;
 
+  // Issue 47: AbortController for the in-flight drawer fetch pair.
+  // Aborted when a new drawer opens before the previous fetch completes,
+  // preventing a slow earlier response from overwriting the current drawer.
+  let drawerAbort = null;
+
   const $ = (sel) => document.querySelector(sel);
   const $$ = (sel) => document.querySelectorAll(sel);
 
@@ -279,9 +284,18 @@
       renderIncidents(Array.isArray(body) ? body : []);
     } catch (e) {
       clear(tbody);
-      tbody.appendChild(el('tr', null,
-        el('td', { colspan: '7', class: 'empty' }, "Couldn't load incidents: " + e.message),
-      ));
+      // Issue 51: render both the error message and a Retry button so the
+      // operator can recover without a full page reload.
+      const td = el('td', { colspan: '7', class: 'empty' });
+      const errSpan = document.createElement('span');
+      errSpan.textContent = "Couldn't load incidents: " + e.message;
+      const retryBtn = document.createElement('button');
+      retryBtn.className = 'retry-btn';
+      retryBtn.textContent = 'Retry';
+      retryBtn.addEventListener('click', loadIncidents);
+      td.appendChild(errSpan);
+      td.appendChild(retryBtn);
+      tbody.appendChild(el('tr', null, td));
     }
   }
 
@@ -318,15 +332,27 @@
   // ── Drawer ─────────────────────────────────────────────────
   async function openDrawer(hostname) {
     if (!hostname) return;
+
+    // Issue 47: abort any in-flight fetch from a previous drawer open so a
+    // slow earlier response cannot overwrite the current one.
+    drawerAbort?.abort();
+    drawerAbort = new AbortController();
+    const { signal } = drawerAbort;
+
     $('#host-drawer').classList.remove('hidden');
     $('#drawer-title').textContent = hostname;
     const body = $('#drawer-body');
     clear(body);
     body.appendChild(el('div', { class: 'empty' }, 'loading…'));
+
+    // Issue 50: move keyboard focus to the close button so keyboard users can
+    // act immediately (Escape to close, Tab to reach drawer content).
+    $('#drawer-close').focus();
+
     try {
       const [hostR, incR] = await Promise.all([
-        fetch(`/v1/host/${encodeURIComponent(hostname)}`),
-        fetch(`/v1/incidents?host=${encodeURIComponent(hostname)}&hours=168&limit=30`),
+        fetch(`/v1/host/${encodeURIComponent(hostname)}`, { signal }),
+        fetch(`/v1/incidents?host=${encodeURIComponent(hostname)}&hours=168&limit=30`, { signal }),
       ]);
       const host = hostR.ok ? await hostR.json() : null;
       // The hub returns `null` (not `[]`) when no incidents exist — guard
@@ -336,6 +362,9 @@
       clear(body);
       buildDrawer(body, host, incidents);
     } catch (e) {
+      // Issue 47: AbortError is expected when the user opens a new drawer
+      // before this one finishes loading — ignore it silently.
+      if (e.name === 'AbortError') return;
       clear(body);
       body.appendChild(el('div', { class: 'empty' }, 'error: ' + e.message));
     }
@@ -507,6 +536,11 @@
       clearTimeout(connectStream._incT);
       connectStream._incT = setTimeout(loadIncidents, 1500);
     });
+    // Issue 48: on reconnect, clear the stale-data banner immediately (the
+    // banner is also cleared inside markConnected via snapshot/heartbeat, but
+    // onopen fires as soon as the TCP/HTTP connection reopens, before any
+    // event data arrives, so clearing here gives faster feedback).
+    es.onopen = () => markConnected();
     es.onerror = () => markDisconnected();
   }
 
@@ -546,10 +580,18 @@
   function markConnected() {
     $('#conn-indicator').className = 'dot dot-green';
     $('#conn-text').textContent = 'streaming live';
+    // Issue 48: hide the stale-data warning now that the stream is live.
+    $('#stale-banner').classList.add('hidden');
   }
   function markDisconnected() {
     $('#conn-indicator').className = 'dot dot-red';
     $('#conn-text').textContent = 'disconnected (reconnecting…)';
+    // Issue 48: warn the operator that displayed data may be stale.
+    const banner = $('#stale-banner');
+    if (banner.textContent === '') {
+      banner.textContent = '⚠ Live stream interrupted — data may be stale';
+    }
+    banner.classList.remove('hidden');
   }
 
   // ── Wire-up ────────────────────────────────────────────────
@@ -565,7 +607,16 @@
     $('#inc-window').addEventListener('change', loadIncidents);
     $('#drawer-close').addEventListener('click', () => $('#host-drawer').classList.add('hidden'));
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') $('#host-drawer').classList.add('hidden');
+      const drawer = $('#host-drawer');
+      if (e.key === 'Escape') {
+        drawer.classList.add('hidden');
+      }
+      // Issue 50: ArrowDown/ArrowUp scroll the drawer body when it is open,
+      // so keyboard users can browse the host detail without a mouse.
+      if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && !drawer.classList.contains('hidden')) {
+        e.preventDefault();
+        $('#drawer-body').scrollBy({ top: e.key === 'ArrowDown' ? 80 : -80, behavior: 'smooth' });
+      }
     });
 
     loadIncidents();

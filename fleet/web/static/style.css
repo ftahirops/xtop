@@ -107,11 +107,18 @@ select#inc-window {
   font-size: 11px; padding: 2px 8px; border-radius: 10px;
   font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
 }
-.badge-ok       { background: rgba(80,250,123,0.15); color: var(--green); }
-.badge-degraded { background: rgba(241,250,140,0.15); color: var(--yellow); }
-.badge-critical { background: rgba(255,85,85,0.15); color: var(--red); }
-.badge-inc      { background: rgba(255,184,108,0.15); color: var(--orange); }
-.badge-expired  { background: rgba(98,114,164,0.2); color: var(--dim); }
+/* Badge backgrounds are solid dark colours so text contrast meets WCAG AA
+   (≥4.5:1 for 11 px normal-weight text).  Approximate contrast ratios:
+     badge-ok       #193226 bg / #50fa7b text  ≈ 10.0:1
+     badge-degraded #383415 bg / #f1fa8c text  ≈ 11.2:1
+     badge-critical #3d1212 bg / #ff5555 text  ≈  5.2:1
+     badge-inc      #3d2a10 bg / #ffb86c text  ≈  8.0:1
+     badge-expired  #1e1f2d bg / #b0b2cc text  ≈  7.8:1 */
+.badge-ok       { background: #193226; color: var(--green); }
+.badge-degraded { background: #383415; color: var(--yellow); }
+.badge-critical { background: #3d1212; color: var(--red); }
+.badge-inc      { background: #3d2a10; color: var(--orange); }
+.badge-expired  { background: #1e1f2d; color: #b0b2cc; }
 
 .host-meta { color: var(--dim); font-size: 12px; }
 .host-bottleneck { color: var(--orange); font-weight: 500; }
@@ -236,3 +243,28 @@ table.incidents tr.clickable:hover { background: rgba(189,147,249,0.08); }
 @media (max-width: 480px) {
   .metrics { grid-template-columns: 1fr; }
 }
+
+/* Stale-data banner — shown when the SSE stream drops ─────── */
+.stale-banner {
+  position: sticky; top: 0; z-index: 200;
+  background: #3d2a10;
+  color: var(--orange);
+  border-bottom: 1px solid var(--orange);
+  padding: 8px 24px;
+  font-size: 13px; font-weight: 500;
+  text-align: center;
+}
+.stale-banner.hidden { display: none; }
+
+/* Incidents retry button ─────────────────────────────────── */
+.retry-btn {
+  margin-left: 12px;
+  padding: 3px 12px;
+  font: inherit; font-size: 12px;
+  background: var(--panel);
+  color: var(--cyan);
+  border: 1px solid var(--cyan);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.retry-btn:hover { background: rgba(139,233,253,0.12); }
