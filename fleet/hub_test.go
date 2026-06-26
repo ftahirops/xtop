@@ -1,8 +1,12 @@
 package fleet
 
 import (
+	"bytes"
 	"crypto/subtle"
 	"database/sql"
+	"encoding/json"
+	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -205,6 +209,61 @@ func TestHandleGetHostValidatesPathTraversal(t *testing.T) {
 	h.handleGetHost(w, r)
 	if w.Code == http.StatusBadRequest {
 		t.Fatalf("valid hostname with dots/dashes/underscores should not return 400, got %d", w.Code)
+	}
+}
+
+// ─── writeJSON tests ─────────────────────────────────────────────────────────
+
+// TestWriteJSONHappyPath verifies that writeJSON sets Content-Type correctly
+// and writes valid JSON on the happy path.
+func TestWriteJSONHappyPath(t *testing.T) {
+	w := httptest.NewRecorder()
+	payload := map[string]interface{}{"ok": true, "count": 3}
+	writeJSON(w, payload)
+
+	if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+		t.Fatalf("want Content-Type application/json, got %q", ct)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", w.Code)
+	}
+	var got map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+		t.Fatalf("response is not valid JSON: %v", err)
+	}
+	if got["ok"] != true {
+		t.Fatalf("unexpected body: %v", got)
+	}
+}
+
+// errResponseWriter is an http.ResponseWriter whose Write always returns an
+// error, used to exercise the writeJSON error-logging path.
+type errResponseWriter struct {
+	header http.Header
+}
+
+func newErrResponseWriter() *errResponseWriter {
+	return &errResponseWriter{header: make(http.Header)}
+}
+
+func (e *errResponseWriter) Header() http.Header        { return e.header }
+func (e *errResponseWriter) WriteHeader(_ int)           {}
+func (e *errResponseWriter) Write(_ []byte) (int, error) { return 0, errors.New("simulated write error") }
+
+// TestWriteJSONErrorPath verifies that a Write error is logged via slog rather
+// than silently dropped.
+func TestWriteJSONErrorPath(t *testing.T) {
+	// Redirect slog default to a buffer so we can assert on the output.
+	var buf bytes.Buffer
+	orig := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(orig)
+
+	writeJSON(newErrResponseWriter(), map[string]string{"key": "value"})
+
+	logged := buf.String()
+	if !strings.Contains(logged, "encode response failed") {
+		t.Fatalf("expected slog error containing \"encode response failed\", got: %q", logged)
 	}
 }
 

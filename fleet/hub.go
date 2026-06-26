@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -136,6 +137,11 @@ func NewHub(cfg model.FleetHubConfig) (*Hub, error) {
 
 // Start begins listening. Blocks until Stop is called or the listener errors.
 func (h *Hub) Start() error {
+	// fleet/ standardises on log/slog. Set the process-wide default once here
+	// so all slog calls in this package (and any that inherit the default)
+	// emit structured text to stderr.
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
+
 	mux := http.NewServeMux()
 	mux.HandleFunc(model.FleetEndpointHeartbeat, h.handleHeartbeat)
 	mux.HandleFunc(model.FleetEndpointIncident, h.handleIncident)
@@ -232,6 +238,18 @@ func clientError(w http.ResponseWriter, status int, msg string, err error) {
 	http.Error(w, msg, status)
 }
 
+// writeJSON sets Content-Type to application/json and encodes v as JSON into w.
+// Encode errors (most commonly a client disconnect mid-response) are logged via
+// slog rather than silently dropped. Callers must not write to w after calling
+// writeJSON — the response status is 200 unless the caller has already called
+// w.WriteHeader before this.
+func writeJSON(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		slog.Error("fleet: encode response failed", "err", err)
+	}
+}
+
 // validHostname returns true if s is a valid hostname:
 // - length 1..253
 // - contains only [A-Za-z0-9._-]
@@ -276,8 +294,7 @@ func (h *Hub) allow(agentID string) bool {
 // ─── Endpoints ───────────────────────────────────────────────────────────────
 
 func (h *Hub) handleHealth(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSON(w, map[string]interface{}{
 		"ok":    true,
 		"hosts": len(h.hosts),
 	})
@@ -401,8 +418,7 @@ func (h *Hub) handleListHosts(w http.ResponseWriter, r *http.Request) {
 		out = append(out, &cp)
 	}
 	h.hostsMu.RUnlock()
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(out)
+	writeJSON(w, out)
 }
 
 func (h *Hub) handleGetHost(w http.ResponseWriter, r *http.Request) {
@@ -433,8 +449,7 @@ func (h *Hub) handleGetHost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "host not found", http.StatusNotFound)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(found)
+	writeJSON(w, found)
 }
 
 func (h *Hub) handleListIncidents(w http.ResponseWriter, r *http.Request) {
@@ -493,8 +508,7 @@ func (h *Hub) handleListIncidents(w http.ResponseWriter, r *http.Request) {
 			out = append(out, inc)
 		}
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(out)
+	writeJSON(w, out)
 }
 
 // ─── SSE streaming ───────────────────────────────────────────────────────────

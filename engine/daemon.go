@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -58,6 +59,12 @@ type compactSummary struct {
 
 // RunDaemon runs xtop as a background collector, writing events to DataDir.
 func RunDaemon(cfg DaemonConfig) error {
+	// engine/daemon.go standardises on log/slog going forward. Set the
+	// process-wide default once at daemon startup so structured log output
+	// is consistent across fleet/ and engine/ long-running services.
+	// Collectors remain on stdlib log for now (scope control).
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
+
 	if err := os.MkdirAll(cfg.DataDir, 0700); err != nil {
 		return fmt.Errorf("create data dir: %w", err)
 	}

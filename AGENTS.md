@@ -75,3 +75,13 @@ go vet ./...
 - No issue tracker automation, no pre-commit hooks, no `.github/workflows/`.
 - `WHYTOP_ANALYSIS.md` and `.opencode/` are in `.gitignore` — agent workspace noise.
 - `demos/` contains root-requiring stress scripts for live testing RCA.
+
+## Logging convention
+
+| Package | Logger |
+|---|---|
+| `fleet/` | `log/slog` (stdlib, no extra deps). Default handler set to `slog.NewTextHandler(os.Stderr, nil)` at service startup. |
+| `engine/daemon.go` | `log/slog` — same convention, set at `RunDaemon` entry. |
+| `collector/`, `engine/` (non-daemon) | stdlib `log` for now — do not churn these to avoid noisy diffs. |
+
+New log lines in `fleet/` and `engine/daemon.go` must use `slog`; existing `log.Printf` calls elsewhere are left as-is until a dedicated cleanup pass.
