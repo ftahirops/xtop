@@ -194,7 +194,7 @@ func pageTitleForExplain(page Page) string {
 }
 
 // renderExplainSidePanel renders the explain side panel for the given page.
-func renderExplainSidePanel(page Page, result *model.AnalysisResult, width, height, scrollOffset int, focused bool) string {
+func renderExplainSidePanel(page Page, result *model.AnalysisResult, width, height, scrollOffset int, focused bool, scrollMaxOut *int) string {
 	glossary := glossaryForPage(page)
 
 	var sb strings.Builder
@@ -283,8 +283,16 @@ func renderExplainSidePanel(page Page, result *model.AnalysisResult, width, heig
 	if visibleLines < 5 {
 		visibleLines = 5
 	}
-	if scrollOffset > len(contentLines)-visibleLines {
-		scrollOffset = len(contentLines) - visibleLines
+	maxScroll := len(contentLines) - visibleLines
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	// Export the computed max so Update can cap explainScroll to content size.
+	if scrollMaxOut != nil {
+		*scrollMaxOut = maxScroll
+	}
+	if scrollOffset > maxScroll {
+		scrollOffset = maxScroll
 	}
 	if scrollOffset < 0 {
 		scrollOffset = 0

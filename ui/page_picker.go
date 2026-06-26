@@ -43,9 +43,7 @@ func (m *Model) handlePagePicker(key string) Model {
 		return *m
 	case "enter":
 		if len(filtered) > 0 && m.pagePickerCursor < len(filtered) {
-			m.page = filtered[m.pagePickerCursor].Page
-			m.scroll = 0
-			m.explainScroll = 0
+			m.switchPage(filtered[m.pagePickerCursor].Page)
 		}
 		m.pagePickerActive = false
 		return *m

@@ -145,10 +145,11 @@ type Model struct {
 	result *model.AnalysisResult
 
 	// Navigation
-	page        Page
-	showHelp    bool
-	showExplain bool
-	scroll      int // vertical scroll offset
+	page         Page
+	scrollByPage map[Page]int // remembers scroll offset per page
+	showHelp     bool
+	showExplain  bool
+	scroll       int // vertical scroll offset (live, for the current page)
 
 	// Auto-refresh control
 	paused bool
@@ -189,9 +190,10 @@ type Model struct {
 	beginnerMode   bool // true when level is "beginner"
 
 	// Explain side panel
-	explainPanelOpen bool // 'E' toggles side panel
-	explainScroll    int  // scroll offset within explain panel
-	explainFocused   bool // Tab toggles focus to panel for scrolling
+	explainPanelOpen  bool // 'E' toggles side panel
+	explainScroll     int  // scroll offset within explain panel
+	explainScrollMax  *int // max valid explainScroll (computed during render, shared via pointer)
+	explainFocused    bool // Tab toggles focus to panel for scrolling
 
 	// Sticky RCA: pin significant findings so they persist after recovery
 	pinnedResult *model.AnalysisResult // most significant recent finding
@@ -297,22 +299,38 @@ func NewModel(ticker engine.Ticker, interval time.Duration, dataDir string) Mode
 	beginnerMode := cfg.ExperienceLevel == "beginner"
 
 	base := ticker.Base()
+	explainMax := 0
 	return Model{
-		ticker:         ticker,
-		engine:         base,
-		interval:       interval,
-		eventDetector:  detector,
-		layoutMode:     layout,
-		serverRoles:    roles,
-		probeManager:   engine.NewProbeManager(),
-		diskGuardMode:  "Monitor",
-		frozenPIDs:     make(map[int]frozenProc),
-		showOnboarding:  showOnboarding,
-		beginnerMode:    beginnerMode,
+		ticker:            ticker,
+		engine:            base,
+		interval:          interval,
+		eventDetector:     detector,
+		layoutMode:        layout,
+		serverRoles:       roles,
+		probeManager:      engine.NewProbeManager(),
+		diskGuardMode:     "Monitor",
+		frozenPIDs:        make(map[int]frozenProc),
+		showOnboarding:    showOnboarding,
+		beginnerMode:      beginnerMode,
 		appsViewCompact:   false,
 		overviewCompact:   true,
 		containerResolver: collector.NewContainerResolver(),
+		scrollByPage:      make(map[Page]int),
+		explainScrollMax:  &explainMax,
 	}
+}
+
+// switchPage saves the current page's scroll position, switches to page p,
+// and restores that page's previously saved scroll (0 on first visit).
+// It also resets explainScroll since each page starts with no panel scroll.
+func (m *Model) switchPage(p Page) {
+	if m.scrollByPage == nil {
+		m.scrollByPage = make(map[Page]int)
+	}
+	m.scrollByPage[m.page] = m.scroll
+	m.page = p
+	m.scroll = m.scrollByPage[p] // zero if never visited — correct default
+	m.explainScroll = 0
 }
 
 func (m Model) Init() tea.Cmd {
@@ -511,9 +529,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "q", "ctrl+c":
 				return m, tea.Quit
 			case "j", "down":
-				m.explainScroll++ // clamped in renderExplainSidePanel
-				if m.explainScroll > 200 {
-					m.explainScroll = 200 // safety cap
+				m.explainScroll++
+				if m.explainScrollMax != nil && m.explainScroll > *m.explainScrollMax {
+					m.explainScroll = *m.explainScrollMax
 				}
 				return m, nil
 			case "k", "up":
@@ -626,52 +644,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, saveRCA(m.snap, m.rates, m.result)
 			}
 		case "0":
-			m.page = PageOverview
-			m.scroll = 0
-			m.explainScroll = 0
+			m.switchPage(PageOverview)
 		case "1":
-			m.page = PageCPU
-			m.scroll = 0
-			m.explainScroll = 0
+			m.switchPage(PageCPU)
 		case "2":
-			m.page = PageMemory
-			m.scroll = 0
-			m.explainScroll = 0
+			m.switchPage(PageMemory)
 		case "3":
-			m.page = PageIO
-			m.scroll = 0
-			m.explainScroll = 0
+			m.switchPage(PageIO)
 		case "4":
-			m.page = PageNetwork
-			m.scroll = 0
-			m.explainScroll = 0
+			m.switchPage(PageNetwork)
 		case "5":
-			m.page = PageCgroups
-			m.scroll = 0
-			m.explainScroll = 0
+			m.switchPage(PageCgroups)
 		case "6":
-			m.page = PageTimeline
-			m.scroll = 0
-			m.explainScroll = 0
+			m.switchPage(PageTimeline)
 		case "7":
-			m.page = PageEvents
-			m.scroll = 0
-			m.explainScroll = 0
+			m.switchPage(PageEvents)
 			m.evtSelected = 0
 		case "8":
-			m.page = PageProbe
-			m.scroll = 0
-			m.explainScroll = 0
+			m.switchPage(PageProbe)
 		case "9":
-			m.page = PageThresholds
-			m.scroll = 0
-			m.explainScroll = 0
+			m.switchPage(PageThresholds)
 		case "I":
 			if m.probeManager.State() != engine.ProbeRunning {
 				_ = m.probeManager.Start("auto")
-				m.page = PageProbe
-				m.scroll = 0
-				m.explainScroll = 0
+				m.switchPage(PageProbe)
 				m.probeAutoExpanded = false
 				for i := range m.probeSectionExpanded {
 					m.probeSectionExpanded[i] = false
@@ -685,9 +681,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.dockerStackExpanded = nil
 				m.dockerContainerIdx = 0
 			} else {
-				m.page = PageOverview
-				m.scroll = 0
-				m.explainScroll = 0
+				m.switchPage(PageOverview)
 			}
 		case "j", "down":
 			if m.page == PageNetwork {
@@ -918,16 +912,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Use pinned result if available (sticky RCA survives recovery)
 			jumpResult, _ := m.displayResult()
 			if m.page == PageOverview && jumpResult != nil && jumpResult.PrimaryBottleneck != "" {
-				m.page = bottleneckToPage(jumpResult.PrimaryBottleneck)
-				m.scroll = 0
-				m.explainScroll = 0
+				m.switchPage(bottleneckToPage(jumpResult.PrimaryBottleneck))
 			} else if m.page == PageEvents {
 				_, completed := m.eventDetector.AllEvents()
 				if m.evtSelected < len(completed) {
 					evt := completed[m.evtSelected]
-					m.page = bottleneckToPage(evt.Bottleneck)
-					m.scroll = 0
-					m.explainScroll = 0
+					m.switchPage(bottleneckToPage(evt.Bottleneck))
 				}
 			}
 		case "E":
@@ -997,22 +987,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			}
-			m.page = PageDiskGuard
-			m.scroll = 0
-			m.explainScroll = 0
+			m.switchPage(PageDiskGuard)
 		case "L":
-			m.page = PageSecurity
-			m.scroll = 0
-			m.explainScroll = 0
+			m.switchPage(PageSecurity)
 		case "f8":
 			// F8 → PHP-FPM per-app/per-worker view.
-			m.page = PagePHPFPM
-			m.scroll = 0
-			m.explainScroll = 0
+			m.switchPage(PagePHPFPM)
 		case "W":
-			m.page = PageDiag
-			m.scroll = 0
-			m.explainScroll = 0
+			m.switchPage(PageDiag)
 		case "ctrl+d":
 			// Set current layout as default
 			if err := saveDefaultLayout(m.layoutMode); err != nil {
@@ -1122,9 +1104,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "x", "X":
 			// Navigate to Intel page (unless on DiskGuard in Action mode)
 			if m.page != PageDiskGuard || m.diskGuardMode != "Action" {
-				m.page = PageIntel
-				m.scroll = 0
-				m.explainScroll = 0
+				m.switchPage(PageIntel)
 			} else if m.page == PageDiskGuard && m.diskGuardMode == "Action" && m.rates != nil {
 				procs := make([]model.ProcessRate, len(m.rates.ProcessRates))
 				copy(procs, m.rates.ProcessRates)
@@ -1167,25 +1147,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "z", "Z":
 			// Navigate to Proxmox page (only if Proxmox host)
 			if m.snap != nil && m.snap.Global.Proxmox != nil && m.snap.Global.Proxmox.IsProxmoxHost {
-				m.page = PageProxmox
-				m.scroll = 0
-				m.explainScroll = 0
+				m.switchPage(PageProxmox)
 			}
 		case "y", "Y":
 			// Navigate to Apps Diagnostics page
-			m.page = PageApps
-			m.scroll = 0
+			m.switchPage(PageApps)
 			m.appsDetailMode = false
 		case "o", "O":
 			// Navigate to System Profiler page
-			m.page = PageProfiler
-			m.scroll = 0
-			m.explainScroll = 0
+			m.switchPage(PageProfiler)
 		case "u", "U":
 			// Navigate to GPU page
-			m.page = PageGPU
-			m.scroll = 0
-			m.explainScroll = 0
+			m.switchPage(PageGPU)
 		case "H":
 			// Export HTML incident report
 			path, err := exportHTMLReport(m.snap, m.rates, m.result)
@@ -1467,7 +1440,7 @@ func (m Model) View() string {
 
 	// Explain side panel (joined as right column when 'E' is pressed)
 	if m.explainPanelOpen && explainW > 0 {
-		panel := renderExplainSidePanel(m.page, rcaResult, explainW, m.height, m.explainScroll, m.explainFocused)
+		panel := renderExplainSidePanel(m.page, rcaResult, explainW, m.height, m.explainScroll, m.explainFocused, m.explainScrollMax)
 		content = joinColumns(content, panel, renderW, "")
 	}
 
