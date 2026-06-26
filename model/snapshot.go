@@ -537,6 +537,9 @@ const (
 	DomainMemory  Domain = "memory"
 	DomainIO      Domain = "io"
 	DomainNetwork Domain = "network"
+	// DomainProcess covers process/service-level evidence: crash loops,
+	// OOM kills, segfaults, dependency failures, and log-derived findings.
+	DomainProcess Domain = "process"
 )
 
 // Severity represents evidence severity level.

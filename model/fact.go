@@ -53,6 +53,11 @@ const (
 	// FactKindProbe is the output of an active confirmation probe — never
 	// passive observation. Triggered only by the verifier when needed.
 	FactKindProbe FactKind = "probe"
+
+	// FactKindLogEvidence is a structured finding extracted from journald /
+	// syslog entries — e.g. crash-restart loops, OOM kills, segfaults, or
+	// dependency-connection failures. Produced by InjectJournalEvidence.
+	FactKindLogEvidence FactKind = "log_evidence"
 )
 
 // FactConfidence is how much we trust this fact's measurement, on [0,1].
