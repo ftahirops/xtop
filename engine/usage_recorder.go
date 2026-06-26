@@ -16,8 +16,21 @@ import (
 // Each rollup line is ~150 bytes, so a minute's data for 90 days lands at
 // ~20 MB even in the worst case — modest but still too large to keep in
 // memory, hence the streaming file format.
+//
+// Lock ordering (must be respected to avoid deadlock):
+//
+//	r.mu → r.fileMu
+//
+// r.mu guards in-memory state (samples, currentMin, lastPruneAt).
+// r.fileMu guards ALL disk IO on r.path (both the append in flushLocked and
+// the read-modify-write in prune). flushLocked is called while r.mu is held,
+// so it acquires fileMu second. prune runs in its own goroutine and must
+// acquire ONLY fileMu — it must never hold fileMu and then try to take r.mu,
+// and must never hold r.mu when it acquires fileMu (it snapshots r.path and
+// r.retainDays under r.mu first, then releases r.mu before taking fileMu).
 type UsageRecorder struct {
 	mu          sync.Mutex
+	fileMu      sync.Mutex // guards all disk IO on r.path; see lock-ordering comment above
 	path        string
 	currentMin  time.Time
 	samples     []usageSample // samples inside the current minute
@@ -127,28 +140,45 @@ func (r *UsageRecorder) flushLocked(numCPUs int, memTotal uint64) {
 	roll.IO = summarize(extract(r.samples, func(s usageSample) float64 { return s.IO }))
 	roll.LoadRatio = summarize(extract(r.samples, func(s usageSample) float64 { return s.LoadRatio }))
 
+	// Acquire fileMu while r.mu is already held (lock order: r.mu → fileMu).
+	r.fileMu.Lock()
 	f, err := os.OpenFile(r.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
+		r.fileMu.Unlock()
 		r.samples = nil
 		return
 	}
-	defer f.Close()
 	if data, err := json.Marshal(&roll); err == nil {
 		_, _ = f.Write(data)
 		_, _ = f.Write([]byte("\n"))
 	}
+	f.Close()
+	r.fileMu.Unlock()
 	r.samples = nil
 }
 
-// prune drops any rollup lines older than retainDays. Safe to run in a
-// goroutine; the file is append-only so we rewrite atomically.
+// prune drops any rollup lines older than retainDays. Runs in its own goroutine.
+//
+// Lock ordering: prune snapshots r.path and r.retainDays under r.mu, then
+// releases r.mu BEFORE acquiring r.fileMu. It never holds r.mu while holding
+// r.fileMu, preserving the r.mu → r.fileMu ordering established by flushLocked.
 func (r *UsageRecorder) prune() {
-	cutoff := time.Now().UTC().Add(-time.Duration(r.retainDays) * 24 * time.Hour)
-	f, err := os.Open(r.path)
+	// Snapshot immutable-ish config under r.mu, then release before file IO.
+	r.mu.Lock()
+	path := r.path
+	retainDays := r.retainDays
+	r.mu.Unlock()
+
+	cutoff := time.Now().UTC().Add(-time.Duration(retainDays) * 24 * time.Hour)
+
+	// All file IO is serialized with flushLocked via fileMu.
+	r.fileMu.Lock()
+	defer r.fileMu.Unlock()
+
+	f, err := os.Open(path)
 	if err != nil {
 		return
 	}
-	defer f.Close()
 	var kept []UsageRollup
 	dec := json.NewDecoder(f)
 	for dec.More() {
@@ -160,11 +190,13 @@ func (r *UsageRecorder) prune() {
 			kept = append(kept, u)
 		}
 	}
+	f.Close()
+
 	// Only rewrite if pruning would actually remove something.
 	if len(kept) == 0 {
 		return
 	}
-	tmp := r.path + ".tmp"
+	tmp := path + ".tmp"
 	out, err := os.Create(tmp)
 	if err != nil {
 		return
@@ -178,7 +210,7 @@ func (r *UsageRecorder) prune() {
 		}
 	}
 	out.Close()
-	_ = os.Rename(tmp, r.path)
+	_ = os.Rename(tmp, path)
 }
 
 // ── Stats helpers ────────────────────────────────────────────────────────────
