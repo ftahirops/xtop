@@ -41,7 +41,7 @@ type Hub struct {
 	// Subscribers to live events (for SSE). Each subscriber has a channel of
 	// events it wants to receive. Buffered so slow clients can't block the hub.
 	subsMu sync.Mutex
-	subs   map[int]chan []byte
+	subs   map[int]*subscriber
 	subSeq int
 
 	// Incident ingest dedupe — key is "agent|signature|update_type", value
@@ -90,7 +90,7 @@ func NewHub(cfg model.FleetHubConfig) (*Hub, error) {
 	h := &Hub{
 		cfg:      cfg,
 		hosts:    make(map[string]*model.FleetHost),
-		subs:     make(map[int]chan []byte),
+		subs:     make(map[int]*subscriber),
 		limiters: make(map[string]*rate.Limiter),
 		quitCh:   make(chan struct{}),
 	}
@@ -514,8 +514,8 @@ func (h *Hub) handleStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ch := h.subscribe()
-	defer h.unsubscribe(ch)
+	sub := h.subscribe()
+	defer h.unsubscribe(sub)
 
 	// Initial snapshot so the UI has something immediately
 	h.hostsMu.RLock()
@@ -541,7 +541,7 @@ func (h *Hub) handleStream(w http.ResponseWriter, r *http.Request) {
 		case <-keepAlive.C:
 			fmt.Fprint(w, ": keepalive\n\n")
 			flusher.Flush()
-		case ev, ok := <-ch:
+		case ev, ok := <-sub.ch:
 			if !ok {
 				return
 			}
@@ -551,22 +551,37 @@ func (h *Hub) handleStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *Hub) subscribe() chan []byte {
+// subscriber wraps an SSE event channel with idempotent close semantics.
+// Both the normal unsubscribe path and the slow-subscriber-drop path in
+// broadcast call sub.close(), which is safe to call more than once thanks to
+// sync.Once. All map mutations still occur under subsMu, so the double-close
+// guard is defence-in-depth against future refactors that might move a close
+// outside the lock or introduce a third close path.
+type subscriber struct {
+	ch        chan []byte
+	closeOnce sync.Once
+}
+
+func (s *subscriber) close() {
+	s.closeOnce.Do(func() { close(s.ch) })
+}
+
+func (h *Hub) subscribe() *subscriber {
 	h.subsMu.Lock()
 	defer h.subsMu.Unlock()
 	h.subSeq++
-	ch := make(chan []byte, 64)
-	h.subs[h.subSeq] = ch
-	return ch
+	sub := &subscriber{ch: make(chan []byte, 64)}
+	h.subs[h.subSeq] = sub
+	return sub
 }
 
-func (h *Hub) unsubscribe(ch chan []byte) {
+func (h *Hub) unsubscribe(sub *subscriber) {
 	h.subsMu.Lock()
 	defer h.subsMu.Unlock()
-	for id, c := range h.subs {
-		if c == ch {
+	for id, s := range h.subs {
+		if s == sub {
 			delete(h.subs, id)
-			close(c)
+			sub.close()
 			return
 		}
 	}
@@ -581,13 +596,13 @@ func (h *Hub) broadcast(event string, payload interface{}) {
 
 	h.subsMu.Lock()
 	defer h.subsMu.Unlock()
-	for id, ch := range h.subs {
+	for id, sub := range h.subs {
 		select {
-		case ch <- msg:
+		case sub.ch <- msg:
 		default:
 			// Slow subscriber — drop it
 			delete(h.subs, id)
-			close(ch)
+			sub.close()
 		}
 	}
 }

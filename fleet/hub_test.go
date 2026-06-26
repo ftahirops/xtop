@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/ftahirops/xtop/model"
@@ -107,7 +108,7 @@ func newTestHub(t *testing.T, cfg model.FleetHubConfig) *Hub {
 		pg:     pg,
 		cache:  cache,
 		hosts:  make(map[string]*model.FleetHost),
-		subs:   make(map[int]chan []byte),
+		subs:   make(map[int]*subscriber),
 		quitCh: make(chan struct{}),
 	}
 	t.Cleanup(func() {
@@ -205,4 +206,53 @@ func TestHandleGetHostValidatesPathTraversal(t *testing.T) {
 	if w.Code == http.StatusBadRequest {
 		t.Fatalf("valid hostname with dots/dashes/underscores should not return 400, got %d", w.Code)
 	}
+}
+
+// TestSSESubscriberConcurrency is a stress test that exercises the SSE
+// subscriber lifecycle under -race. It proves that concurrent subscribe,
+// broadcast (including slow-subscriber drops), and unsubscribe never cause a
+// panic. This is defence-in-depth: the code was already safe because every
+// close happened under subsMu, but the subscriber.closeOnce guard makes it
+// explicit and robust to future refactors.
+func TestSSESubscriberConcurrency(t *testing.T) {
+	h := &Hub{
+		subs: make(map[int]*subscriber),
+	}
+
+	const (
+		goroutines = 20
+		iterations = 200
+	)
+
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				sub := h.subscribe()
+
+				// Concurrently try to read from the channel and then unsubscribe.
+				// The goroutine drains whatever arrives before the channel closes.
+				readDone := make(chan struct{})
+				go func() {
+					defer close(readDone)
+					for range sub.ch {
+					}
+				}()
+
+				// Broadcast a few messages; some will fill the 64-slot buffer on
+				// competing subscribers and trigger the slow-subscriber drop path.
+				h.broadcast("test", map[string]int{"n": j})
+				h.broadcast("test", map[string]int{"n": j + 1})
+
+				// Unsubscribe — may race with a broadcast that already dropped us.
+				h.unsubscribe(sub)
+				<-readDone
+			}
+		}()
+	}
+
+	wg.Wait()
 }
