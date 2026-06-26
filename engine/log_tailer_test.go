@@ -1,9 +1,12 @@
 package engine
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -162,6 +165,39 @@ func TestFormatLogExcerptHint(t *testing.T) {
 	}
 	if !strings.Contains(got, "+1 more") {
 		t.Errorf("hint should mention +1 more, got %q", got)
+	}
+}
+
+// TestCommandContextTimeoutNoLeak verifies that using exec.CommandContext with a
+// context.WithTimeout kills the child process when the deadline fires and does
+// NOT leave an orphan goroutine behind — the property we fixed in journalctlExcerpts.
+func TestCommandContextTimeoutNoLeak(t *testing.T) {
+	const budget = 800 * time.Millisecond
+
+	// Warm up: ensure the runtime goroutine pool is stable.
+	runtime.GC()
+	time.Sleep(20 * time.Millisecond)
+	baseline := runtime.NumGoroutine()
+
+	start := time.Now()
+	tctx, cancel := context.WithTimeout(context.Background(), budget)
+	cmd := exec.CommandContext(tctx, "sleep", "2")
+	_ = cmd.Run() // blocks until context fires and process is killed
+	cancel()
+	elapsed := time.Since(start)
+
+	// (a) Must return well inside the 2s sleep — give it 1.5s margin.
+	if elapsed > 1500*time.Millisecond {
+		t.Errorf("timed command took %v, expected ≤1.5s", elapsed)
+	}
+
+	// (b) Goroutine count must return to baseline — no orphan goroutines.
+	time.Sleep(50 * time.Millisecond)
+	runtime.GC()
+	after := runtime.NumGoroutine()
+	const slack = 3 // allow small stdlib noise
+	if after > baseline+slack {
+		t.Errorf("goroutine leak: before=%d after=%d (slack=%d)", baseline, after, slack)
 	}
 }
 

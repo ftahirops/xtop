@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"os"
@@ -252,7 +253,7 @@ func (pm *ProbeManager) StartDomain(domain string) error {
 
 // runDomainProbe executes domain-specific eBPF probes in a goroutine.
 func (pm *ProbeManager) runDomainProbe(start time.Time, duration time.Duration, domain string) {
-	results, err := bpf.RunProbeCtxDomain(duration, domain)
+	results, err := bpf.RunProbeCtxDomain(context.Background(), duration, domain)
 
 	pm.mu.Lock()
 	defer pm.mu.Unlock()

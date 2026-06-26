@@ -3,6 +3,7 @@ package engine
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"io"
 	"os"
 	"os/exec"
@@ -276,31 +277,20 @@ func journalctlExcerpts(app string, cfg appLogConfig, max int) []model.LogExcerp
 		if len(out) >= max {
 			break
 		}
-		cmd := exec.Command("journalctl",
+		// Short deadline — journalctl can stall on slow journals.
+		// CommandContext kills the process when the deadline fires, so no
+		// orphan goroutine is left behind on timeout.
+		tctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
+		cmd := exec.CommandContext(tctx, "journalctl",
 			"-u", unit,
 			"--since", "2 minutes ago",
 			"--no-pager",
 			"--output", "cat",
 			"--lines", "200",
 		)
-		// Short deadline — journalctl can stall on slow journals.
-		done := make(chan []byte, 1)
-		errCh := make(chan error, 1)
-		go func() {
-			data, err := cmd.Output()
-			if err != nil {
-				errCh <- err
-				return
-			}
-			done <- data
-		}()
-		var data []byte
-		select {
-		case data = <-done:
-		case <-errCh:
-			continue
-		case <-time.After(800 * time.Millisecond):
-			_ = cmd.Process.Kill()
+		data, err := cmd.Output()
+		cancel()
+		if err != nil {
 			continue
 		}
 		for _, raw := range bytes.Split(data, []byte("\n")) {

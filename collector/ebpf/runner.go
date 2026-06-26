@@ -429,12 +429,9 @@ var domainPacks = map[string][]string{
 }
 
 // RunProbeCtxDomain runs only the probes relevant to a specific domain.
-// Accepts a context for cancellation support (e.g. on TUI shutdown).
-func RunProbeCtxDomain(duration time.Duration, domain string, ctxOpts ...context.Context) (*ProbeResults, error) {
-	domainCtx := context.Background()
-	if len(ctxOpts) > 0 && ctxOpts[0] != nil {
-		domainCtx = ctxOpts[0]
-	}
+// ctx is required; pass context.Background() if no cancellation is needed.
+func RunProbeCtxDomain(ctx context.Context, duration time.Duration, domain string) (*ProbeResults, error) {
+	domainCtx := ctx
 	packs, ok := domainPacks[domain]
 	if !ok {
 		return nil, fmt.Errorf("unknown domain: %s", domain)
