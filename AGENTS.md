@@ -76,6 +76,39 @@ go vet ./...
 - `WHYTOP_ANALYSIS.md` and `.opencode/` are in `.gitignore` — agent workspace noise.
 - `demos/` contains root-requiring stress scripts for live testing RCA.
 
+## Journal RCA feature
+
+xtop classifies systemd journal errors into structured findings at two tiers:
+
+| Tier | Where | What |
+|---|---|---|
+| Tier-2 (collector) | `collector/journal/` → `model.Snapshot.Global.Logs.Services[].Findings` | Per-service `[]model.JournalFinding` produced by `journal.Classify()` |
+| Tier-1 (engine) | `engine/journal_tier1.go` → `model.AnalysisResult.JournalFindings` | Aggregated `[]model.DiagFinding{Category:"logs"}` injected into the RCA chain |
+| TUI surface | `ui/page_diag.go` (Service Diagnostics page) | Journal findings rendered per service with severity badge, label, count, sample |
+
+### Signature taxonomy
+
+| Signature | Severity | Triggers |
+|---|---|---|
+| `crash_restart_loop` | CRIT | "main process exited", "start request repeated too quickly" |
+| `oom_killed` | CRIT | "out of memory: killed process", "oom-kill" |
+| `segfault_panic` | CRIT | "segfault at", "panic:", "fatal error:" |
+| `resource_exhaustion` | WARN | "too many open files", "no space left", "pool exhausted" |
+| `dependency_failure` | WARN | "connection refused", "timeout connecting", "tls handshake" |
+| `config_auth_error` | WARN | "permission denied", "invalid configuration", "failed to bind" |
+| `error_rate_spike` | WARN | high-priority log count > 3× baseline rate |
+
+### `--journal-rca` flag
+
+`--journal-rca=critical|all|off` (default: `critical`) — controls which tiers report findings:
+- `critical`: only Tier-1 crit findings promote to the RCA chain
+- `all`: warn-level findings are also promoted
+- `off`: journal analysis disabled
+
+### Dashboard note
+
+Journal findings do not yet flow through the fleet heartbeat/incident payload (`model.FleetHeartbeat`, `model.FleetIncident`). Surfacing them in the fleet web dashboard requires extending those structs — deferred to a follow-up task.
+
 ## Logging convention
 
 | Package | Logger |

@@ -4,8 +4,72 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/ftahirops/xtop/model"
 )
+
+// journalSigLabel returns a human-readable label for a journal-RCA signature.
+func journalSigLabel(sig string) string {
+	switch sig {
+	case "crash_restart_loop":
+		return "Crash/restart loop"
+	case "oom_killed":
+		return "OOM-killed"
+	case "segfault_panic":
+		return "Segfault/panic"
+	case "resource_exhaustion":
+		return "Resource exhaustion"
+	case "dependency_failure":
+		return "Dependency failure"
+	case "config_auth_error":
+		return "Config/auth error"
+	case "error_rate_spike":
+		return "Error rate spike"
+	default:
+		return sig
+	}
+}
+
+// journalFindingsIndex builds a name→findings lookup from the log services slice.
+func journalFindingsIndex(logs model.LogMetrics) map[string][]model.JournalFinding {
+	m := make(map[string][]model.JournalFinding, len(logs.Services))
+	for _, svc := range logs.Services {
+		if len(svc.Findings) > 0 {
+			m[svc.Name] = svc.Findings
+		}
+	}
+	return m
+}
+
+// renderJournalFindingRows appends journal-finding rows for a service to sb.
+// Each row shows: severity badge | label | count | truncated sample.
+// Returns true if at least one row was written.
+func renderJournalFindingRows(sb *strings.Builder, findings []model.JournalFinding, iw int) bool {
+	if len(findings) == 0 {
+		return false
+	}
+	// Sub-header separator line.
+	sb.WriteString(boxRow(dimStyle.Render("── Journal findings ──────────────────────"), iw) + "\n")
+	for _, f := range findings {
+		badge := diagSevBadge(f.Severity)
+		label := journalSigLabel(f.Signature)
+		countStr := fmt.Sprintf("×%d", f.Count)
+		prefix := badge + " " + valueStyle.Render(label) + "  " + dimStyle.Render(countStr)
+		prefixW := lipgloss.Width(prefix)
+		sample := f.Sample
+		if sample != "" {
+			// Reserve space: 2 chars for "  " separator + prefix width + 1 border.
+			maxSample := iw - prefixW - 3
+			if maxSample < 10 {
+				maxSample = 10
+			}
+			sample = truncate(sample, maxSample)
+			prefix = prefix + "  " + dimStyle.Render(sample)
+		}
+		sb.WriteString(boxRow(prefix, iw) + "\n")
+	}
+	return true
+}
 
 func renderDiagPage(snap *model.Snapshot, rates *model.RateSnapshot, result *model.AnalysisResult, pm probeQuerier, width, height int) string {
 	var sb strings.Builder
@@ -37,24 +101,32 @@ func renderDiagPage(snap *model.Snapshot, rates *model.RateSnapshot, result *mod
 	sb.WriteString("\n")
 
 	// ── Per-Service Detail Boxes ──
+	journalIdx := journalFindingsIndex(snap.Global.Logs)
 	for _, svc := range diag.Services {
 		badge := diagSevBadge(svc.WorstSev)
 		title := headerStyle.Render(fmt.Sprintf(" %s ", svc.Name))
 		separator := dimStyle.Render(strings.Repeat("─", 3))
 		sb.WriteString(boxTopTitle(title+separator+badge+dimStyle.Render(" "), iw) + "\n")
 
-		if len(svc.Findings) == 0 {
-			sb.WriteString(boxRow(dimStyle.Render("No findings"), iw) + "\n")
-		} else {
-			for _, f := range svc.Findings {
-				icon := diagSevIcon(f.Severity)
-				summary := f.Summary
-				line := icon + " " + summary
-				if f.Advice != "" {
-					line += dimStyle.Render(" → "+f.Advice)
-				}
-				sb.WriteString(boxRow(line, iw) + "\n")
+		hasFindings := false
+		for _, f := range svc.Findings {
+			icon := diagSevIcon(f.Severity)
+			summary := f.Summary
+			line := icon + " " + summary
+			if f.Advice != "" {
+				line += dimStyle.Render(" → "+f.Advice)
 			}
+			sb.WriteString(boxRow(line, iw) + "\n")
+			hasFindings = true
+		}
+
+		// Render Tier-2 journal findings for this service (if any).
+		jf := journalIdx[svc.Name]
+		wroteJournal := renderJournalFindingRows(&sb, jf, iw)
+		hasFindings = hasFindings || wroteJournal
+
+		if !hasFindings {
+			sb.WriteString(boxRow(dimStyle.Render("No findings"), iw) + "\n")
 		}
 
 		sb.WriteString(boxBot(iw) + "\n")
