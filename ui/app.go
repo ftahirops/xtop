@@ -1601,14 +1601,16 @@ func (m Model) renderStatusBar(scrollInfo string) string {
 			widths[i] = lipgloss.Width(rendered[i])
 		}
 
-		ellipsis := dimStyle.Render("..")
-		ellipsisW := lipgloss.Width(ellipsis)
 		cur := int(m.page)
 		n := len(labels)
 
 		// Start with current page, expand outward
 		lo, hi := cur, cur
 		usedW := widths[cur]
+
+		// Reserve space for overflow hints (measure after we know the counts)
+		// We'll use a placeholder width of 8 chars for "(+NN)" hints.
+		const overflowHintMax = 8
 
 		for {
 			expanded := false
@@ -1617,7 +1619,7 @@ func (m Model) renderStatusBar(scrollInfo string) string {
 				needW := widths[lo-1]
 				extra := 0
 				if lo-1 > 0 {
-					extra = ellipsisW // will need left ellipsis
+					extra = overflowHintMax // will need left hint
 				}
 				if usedW+needW+extra <= m.width {
 					lo--
@@ -1630,7 +1632,7 @@ func (m Model) renderStatusBar(scrollInfo string) string {
 				needW := widths[hi+1]
 				extra := 0
 				if hi+1 < n-1 {
-					extra = ellipsisW // will need right ellipsis
+					extra = overflowHintMax // will need right hint
 				}
 				if usedW+needW+extra <= m.width {
 					hi++
@@ -1643,16 +1645,23 @@ func (m Model) renderStatusBar(scrollInfo string) string {
 			}
 		}
 
-		var result string
-		if lo > 0 {
-			result += ellipsis
+		// Build overflow hints showing count of hidden tabs
+		leftHidden := lo
+		rightHidden := n - 1 - hi
+		var leftHint, rightHint string
+		if leftHidden > 0 {
+			leftHint = dimStyle.Render(fmt.Sprintf("…(+%d)", leftHidden))
 		}
+		if rightHidden > 0 {
+			rightHint = dimStyle.Render(fmt.Sprintf("…(+%d)", rightHidden))
+		}
+
+		var result string
+		result += leftHint
 		for i := lo; i <= hi; i++ {
 			result += rendered[i]
 		}
-		if hi < n-1 {
-			result += ellipsis
-		}
+		result += rightHint
 		return result
 	}
 
@@ -1673,7 +1682,7 @@ func (m Model) renderStatusBar(scrollInfo string) string {
 		indicators += "  " + dimStyle.Render(fmt.Sprintf("[%s]", m.layoutMode))
 	}
 	if scrollInfo != "" {
-		indicators += "  " + dimStyle.Render("↕"+scrollInfo)
+		indicators += "  " + dimStyle.Render("Line "+scrollInfo)
 	}
 
 	help := helpStyle.Render("E:explain  I:probe  e:verdict  A/B:mode  v:layout  a:pause  S:save  ?:help  q:quit")
