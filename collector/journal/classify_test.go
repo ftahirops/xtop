@@ -43,6 +43,9 @@ func TestClassifyRateSpike(t *testing.T) {
 	for _, x := range f {
 		if x.Signature == "error_rate_spike" && x.Severity == model.DiagWarn {
 			found = true
+			if x.Count != 50 {
+				t.Errorf("error_rate_spike Count want 50 got %d", x.Count)
+			}
 		}
 	}
 	if !found {
@@ -140,5 +143,42 @@ func TestClassifyTimestamps(t *testing.T) {
 	}
 	if f[0].Count != 3 {
 		t.Errorf("Count want 3 got %d", f[0].Count)
+	}
+}
+
+func TestClassifyBenignUpstreamDNSNotDependencyFailure(t *testing.T) {
+	// Test that benign log messages containing "upstream" or "dns" substrings
+	// do not incorrectly trigger dependency_failure now that markers are specific.
+	entries := []journal.Entry{
+		{Priority: 4, Message: "upstream group 'web' added to load balancer config"},
+		{Priority: 4, Message: "DNSSEC validation enabled for zone example.com"},
+		{Priority: 4, Message: "dns cache statistics: 1000 hits, 50 misses"},
+	}
+	f := journal.Classify(entries, 0)
+	// None of these should produce dependency_failure
+	for _, x := range f {
+		if x.Signature == "dependency_failure" {
+			t.Errorf("benign message incorrectly matched dependency_failure: %s", x.Sample)
+		}
+	}
+	if len(f) != 0 {
+		t.Errorf("expected 0 findings for benign messages, got %d: %+v", len(f), f)
+	}
+
+	// Now test that genuine failure messages DO match.
+	failureEntries := []journal.Entry{
+		{Priority: 3, Message: "upstream connect error while connecting to backend server"},
+		{Priority: 3, Message: "dns resolution failed: temporary failure"},
+		{Priority: 3, Message: "name resolution error for api.example.com"},
+	}
+	ff := journal.Classify(failureEntries, 0)
+	foundFailure := false
+	for _, x := range ff {
+		if x.Signature == "dependency_failure" {
+			foundFailure = true
+		}
+	}
+	if !foundFailure {
+		t.Errorf("expected dependency_failure finding for real failure messages, got %+v", ff)
 	}
 }

@@ -74,9 +74,11 @@ var signatures = []sigDef{
 		markers: []string{
 			"connection refused",
 			"timeout connecting",
-			"upstream",
+			"upstream connect",
+			"upstream timed out",
 			"tls handshake",
-			"dns",
+			"dns resolution failed",
+			"name resolution",
 		},
 	},
 	{
@@ -107,7 +109,11 @@ func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return s[:n]
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+	return string(runes[:n])
 }
 
 // Classify classifies a slice of journal entries into typed JournalFindings.
