@@ -183,7 +183,7 @@ func renderProfilerSectionHeader(title, summary string, score int, selected, exp
 	titlePart := fmt.Sprintf("%s %s  %s", arrow, title, scoreStr)
 
 	if selected {
-		style := lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Bold(true)
+		style := lipgloss.NewStyle().Foreground(fg(lipgloss.Color("14"))).Bold(true)
 		titlePart = style.Render(titlePart)
 	} else {
 		titlePart = titleStyle.Render(fmt.Sprintf("%s %s", arrow, title)) + "  " + profScoreStyle(score).Render(scoreStr)

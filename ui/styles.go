@@ -11,9 +11,18 @@ import (
 var noColor = os.Getenv("NO_COLOR") != ""
 
 // fg returns c as a TerminalColor, or lipgloss.NoColor{} when NO_COLOR is set.
-// Use this helper whenever building a style that carries a foreground or
-// background color so that all color decisions flow through one gate.
+// Use this helper whenever building a style that carries a foreground color
+// so that all color decisions flow through one gate.
 func fg(c lipgloss.Color) lipgloss.TerminalColor {
+	if noColor {
+		return lipgloss.NoColor{}
+	}
+	return c
+}
+
+// bg returns c as a TerminalColor for background use, or lipgloss.NoColor{}
+// when NO_COLOR is set.
+func bg(c lipgloss.Color) lipgloss.TerminalColor {
 	if noColor {
 		return lipgloss.NoColor{}
 	}

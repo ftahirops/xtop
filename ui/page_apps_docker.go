@@ -286,11 +286,11 @@ func dockerContainerStateStr(c model.AppDockerContainer) string {
 func dockerStackBadge(stype string) string {
 	switch stype {
 	case "compose":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Render("[compose]")
+		return lipgloss.NewStyle().Foreground(fg(lipgloss.Color("14"))).Render("[compose]")
 	case "swarm":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("13")).Render("[swarm]")
+		return lipgloss.NewStyle().Foreground(fg(lipgloss.Color("13"))).Render("[swarm]")
 	case "k8s":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Render("[k8s]")
+		return lipgloss.NewStyle().Foreground(fg(lipgloss.Color("11"))).Render("[k8s]")
 	default:
 		return dimStyle.Render("[standalone]")
 	}
@@ -310,11 +310,11 @@ func dockerStackHealthBadge(score int) string {
 func dockerOrchBadge(orch string) string {
 	switch orch {
 	case "compose":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Render("compose")
+		return lipgloss.NewStyle().Foreground(fg(lipgloss.Color("14"))).Render("compose")
 	case "swarm":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("13")).Render("swarm")
+		return lipgloss.NewStyle().Foreground(fg(lipgloss.Color("13"))).Render("swarm")
 	case "k8s":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Render("k8s")
+		return lipgloss.NewStyle().Foreground(fg(lipgloss.Color("11"))).Render("k8s")
 	case "mixed":
 		return warnStyle.Render("mixed")
 	default:

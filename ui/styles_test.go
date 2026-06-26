@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -9,13 +10,28 @@ import (
 )
 
 // hasColorSeq returns true when the string contains foreground or background
-// color ANSI escape sequences. Lipgloss may combine attributes into a single
-// CSI parameter string (e.g. "\x1b[1;38;2;255;85;85m"), so we look for the
-// SGR parameter numbers 38 (foreground) and 48 (background) as substrings
-// within any escape sequence rather than requiring them to follow "\x1b["
-// directly.
+// color ANSI escape sequences. It detects three families:
+//  1. 24-bit / 256-color: SGR parameters 38; (fg) or 48; (bg).
+//  2. Basic ANSI palette: standard colors 30-37 and bright colors 90-97,
+//     recognised as \x1b[ followed by '3'|'9' and a digit 0-7.
+//
+// Italic (\x1b[3m) and crossed-out (\x1b[9m) have no trailing digit, so
+// they are not falsely matched by rule 2.
 func hasColorSeq(s string) bool {
-	return strings.Contains(s, "38;") || strings.Contains(s, "48;")
+	if strings.Contains(s, "38;") || strings.Contains(s, "48;") {
+		return true
+	}
+	// Walk the string looking for \x1b[<digit><digit>... patterns.
+	for i := 0; i+3 < len(s); i++ {
+		if s[i] == '\x1b' && s[i+1] == '[' {
+			// Bright colors 90-97: first digit '9', second '0'-'7'.
+			// Standard colors 30-37: first digit '3', second '0'-'7'.
+			if (s[i+2] == '9' || s[i+2] == '3') && s[i+3] >= '0' && s[i+3] <= '7' {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // hasBoldSeq returns true when the string contains a bold escape sequence.
@@ -29,11 +45,12 @@ func hasBoldSeq(s string) bool {
 func TestNoColorStripsColorSequences(t *testing.T) {
 	// Force TrueColor profile so lipgloss emits ANSI sequences regardless of
 	// whether the test runner has a real TTY attached.
+	saved := lipgloss.ColorProfile()
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	t.Cleanup(func() {
 		// Restore profile and rebuild styles with the real env value so
 		// later tests in the same process are not affected.
-		lipgloss.SetColorProfile(termenv.Ascii) // conservative default for CI
+		lipgloss.SetColorProfile(saved)
 		initStyles(noColor)
 	})
 
@@ -79,9 +96,10 @@ func TestNoColorStripsColorSequences(t *testing.T) {
 // when NO_COLOR is present in the environment the styles built at init time
 // also carry no color. This test re-inits styles to simulate a fresh start.
 func TestNoColorEnvVar(t *testing.T) {
+	saved := lipgloss.ColorProfile()
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	t.Cleanup(func() {
-		lipgloss.SetColorProfile(termenv.Ascii)
+		lipgloss.SetColorProfile(saved)
 		initStyles(noColor)
 	})
 
@@ -98,9 +116,10 @@ func TestNoColorEnvVar(t *testing.T) {
 // TestColorPresentWithoutNoColor is the inverse: without NO_COLOR the color
 // styles must emit color ANSI sequences.
 func TestColorPresentWithoutNoColor(t *testing.T) {
+	saved := lipgloss.ColorProfile()
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	t.Cleanup(func() {
-		lipgloss.SetColorProfile(termenv.Ascii)
+		lipgloss.SetColorProfile(saved)
 		initStyles(noColor)
 	})
 
@@ -108,5 +127,44 @@ func TestColorPresentWithoutNoColor(t *testing.T) {
 	out := okStyle.Render("OK")
 	if !hasColorSeq(out) {
 		t.Errorf("without NO_COLOR: okStyle should contain color sequences, got %q", out)
+	}
+}
+
+// TestInlineColorSitesGated verifies that inline Foreground/Background sites
+// (those that build lipgloss styles ad-hoc rather than via initStyles) also
+// emit no color when noColor is true. We exercise the docker badge helpers as
+// a representative sample since they were the most numerous inline sites.
+func TestInlineColorSitesGated(t *testing.T) {
+	saved := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() {
+		lipgloss.SetColorProfile(saved)
+		// Restore to whatever the real env wants.
+		noColor = os.Getenv("NO_COLOR") != ""
+		initStyles(noColor)
+	})
+
+	// --- colored path: inline sites must emit color ---
+	noColor = false
+	initStyles(false)
+	badge := dockerStackBadge("compose")
+	if !hasColorSeq(badge) {
+		t.Errorf("colored path: dockerStackBadge(compose) expected color sequences, got %q", badge)
+	}
+	orch := dockerOrchBadge("k8s")
+	if !hasColorSeq(orch) {
+		t.Errorf("colored path: dockerOrchBadge(k8s) expected color sequences, got %q", orch)
+	}
+
+	// --- NO_COLOR path: inline sites must NOT emit color ---
+	noColor = true
+	initStyles(true)
+	badge = dockerStackBadge("compose")
+	if hasColorSeq(badge) {
+		t.Errorf("NO_COLOR path: dockerStackBadge(compose) unexpected color sequences, got %q", badge)
+	}
+	orch = dockerOrchBadge("swarm")
+	if hasColorSeq(orch) {
+		t.Errorf("NO_COLOR path: dockerOrchBadge(swarm) unexpected color sequences, got %q", orch)
 	}
 }

@@ -111,7 +111,7 @@ func renderNetSectionHeader(title, summary string, selected, expanded bool, iw i
 
 	if selected {
 		// Bright cyan + bold for selected
-		style := lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Bold(true)
+		style := lipgloss.NewStyle().Foreground(fg(lipgloss.Color("14"))).Bold(true)
 		titlePart = style.Render(titlePart)
 	} else {
 		titlePart = titleStyle.Render(titlePart)

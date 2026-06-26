@@ -1491,7 +1491,7 @@ func (m Model) View() string {
 
 	// Signal feedback message (10s timeout)
 	if m.signalMsg != "" && time.Since(m.signalMsgTime) < 10*time.Second {
-		content += "\n " + lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#50fa7b")).Render(m.signalMsg)
+		content += "\n " + lipgloss.NewStyle().Bold(true).Foreground(fg(lipgloss.Color("#50fa7b"))).Render(m.signalMsg)
 	}
 
 	// Inject clock + interval into the first line (top-right)
@@ -2097,10 +2097,10 @@ func (m *Model) renderSignalOverlay(content string, width int) string {
 		overlayW = width - 4
 	}
 
-	borderStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#ff79c6"))
-	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#f8f8f2"))
-	selStyle := lipgloss.NewStyle().Bold(true).Background(lipgloss.Color("#44475a")).Foreground(lipgloss.Color("#50fa7b"))
-	dimSty := lipgloss.NewStyle().Foreground(lipgloss.Color("#6272a4"))
+	borderStyle := lipgloss.NewStyle().Foreground(fg(lipgloss.Color("#ff79c6")))
+	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(fg(lipgloss.Color("#f8f8f2")))
+	selStyle := lipgloss.NewStyle().Bold(true).Background(bg(lipgloss.Color("#44475a"))).Foreground(fg(lipgloss.Color("#50fa7b")))
+	dimSty := lipgloss.NewStyle().Foreground(fg(lipgloss.Color("#6272a4")))
 
 	if m.signalConfirm {
 		// Confirmation dialog
@@ -2110,7 +2110,7 @@ func (m *Model) renderSignalOverlay(content string, width int) string {
 			sig.Name, m.signalTargetPID, m.signalTargetComm)) + "\n")
 		sb.WriteString(borderStyle.Render("│") + "\n")
 		if freezeDenylist[m.signalTargetComm] && sig.Sig == syscall.SIGKILL {
-			sb.WriteString(borderStyle.Render("│") + lipgloss.NewStyle().Foreground(lipgloss.Color("#ff5555")).Render(
+			sb.WriteString(borderStyle.Render("│") + lipgloss.NewStyle().Foreground(fg(lipgloss.Color("#ff5555"))).Render(
 				fmt.Sprintf("  ⚠ %s is in denylist — SIGKILL blocked", m.signalTargetComm)) + "\n")
 		}
 		sb.WriteString(borderStyle.Render("│") + "  " + selStyle.Render(" y ") + " Yes  " + dimSty.Render(" n ") + " No  " + dimSty.Render(" Esc ") + " Cancel\n")
