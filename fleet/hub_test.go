@@ -18,6 +18,184 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// ─── Gap tests (Batch 2) ──────────────────────────────────────────────────────
+
+// TestDuplicateIncidentDrop verifies that isDuplicateIncident gates
+// repeat (agent, signature, update_type) tuples within 30 s. The second
+// identical POST must return 204 but must NOT reach the broadcast/persist
+// path, which we confirm by checking the dedup map has only one entry.
+func TestDuplicateIncidentDrop(t *testing.T) {
+	h := newTestHub(t, model.FleetHubConfig{AllowNoAuth: true})
+
+	// Unique agent to avoid rate-limiter interference from other tests.
+	body := `{"incident_id":"inc-dup","agent_id":"dedup-agent","hostname":"h1",` +
+		`"update_type":"started","signature":"sig-dup","peak_score":80,"confidence":90}`
+
+	// First POST — should go through normally.
+	w1 := httptest.NewRecorder()
+	h.handleIncident(w1, httptest.NewRequest("POST", "/v1/incident", strings.NewReader(body)))
+	if w1.Code != http.StatusNoContent {
+		t.Fatalf("first incident: want 204, got %d", w1.Code)
+	}
+
+	// Dedup map must now contain exactly one entry.
+	h.dedupeMu.Lock()
+	countAfterFirst := len(h.dedupe)
+	h.dedupeMu.Unlock()
+	if countAfterFirst != 1 {
+		t.Fatalf("after first POST: expected 1 dedup entry, got %d", countAfterFirst)
+	}
+
+	// Second identical POST — must be deduped and return 204.
+	w2 := httptest.NewRecorder()
+	h.handleIncident(w2, httptest.NewRequest("POST", "/v1/incident", strings.NewReader(body)))
+	if w2.Code != http.StatusNoContent {
+		t.Fatalf("second incident: want 204, got %d", w2.Code)
+	}
+
+	// Dedup map still has exactly one entry (the second call didn't add a new one).
+	h.dedupeMu.Lock()
+	countAfterSecond := len(h.dedupe)
+	h.dedupeMu.Unlock()
+	if countAfterSecond != 1 {
+		t.Fatalf("after second POST: expected 1 dedup entry (no new entry added), got %d", countAfterSecond)
+	}
+}
+
+// TestZeroPayloadIncidentDrop verifies the ingest quality gate:
+//   - An incident with PeakScore==0 AND Confidence==0 AND UpdateType!=Resolved is dropped (204) before dedup.
+//   - A Resolved incident with the same zero scores is NOT dropped.
+func TestZeroPayloadIncidentDrop(t *testing.T) {
+	h := newTestHub(t, model.FleetHubConfig{AllowNoAuth: true})
+
+	// Zero-score non-resolved → must be dropped silently.
+	zeroBody := `{"incident_id":"inc-zero","agent_id":"zero-agent","hostname":"h2",` +
+		`"update_type":"started","signature":"sig-zero","peak_score":0,"confidence":0}`
+	w1 := httptest.NewRecorder()
+	h.handleIncident(w1, httptest.NewRequest("POST", "/v1/incident", strings.NewReader(zeroBody)))
+	if w1.Code != http.StatusNoContent {
+		t.Fatalf("zero-payload non-resolved: want 204, got %d", w1.Code)
+	}
+	// Payload was dropped BEFORE reaching isDuplicateIncident, so the dedup
+	// map must be empty — the key was never registered.
+	h.dedupeMu.Lock()
+	_, inDedup := h.dedupe["zero-agent|sig-zero|started"]
+	h.dedupeMu.Unlock()
+	if inDedup {
+		t.Fatal("zero-payload incident must not reach the dedup gate (should have been dropped earlier)")
+	}
+
+	// Resolved with zero scores → must NOT be dropped (legit close-out event).
+	resolvedBody := `{"incident_id":"inc-res","agent_id":"resolved-agent","hostname":"h3",` +
+		`"update_type":"resolved","signature":"sig-res","peak_score":0,"confidence":0}`
+	w2 := httptest.NewRecorder()
+	h.handleIncident(w2, httptest.NewRequest("POST", "/v1/incident", strings.NewReader(resolvedBody)))
+	if w2.Code != http.StatusNoContent {
+		t.Fatalf("resolved zero-payload: want 204, got %d", w2.Code)
+	}
+	// Resolved event reached isDuplicateIncident, so the key must be in the dedup map.
+	h.dedupeMu.Lock()
+	_, inDedupResolved := h.dedupe["resolved-agent|sig-res|resolved"]
+	h.dedupeMu.Unlock()
+	if !inDedupResolved {
+		t.Fatal("resolved zero-payload must NOT be dropped — key should be present in dedup map")
+	}
+}
+
+// TestHeartbeatUpdatesRegistry verifies that a POSTed heartbeat updates the
+// in-memory hosts registry. It checks both direct map access and the
+// handleListHosts endpoint.
+func TestHeartbeatUpdatesRegistry(t *testing.T) {
+	h := newTestHub(t, model.FleetHubConfig{AllowNoAuth: true})
+
+	hbBody := `{"hostname":"reg-host","agent_id":"reg-agent"}`
+	w := httptest.NewRecorder()
+	h.handleHeartbeat(w, httptest.NewRequest("POST", "/v1/heartbeat", strings.NewReader(hbBody)))
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("heartbeat POST: want 204, got %d", w.Code)
+	}
+
+	// Direct registry check.
+	h.hostsMu.RLock()
+	host := h.hosts["reg-agent"]
+	h.hostsMu.RUnlock()
+	if host == nil {
+		t.Fatal("expected host 'reg-agent' in in-memory registry after heartbeat")
+	}
+	if host.Hostname != "reg-host" {
+		t.Fatalf("registry: expected hostname 'reg-host', got %q", host.Hostname)
+	}
+	if host.AgentID != "reg-agent" {
+		t.Fatalf("registry: expected agent_id 'reg-agent', got %q", host.AgentID)
+	}
+
+	// Also verify via the /v1/hosts handler.
+	w2 := httptest.NewRecorder()
+	h.handleListHosts(w2, httptest.NewRequest("GET", "/v1/hosts", nil))
+	if w2.Code != http.StatusOK {
+		t.Fatalf("GET /v1/hosts: want 200, got %d", w2.Code)
+	}
+	var hosts []*model.FleetHost
+	if err := json.NewDecoder(w2.Body).Decode(&hosts); err != nil {
+		t.Fatalf("decode /v1/hosts response: %v", err)
+	}
+	var found bool
+	for _, fh := range hosts {
+		if fh.AgentID == "reg-agent" && fh.Hostname == "reg-host" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("handleListHosts: host 'reg-host' (agent 'reg-agent') not present in response %v", hosts)
+	}
+}
+
+// TestSQLiteCacheRoundTrip verifies that persistHeartbeat writes to the
+// SQLite hot-cache and the data can be read back. The Postgres path will
+// log an error (the test hub uses a stub SQLite-backed h.pg with no
+// fleet_heartbeats table) but persistHeartbeat does not abort on that
+// error — the cache write still runs. We call persistHeartbeat
+// synchronously (not via the goroutine started by handleHeartbeat) to
+// avoid races.
+func TestSQLiteCacheRoundTrip(t *testing.T) {
+	h := newTestHub(t, model.FleetHubConfig{AllowNoAuth: true})
+
+	// The test hub does not call initCacheSchema; do it explicitly.
+	if err := h.initCacheSchema(); err != nil {
+		t.Fatalf("initCacheSchema: %v", err)
+	}
+
+	hb := &model.FleetHeartbeat{
+		AgentID:    "cache-agent",
+		Hostname:   "cache-host",
+		CPUBusyPct: 42.5,
+		MemUsedPct: 70.0,
+	}
+
+	// Call synchronously to avoid goroutine race in test.
+	h.persistHeartbeat(hb)
+
+	var gotAgentID, gotHostname string
+	var gotCPU float64
+	err := h.cache.QueryRow(
+		`SELECT agent_id, hostname, cpu_busy FROM heartbeats WHERE agent_id = ?`,
+		hb.AgentID,
+	).Scan(&gotAgentID, &gotHostname, &gotCPU)
+	if err != nil {
+		t.Fatalf("read heartbeat from SQLite cache: %v", err)
+	}
+	if gotAgentID != hb.AgentID {
+		t.Fatalf("cache: agent_id: want %q, got %q", hb.AgentID, gotAgentID)
+	}
+	if gotHostname != hb.Hostname {
+		t.Fatalf("cache: hostname: want %q, got %q", hb.Hostname, gotHostname)
+	}
+	if gotCPU != hb.CPUBusyPct {
+		t.Fatalf("cache: cpu_busy: want %.2f, got %.2f", hb.CPUBusyPct, gotCPU)
+	}
+}
+
 func TestRequireAuthRejectsWrongToken(t *testing.T) {
 	h := &Hub{cfg: model.FleetHubConfig{AuthToken: "secret"}}
 	r := httptest.NewRequest("GET", "/v1/hosts", nil)
