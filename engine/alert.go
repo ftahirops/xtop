@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -35,10 +36,12 @@ type alertJob struct {
 
 // Notifier sends alert notifications.
 type Notifier struct {
-	cfg    AlertConfig
-	client *http.Client
-	queue  chan alertJob
-	once   sync.Once
+	cfg        AlertConfig
+	client     *http.Client
+	queue      chan alertJob
+	once       sync.Once
+	closeOnce  sync.Once
+	closed     atomic.Bool
 }
 
 // NewNotifier creates a notifier.
@@ -59,20 +62,48 @@ func (n *Notifier) Enabled() bool {
 		(n.cfg.TelegramBotToken != "" && n.cfg.TelegramChatID != "")
 }
 
+// Close shuts down the notifier's worker goroutine by closing the job queue.
+// It is safe to call Close more than once; subsequent calls are no-ops.
+// Close should be called only after all Notify callers have stopped, because
+// there is a narrow TOCTOU window between the closed.Load() check in Notify
+// and the channel send: if Close races with an in-flight Notify the send is
+// guarded by a recover() to prevent a panic on the closed channel.
+func (n *Notifier) Close() {
+	n.closeOnce.Do(func() {
+		n.closed.Store(true)
+		close(n.queue)
+	})
+}
+
 // Notify sends an alert event asynchronously.
 func (n *Notifier) Notify(event string, payload interface{}) {
 	if !n.Enabled() {
 		return
 	}
+	// Guard against sending on a closed channel.  The atomic check covers the
+	// normal case; the recover below handles the narrow TOCTOU window where
+	// Close() races between this check and the channel send.
+	if n.closed.Load() {
+		return
+	}
 	n.once.Do(func() {
 		go n.alertWorker()
 	})
-	// Non-blocking send: drop alert if queue is full
-	select {
-	case n.queue <- alertJob{event: event, payload: payload}:
-	default:
-		log.Printf("xtop: alert queue full, dropping event: %s", event)
-	}
+	// Non-blocking send: drop alert if queue is full.
+	// Wrapped in a recover to handle the rare race where Close() closes the
+	// channel between the closed.Load() check above and this send.
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("xtop: alert notify after close, dropping event: %s", event)
+			}
+		}()
+		select {
+		case n.queue <- alertJob{event: event, payload: payload}:
+		default:
+			log.Printf("xtop: alert queue full, dropping event: %s", event)
+		}
+	}()
 }
 
 // alertWorker processes queued alerts sequentially.

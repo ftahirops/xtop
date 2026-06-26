@@ -105,6 +105,7 @@ func RunDaemon(cfg DaemonConfig) error {
 	}
 	detector := NewEventDetector()
 	notifier := NewNotifier(cfg.Alerts)
+	defer notifier.Close() // drain worker goroutine on daemon shutdown
 	eventWriter := NewEventLogWriter(filepath.Join(cfg.DataDir, "events.jsonl"))
 	summaryPath := filepath.Join(cfg.DataDir, "current.jsonl")
 
