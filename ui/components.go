@@ -399,7 +399,7 @@ func pageInnerW(termWidth int) int {
 		// Narrow terminal: use actual width (single-column degrade) rather
 		// than forcing 60 and overflowing.
 		if termWidth < 66 {
-			return max(20, termWidth-2)
+			return min(termWidth, max(20, termWidth-2))
 		}
 		w = 60
 	}

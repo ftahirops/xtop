@@ -16,9 +16,9 @@ func TestPageInnerW(t *testing.T) {
 		{termWidth: 40, wantMax: 40},
 		{termWidth: 50, wantMax: 50},
 		{termWidth: 60, wantMax: 60},
-		// Floor: very narrow terminal returns at least 20
-		{termWidth: 10, wantMax: 20, wantExact: 20},
-		{termWidth: 15, wantMax: 20, wantExact: 20},
+		// Tiny terminals: clamped to termWidth (never wider than terminal)
+		{termWidth: 10, wantMax: 10},
+		{termWidth: 15, wantMax: 15},
 		// Wide terminals: expected exact value (termWidth - 6)
 		{termWidth: 80, wantMax: 80, wantExact: 74},
 		{termWidth: 120, wantMax: 120, wantExact: 114},
