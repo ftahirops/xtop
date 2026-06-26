@@ -276,6 +276,18 @@ Then re-run:  sudo xtop hub init
 func ensurePostgresRoleAndDB(role, password, database string) error {
 	// Using psql + heredoc so we don't have to depend on pgx at init time.
 	// DO blocks guarantee idempotency without pre-SELECTs.
+
+	// Validate SQL identifiers before building the query — returns an error
+	// instead of panicking on malformed input.
+	roleIdent, err := sqlIdent(role)
+	if err != nil {
+		return fmt.Errorf("invalid role name: %w", err)
+	}
+	dbIdent, err := sqlIdent(database)
+	if err != nil {
+		return fmt.Errorf("invalid database name: %w", err)
+	}
+
 	sql := fmt.Sprintf(`
 DO $$
 BEGIN
@@ -289,11 +301,11 @@ $$;
 SELECT 'CREATE DATABASE %[4]s OWNER %[2]s' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = %[5]s)\gexec
 GRANT ALL PRIVILEGES ON DATABASE %[4]s TO %[2]s;
 `,
-		sqlLiteral(role),        // [1] role name as string literal for WHERE clause
-		sqlIdent(role),          // [2] role name as SQL identifier
-		sqlLiteral(password),    // [3] password literal
-		sqlIdent(database),      // [4] database name as identifier (for CREATE DATABASE / GRANT)
-		sqlLiteral(database),    // [5] database name as string literal (for WHERE)
+		sqlLiteral(role), // [1] role name as string literal for WHERE clause
+		roleIdent,        // [2] role name as SQL identifier
+		sqlLiteral(password), // [3] password literal
+		dbIdent,              // [4] database name as identifier (for CREATE DATABASE / GRANT)
+		sqlLiteral(database), // [5] database name as string literal (for WHERE)
 	)
 	cmd := exec.Command("sudo", "-u", "postgres", "psql", "-v", "ON_ERROR_STOP=1")
 	cmd.Stdin = strings.NewReader(sql)
@@ -308,11 +320,11 @@ GRANT ALL PRIVILEGES ON DATABASE %[4]s TO %[2]s;
 // sqlIdent quotes an identifier for safe use in DDL (CREATE DATABASE "x").
 // We only accept [A-Za-z0-9_] names here — all role/db names we construct
 // are hard-coded to "xtop" / "xtopfleet", so this is just defense in depth.
-func sqlIdent(name string) string {
+func sqlIdent(name string) (string, error) {
 	if !isSimpleIdent(name) {
-		panic("refusing to use non-simple SQL identifier: " + name)
+		return "", fmt.Errorf("invalid SQL identifier %q: must contain only [a-zA-Z0-9_]", name)
 	}
-	return "\"" + name + "\""
+	return "\"" + name + "\"", nil
 }
 
 // sqlLiteral returns a string literal — caller uses it where SQL expects
