@@ -2105,7 +2105,7 @@ func (m *Model) renderSignalOverlay(content string, width int) string {
 	if m.signalConfirm {
 		// Confirmation dialog
 		sig := signalList[m.signalMenuIdx]
-		sb.WriteString(borderStyle.Render("╭─ CONFIRM SIGNAL ─" + strings.Repeat("─", overlayW-20) + "╮") + "\n")
+		sb.WriteString(borderStyle.Render("╭─ CONFIRM SIGNAL ─" + strings.Repeat("─", max(0, overlayW-20)) + "╮") + "\n")
 		sb.WriteString(borderStyle.Render("│") + headerStyle.Render(fmt.Sprintf(" Send %s to PID %d (%s)?",
 			sig.Name, m.signalTargetPID, m.signalTargetComm)) + "\n")
 		sb.WriteString(borderStyle.Render("│") + "\n")
@@ -2114,10 +2114,10 @@ func (m *Model) renderSignalOverlay(content string, width int) string {
 				fmt.Sprintf("  ⚠ %s is in denylist — SIGKILL blocked", m.signalTargetComm)) + "\n")
 		}
 		sb.WriteString(borderStyle.Render("│") + "  " + selStyle.Render(" y ") + " Yes  " + dimSty.Render(" n ") + " No  " + dimSty.Render(" Esc ") + " Cancel\n")
-		sb.WriteString(borderStyle.Render("╰" + strings.Repeat("─", overlayW-1) + "╯") + "\n")
+		sb.WriteString(borderStyle.Render("╰" + strings.Repeat("─", max(0, overlayW-1)) + "╯") + "\n")
 	} else {
 		// Process list (left) + signal menu (right)
-		sb.WriteString(borderStyle.Render("╭─ SEND SIGNAL (F9) ─" + strings.Repeat("─", overlayW-21) + "╮") + "\n")
+		sb.WriteString(borderStyle.Render("╭─ SEND SIGNAL (F9) ─" + strings.Repeat("─", max(0, overlayW-21)) + "╮") + "\n")
 		procLabel := "SELECT PROCESS:"
 		sigLabel := "SIGNAL:"
 		if m.signalFocusProc {
@@ -2183,7 +2183,7 @@ func (m *Model) renderSignalOverlay(content string, width int) string {
 		}
 
 		sb.WriteString(borderStyle.Render("│") + " " + dimSty.Render("j/k=select process  Tab=select signal  Enter=confirm  Esc=cancel") + "\n")
-		sb.WriteString(borderStyle.Render("╰" + strings.Repeat("─", overlayW-1) + "╯") + "\n")
+		sb.WriteString(borderStyle.Render("╰" + strings.Repeat("─", max(0, overlayW-1)) + "╯") + "\n")
 	}
 
 	return content + "\n" + sb.String()

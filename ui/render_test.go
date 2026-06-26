@@ -286,3 +286,56 @@ func removeFile(path string) error {
 func readFileBytes(path string) ([]byte, error) {
 	return readFileBytesOS(path)
 }
+
+// TestSignalOverlay_NarrowWidth tests that renderSignalOverlay doesn't panic
+// when overlayW is at its floor of 20 due to narrow terminal width.
+// Regression test for strings.Repeat with negative count panic.
+func TestSignalOverlay_NarrowWidth(t *testing.T) {
+	// Create a minimal Model with rates containing some ProcessRates
+	m := &Model{
+		rates: &model.RateSnapshot{
+			ProcessRates: []model.ProcessRate{
+				{PID: 1234, Comm: "bash", CPUPct: 1.5},
+				{PID: 5678, Comm: "go", CPUPct: 2.3},
+				{PID: 9012, Comm: "python", CPUPct: 0.8},
+			},
+		},
+	}
+
+	// Test at width=24 which forces overlayW to exactly 20 (the floor):
+	// overlayW := min(width-4, 80) = min(20, 80) = 20
+	width := 24
+	content := "test content"
+	result := m.renderSignalOverlay(content, width)
+
+	if result == "" {
+		t.Error("renderSignalOverlay returned empty string at narrow width")
+	}
+	if !strings.Contains(result, content) {
+		t.Error("renderSignalOverlay output missing original content")
+	}
+	if !strings.Contains(result, "SEND SIGNAL") {
+		t.Error("renderSignalOverlay output missing signal overlay header")
+	}
+}
+
+// TestSignalOverlay_VeryNarrowWidth tests even narrower widths to ensure
+// no panic occurs at the absolute minimum supported width.
+func TestSignalOverlay_VeryNarrowWidth(t *testing.T) {
+	m := &Model{
+		rates: &model.RateSnapshot{
+			ProcessRates: []model.ProcessRate{
+				{PID: 1111, Comm: "test", CPUPct: 1.0},
+			},
+		},
+	}
+
+	// Test at width=20 which would be overlayW := min(16, 80) = 16, then bumped to 20
+	width := 20
+	content := "content"
+	result := m.renderSignalOverlay(content, width)
+
+	if result == "" {
+		t.Error("renderSignalOverlay returned empty string at very narrow width")
+	}
+}
