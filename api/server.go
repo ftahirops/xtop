@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -69,9 +70,17 @@ func NewServer(sockPath string, provider SnapshotProvider, st *store.Store) (*Se
 }
 
 // Serve starts accepting connections. Blocks until error or Close().
+// When the server is stopped via Close(), Serve returns http.ErrServerClosed
+// so callers can distinguish a clean shutdown from a genuine failure.
 func (s *Server) Serve() error {
 	srv := &http.Server{Handler: s.mux}
-	return srv.Serve(s.listener)
+	err := srv.Serve(s.listener)
+	// net.Listener.Close() causes Serve to return an error wrapping net.ErrClosed.
+	// Normalise that to http.ErrServerClosed so callers have a single sentinel to check.
+	if err != nil && errors.Is(err, net.ErrClosed) {
+		return http.ErrServerClosed
+	}
+	return err
 }
 
 // Close closes the listener and removes the socket file.

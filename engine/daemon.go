@@ -2,8 +2,10 @@ package engine
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -156,7 +158,12 @@ func RunDaemon(cfg DaemonConfig) error {
 	// Enable multi-resolution buffer on the engine
 	eng.MultiRes = NewMultiResBuffer()
 
-	// Start Unix socket API server
+	// Start Unix socket API server.
+	// NewServer binds the Unix listener synchronously before returning, so
+	// s.listener is fully initialised before the goroutine below starts.
+	// That means Close() is race-free: it can be called at any time
+	// (including via defer) without risking a nil-listener dereference or
+	// a double-bind race.
 	apiProvider := api.NewDaemonSnapshotProvider()
 	sockPath := api.DefaultSockPath()
 	apiSrv, err := api.NewServer(sockPath, apiProvider, db)
@@ -164,7 +171,9 @@ func RunDaemon(cfg DaemonConfig) error {
 		log.Printf("API server init failed: %v", err)
 	} else {
 		go func() {
-			if err := apiSrv.Serve(); err != nil {
+			if err := apiSrv.Serve(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				// Only log genuinely unexpected errors; http.ErrServerClosed
+				// is the normal return when Close() shuts down the listener.
 				log.Printf("API server error: %v", err)
 			}
 		}()
