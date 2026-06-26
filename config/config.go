@@ -11,8 +11,9 @@ import (
 )
 
 // RCAThresholds holds operator-tunable RCA scoring thresholds.
-// Zero values fall back to the compiled-in defaults, so omitting
-// this block entirely preserves existing behavior.
+// Zero values (or omitted fields) fall back to the compiled-in defaults, so omitting
+// this block entirely preserves existing behavior. Note: explicit 0 values are treated
+// as "use default" — 0 cannot be set as an actual threshold value.
 type RCAThresholds struct {
 	// ScoreCritical: PrimaryScore >= this → Health=Critical (default 60)
 	ScoreCritical int `json:"score_critical,omitempty"`

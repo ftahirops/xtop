@@ -16,7 +16,7 @@
     "telegram_chat_id": ""
   },
   "rca_thresholds": {
-    "_comment": "All fields are optional; omit to keep compiled-in defaults.",
+    "_comment": "All fields are optional; omit to keep compiled-in defaults. Note: explicit 0 values are also treated as 'use default', so 0 cannot be set as a real threshold value.",
     "score_critical": 60,
     "score_degraded": 25,
     "score_floor": 20,
