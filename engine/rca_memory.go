@@ -8,7 +8,7 @@ import (
 
 // ---------- Memory Score ----------
 // Evidence groups: PSI, Low available, Swap active, Direct reclaim, Major faults, OOM
-func analyzeMemory(db *AdaptiveThresholdDB, curr *model.Snapshot, rates *model.RateSnapshot, sp systemProfile) model.RCAEntry {
+func analyzeMemory(db *AdaptiveThresholdDB, curr *model.Snapshot, rates *model.RateSnapshot, sp systemProfile, rcaT effectiveRCAThresholds) model.RCAEntry {
 	r := model.RCAEntry{Bottleneck: BottleneckMemory}
 
 	memSome := curr.Global.PSI.Memory.Some.Avg10 / 100
@@ -205,7 +205,7 @@ func analyzeMemory(db *AdaptiveThresholdDB, curr *model.Snapshot, rates *model.R
 				continue
 			}
 			heapPct := jp.GCHeapMB / heapMaxMB * 100
-			if heapPct > jvmHeapPressurePct {
+			if heapPct > rcaT.JvmHeapPressurePct {
 				r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("jvm.heap.pressure", model.DomainMemory,
 					heapPct, 70, 90, true, 0.8,
 					fmt.Sprintf("JVM heap=%.0f%% (%.0f/%.0f MB, PID %d %s)", heapPct, jp.GCHeapMB, heapMaxMB, jp.PID, jp.Comm), "1s",
@@ -243,19 +243,19 @@ func analyzeMemory(db *AdaptiveThresholdDB, curr *model.Snapshot, rates *model.R
 	}
 	r.Score = int(v2Score)
 	// Floor score when OOM detected + trust gate passes
-	if oomDetected && v2TrustGate(r.EvidenceV2) && r.Score < memOOMMinScore {
-		r.Score = memOOMMinScore
+	if oomDetected && v2TrustGate(r.EvidenceV2) && r.Score < rcaT.MemOOMMinScore {
+		r.Score = rcaT.MemOOMMinScore
 	}
 	r.Score = int(v2Score)
-	if oomDetected && v2TrustGate(r.EvidenceV2) && r.Score < memOOMMinScore {
-		r.Score = memOOMMinScore
+	if oomDetected && v2TrustGate(r.EvidenceV2) && r.Score < rcaT.MemOOMMinScore {
+		r.Score = rcaT.MemOOMMinScore
 	}
-	if availPct > memSafeAvailPct && memSome < memSafePSISome && memFull < memSafePSIFull {
+	if availPct > rcaT.MemSafeAvailPct && memSome < memSafePSISome && memFull < memSafePSIFull {
 		if r.Score > memSafeMaxScore {
 			r.Score = memSafeMaxScore
 		}
 	}
-	if r.Score < rcaScoreFloor {
+	if r.Score < rcaT.ScoreFloor {
 		r.Score = 0
 	}
 	cap100(&r.Score)

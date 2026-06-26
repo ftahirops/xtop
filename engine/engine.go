@@ -18,6 +18,7 @@ import (
 	"github.com/ftahirops/xtop/collector/phpfpm"
 	"github.com/ftahirops/xtop/collector/profiler"
 	rt "github.com/ftahirops/xtop/collector/runtime"
+	"github.com/ftahirops/xtop/config"
 	"github.com/ftahirops/xtop/model"
 )
 
@@ -72,6 +73,9 @@ type Engine struct {
 	// ticks to disk so the replay harness can re-verify them offline
 	// and measure per-mechanism precision.
 	corpus *incidentCorpus
+
+	// Operator-tunable RCA scoring thresholds (set via ApplyRCAThresholds).
+	rcaT effectiveRCAThresholds
 }
 
 // NewEngine creates a new engine with all collectors registered.
@@ -208,6 +212,10 @@ func NewEngineMode(historySize, intervalSec int, mode collector.Mode) *Engine {
 		mode:             mode,
 		memReliefQuit:    make(chan struct{}),
 	}
+	// Initialize RCA thresholds to compiled-in defaults. Callers may
+	// override via ApplyRCAThresholds after construction.
+	e.rcaT = resolveRCAThresholds(config.RCAThresholds{})
+
 	// Eagerly construct the resource guard at engine creation so the very
 	// first Tick's pre-collect advice (using runtime.NumCPU as the cpu
 	// count) can throttle expensive collectors. Without this, the guard

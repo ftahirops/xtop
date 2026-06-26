@@ -1,7 +1,7 @@
 {
   "default_layout": 0,
-  "interval_sec": 1,
-  "history_size": 300,
+  "interval_sec": 3,
+  "history_size": 600,
   "default_section": "overview",
   "prometheus": {
     "enabled": false,
@@ -14,5 +14,18 @@
     "slack_webhook": "",
     "telegram_bot_token": "",
     "telegram_chat_id": ""
+  },
+  "rca_thresholds": {
+    "_comment": "All fields are optional; omit to keep compiled-in defaults.",
+    "score_critical": 60,
+    "score_degraded": 25,
+    "score_floor": 20,
+    "min_iops_for_latency": 10.0,
+    "io_fs_full_free_pct": 15.0,
+    "io_dstate_bump_score": 60,
+    "mem_oom_min_score": 70,
+    "mem_safe_avail_pct": 25.0,
+    "cpu_safe_busy_pct": 50.0,
+    "jvm_heap_pressure_pct": 80.0
   }
 }

@@ -201,11 +201,12 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History, 
 	if e != nil {
 		db = e.adaptiveThresholdDB
 	}
+	rcaT := e.thresholds()
 	result.RCA = []model.RCAEntry{
-		analyzeIO(db, curr, rates, sp),
-		analyzeMemory(db, curr, rates, sp),
-		analyzeCPU(db, curr, rates, sp),
-		analyzeNetwork(db, curr, rates, sp),
+		analyzeIO(db, curr, rates, sp, rcaT),
+		analyzeMemory(db, curr, rates, sp, rcaT),
+		analyzeCPU(db, curr, rates, sp, rcaT),
+		analyzeNetwork(db, curr, rates, sp, rcaT),
 	}
 
 	// Stamp sustained-duration on every fired Evidence using History.signalOnsets.

@@ -451,6 +451,7 @@ func Run() error {
 
 	// Create engine
 	eng := engine.NewEngine(cfg.HistorySize, intervalSec)
+	eng.ApplyRCAThresholds(userCfg.RCAThresholds)
 	eng.SetNoHysteresis(cfg.NoHysteresis)
 	defer eng.Close()
 

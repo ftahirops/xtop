@@ -9,7 +9,7 @@ import (
 
 // ---------- IO Score ----------
 // Evidence groups: PSI, D-state, Disk latency, Dirty pages
-func analyzeIO(db *AdaptiveThresholdDB, curr *model.Snapshot, rates *model.RateSnapshot, sp systemProfile) model.RCAEntry {
+func analyzeIO(db *AdaptiveThresholdDB, curr *model.Snapshot, rates *model.RateSnapshot, sp systemProfile, rcaT effectiveRCAThresholds) model.RCAEntry {
 	r := model.RCAEntry{Bottleneck: BottleneckIO}
 
 	ioSome := curr.Global.PSI.IO.Some.Avg10 / 100
@@ -36,11 +36,11 @@ func analyzeIO(db *AdaptiveThresholdDB, curr *model.Snapshot, rates *model.RateS
 		for _, d := range rates.DiskRates {
 			totalIOPS := d.ReadIOPS + d.WriteIOPS
 			// Only consider devices with meaningful IO activity
-			if totalIOPS >= minIOPSForLatency && d.AvgAwaitMs > worstAwait {
+			if totalIOPS >= rcaT.MinIOPSForLatency && d.AvgAwaitMs > worstAwait {
 				worstAwait = d.AvgAwaitMs
 				worstDev = d.Name
 			}
-			if totalIOPS >= minIOPSForLatency && d.UtilPct > worstUtil {
+			if totalIOPS >= rcaT.MinIOPSForLatency && d.UtilPct > worstUtil {
 				worstUtil = d.UtilPct
 			}
 			if d.QueueDepth > worstQueueDepth {
@@ -81,7 +81,7 @@ func analyzeIO(db *AdaptiveThresholdDB, curr *model.Snapshot, rates *model.RateS
 			}
 		}
 	}
-	fsFull := worstFreePct < ioFsFullFreePct
+	fsFull := worstFreePct < rcaT.IoFsFullFreePct
 
 	// --- v2 evidence ---
 	w, c := thresholdAdaptive(db, "io.psi", 5, 20, curr)
@@ -181,10 +181,10 @@ func analyzeIO(db *AdaptiveThresholdDB, curr *model.Snapshot, rates *model.RateS
 		v2Score = 0
 	}
 	r.Score = int(v2Score)
-	if dCount >= ioDstateMinCount && v2TrustGate(r.EvidenceV2) && r.Score < ioDstateBumpScore {
-		r.Score = ioDstateBumpScore
+	if dCount >= ioDstateMinCount && v2TrustGate(r.EvidenceV2) && r.Score < rcaT.IoDstateBumpScore {
+		r.Score = rcaT.IoDstateBumpScore
 	}
-	if r.Score < rcaScoreFloor {
+	if r.Score < rcaT.ScoreFloor {
 		r.Score = 0
 	}
 	cap100(&r.Score)

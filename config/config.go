@@ -10,6 +10,32 @@ import (
 	"github.com/ftahirops/xtop/model"
 )
 
+// RCAThresholds holds operator-tunable RCA scoring thresholds.
+// Zero values fall back to the compiled-in defaults, so omitting
+// this block entirely preserves existing behavior.
+type RCAThresholds struct {
+	// ScoreCritical: PrimaryScore >= this → Health=Critical (default 60)
+	ScoreCritical int `json:"score_critical,omitempty"`
+	// ScoreDegraded: PrimaryScore >= this → Health=Degraded (default 25)
+	ScoreDegraded int `json:"score_degraded,omitempty"`
+	// ScoreFloor: scores below this are zeroed as noise (default 20)
+	ScoreFloor int `json:"score_floor,omitempty"`
+	// MinIOPSForLatency: ignore devices with fewer IOPS/s (default 10.0)
+	MinIOPSForLatency float64 `json:"min_iops_for_latency,omitempty"`
+	// IoFsFullFreePct: free% below this triggers filesystem-full evidence (default 15.0)
+	IoFsFullFreePct float64 `json:"io_fs_full_free_pct,omitempty"`
+	// IoDstateBumpScore: forced IO score when D-state task count is high (default 60)
+	IoDstateBumpScore int `json:"io_dstate_bump_score,omitempty"`
+	// MemOOMMinScore: floor score when OOM kill detected + trust gate passes (default 70)
+	MemOOMMinScore int `json:"mem_oom_min_score,omitempty"`
+	// MemSafeAvailPct: avail% above this + low PSI dampens memory score (default 25.0)
+	MemSafeAvailPct float64 `json:"mem_safe_avail_pct,omitempty"`
+	// CpuSafeBusyPct: busy% below this + low PSI dampens CPU score (default 50.0)
+	CpuSafeBusyPct float64 `json:"cpu_safe_busy_pct,omitempty"`
+	// JvmHeapPressurePct: JVM heap used% above this emits pressure evidence (default 80.0)
+	JvmHeapPressurePct float64 `json:"jvm_heap_pressure_pct,omitempty"`
+}
+
 // Config holds user-configurable defaults and integrations.
 type Config struct {
 	DefaultLayout int              `json:"default_layout"`
@@ -24,6 +50,7 @@ type Config struct {
 	ExperienceLevel  string                `json:"experience_level,omitempty"` // "beginner", "advanced", or "" (first run)
 	Autopilot        AutopilotConfig       `json:"autopilot,omitempty"`
 	SLO              SLOConfig             `json:"slo,omitempty"`
+	RCAThresholds    RCAThresholds         `json:"rca_thresholds,omitempty"`
 }
 
 // AutopilotConfig configures the safe autopilot subsystem.

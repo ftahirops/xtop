@@ -72,7 +72,7 @@ func dropReasonImpact(reason string) string {
 	}
 }
 
-func analyzeNetwork(db *AdaptiveThresholdDB, curr *model.Snapshot, rates *model.RateSnapshot, sp systemProfile) model.RCAEntry {
+func analyzeNetwork(db *AdaptiveThresholdDB, curr *model.Snapshot, rates *model.RateSnapshot, sp systemProfile, rcaT effectiveRCAThresholds) model.RCAEntry {
 	r := model.RCAEntry{Bottleneck: BottleneckNetwork}
 	if rates == nil {
 		return r
@@ -511,7 +511,7 @@ func analyzeNetwork(db *AdaptiveThresholdDB, curr *model.Snapshot, rates *model.
 	if totalDrops > netEvDropsMin && rates.CPUSoftIRQPct > netEvSoftIRQMin && v2TrustGate(r.EvidenceV2) {
 		r.Score += netDropsSoftIRQBonus
 	}
-	if r.Score < rcaScoreFloor {
+	if r.Score < rcaT.ScoreFloor {
 		r.Score = 0
 	}
 	cap100(&r.Score)

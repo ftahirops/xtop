@@ -8,7 +8,7 @@ import (
 
 // ---------- CPU Score ----------
 // Evidence groups: PSI, Run queue, Context switches, Throttling, Steal
-func analyzeCPU(db *AdaptiveThresholdDB, curr *model.Snapshot, rates *model.RateSnapshot, sp systemProfile) model.RCAEntry {
+func analyzeCPU(db *AdaptiveThresholdDB, curr *model.Snapshot, rates *model.RateSnapshot, sp systemProfile, rcaT effectiveRCAThresholds) model.RCAEntry {
 	r := model.RCAEntry{Bottleneck: BottleneckCPU}
 
 	cpuSome := curr.Global.PSI.CPU.Some.Avg10 / 100
@@ -218,7 +218,7 @@ func analyzeCPU(db *AdaptiveThresholdDB, curr *model.Snapshot, rates *model.Rate
 	r.Score = int(v2Score)
 	// System-profile-based CPU safe gate: on many-core systems, higher busy% is expected.
 	// Order matters: check >32 first since it's a superset of >16.
-	cpuSafeGate := cpuSafeBusyPct // default 50%
+	cpuSafeGate := rcaT.CpuSafeBusyPct // default 50%
 	if sp.NumCPUs > 32 {
 		cpuSafeGate = 75.0 // 32+ cores: 75% busy is still safe
 	} else if sp.NumCPUs > 16 {
@@ -232,7 +232,7 @@ func analyzeCPU(db *AdaptiveThresholdDB, curr *model.Snapshot, rates *model.Rate
 	if stealPct > cpuStealBonusThreshold && v2TrustGate(r.EvidenceV2) {
 		r.Score += cpuStealBonusScore
 	}
-	if r.Score < rcaScoreFloor {
+	if r.Score < rcaT.ScoreFloor {
 		r.Score = 0
 	}
 	cap100(&r.Score)

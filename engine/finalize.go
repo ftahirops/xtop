@@ -86,8 +86,9 @@ func (e *Engine) finalize(result *model.AnalysisResult, ctx *finalizationCtx, hi
 	// failing the gate downgrades the Health to Inconclusive while
 	// preserving the Confidence number (so callers can still see WHY
 	// the engine abstained).
+	rcaT := e.thresholds()
 	switch {
-	case result.PrimaryScore >= rcaScoreCritical:
+	case result.PrimaryScore >= rcaT.ScoreCritical:
 		if ctx != nil && ctx.primary != nil && v2TrustGate(ctx.primary.EvidenceV2) {
 			result.Health = model.HealthCritical
 		} else {
@@ -96,7 +97,7 @@ func (e *Engine) finalize(result *model.AnalysisResult, ctx *finalizationCtx, hi
 		if ctx != nil && ctx.primary != nil {
 			result.Confidence = int(ctx.primary.DomainConf * 100)
 		}
-	case result.PrimaryScore >= rcaScoreDegraded:
+	case result.PrimaryScore >= rcaT.ScoreDegraded:
 		if ctx != nil && ctx.primary != nil && v2TrustGate(ctx.primary.EvidenceV2) {
 			result.Health = model.HealthDegraded
 		} else {
@@ -115,7 +116,7 @@ func (e *Engine) finalize(result *model.AnalysisResult, ctx *finalizationCtx, hi
 	if result.PrimaryScore == 0 {
 		result.Health = model.HealthOK
 		result.Confidence = rcaHealthOKConfidence
-	} else if result.PrimaryScore < rcaScoreDegraded {
+	} else if result.PrimaryScore < rcaT.ScoreDegraded {
 		// Score is positive but below the degraded threshold — same
 		// effective contract: Health = OK, Confidence = OK-constant.
 		// Matches the inline else-branch behavior at engine/rca.go L358.
