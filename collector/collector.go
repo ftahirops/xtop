@@ -222,6 +222,9 @@ func (r *Registry) CollectAll(snap *model.Snapshot) []error {
 	}
 	close(jobCh)
 
+	// INVARIANT: collectors run concurrently against the same *Snapshot and
+	// MUST write disjoint fields of that struct; this is not enforced by the
+	// type system — see TestCollectorPoolNoRace in collector_race_test.go.
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
 		go func() {
