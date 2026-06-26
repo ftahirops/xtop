@@ -480,6 +480,19 @@ type SecurityMetrics struct {
 	ActiveWatchdogs     []string            `json:"active_watchdogs,omitempty"`
 }
 
+// JournalFinding is a structured finding produced by Tier-2 journal RCA.
+// It mirrors collector/journal.JournalFinding but lives in model to avoid
+// an import cycle (model must not import collector).
+type JournalFinding struct {
+	Signature string
+	Severity  DiagSeverity
+	Count     int
+	Sample    string    // representative message, truncated to ~120 chars
+	PID       int
+	FirstSeen time.Time
+	LastSeen  time.Time
+}
+
 // ServiceLogStats holds per-service log error/warning stats.
 type ServiceLogStats struct {
 	Name        string
@@ -489,7 +502,8 @@ type ServiceLogStats struct {
 	TotalErrors int
 	TotalWarns  int
 	LastError   string
-	RateHistory []float64 // ring buffer, 60 entries for sparkline
+	RateHistory []float64      // ring buffer, 60 entries for sparkline
+	Findings    []JournalFinding // Tier-2 structured findings; nil when quiet
 }
 
 // LogMetrics holds log analysis data for tracked services.

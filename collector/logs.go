@@ -1,12 +1,19 @@
 package collector
 
 import (
+	"context"
 	"os/exec"
 	"strings"
 	"time"
 
+	"github.com/ftahirops/xtop/collector/journal"
 	"github.com/ftahirops/xtop/model"
 )
+
+// JournalRCAMode controls the scope of Tier-2 periodic journal RCA.
+// Valid values: "critical" (default), "all", "off".
+// Set this before the first collect cycle (e.g. from a CLI flag).
+var JournalRCAMode = "critical"
 
 // LogsCollector gathers per-service error/warning rates from journald.
 type LogsCollector struct {
@@ -16,6 +23,9 @@ type LogsCollector struct {
 	lastQuery     time.Time // #7: rate-limit journalctl queries
 	lastDiscover  time.Time // #25: re-discover periodically
 	history       map[string]*logHistory
+
+	// tier2QueryFn is injectable for tests; defaults to journal.Query at collect time.
+	tier2QueryFn func(ctx context.Context, unit string, since time.Time) ([]journal.Entry, error)
 }
 
 type logHistory struct {
@@ -27,6 +37,26 @@ type logHistory struct {
 	lastErrors  int       // cached from last query
 	lastWarns   int       // cached from last query
 	lastErrLine string    // cached from last query
+	// Tier-2: track high-priority entry count per window for baseline spike detection.
+	highPrioHistory []float64 // 10-entry ring: recent hi-prio counts per cycle
+	hpIdx           uint64
+}
+
+// highPrioBaseline returns the mean of the non-zero high-priority counts in the
+// ring buffer, giving a per-window baseline rate for rate-spike detection.
+func (h *logHistory) highPrioBaseline() float64 {
+	var sum float64
+	var n int
+	for _, v := range h.highPrioHistory {
+		if v > 0 {
+			sum += v
+			n++
+		}
+	}
+	if n == 0 {
+		return 0
+	}
+	return sum / float64(n)
 }
 
 // knownUnits lists well-known service units to look for.
@@ -53,6 +83,9 @@ func (l *LogsCollector) Name() string { return "logs" }
 func (l *LogsCollector) Collect(snap *model.Snapshot) error {
 	if l.history == nil {
 		l.history = make(map[string]*logHistory)
+	}
+	if l.tier2QueryFn == nil {
+		l.tier2QueryFn = journal.Query
 	}
 
 	if !l.discovered {
@@ -81,12 +114,21 @@ func (l *LogsCollector) Collect(snap *model.Snapshot) error {
 		l.lastQuery = now
 	}
 
+	mode := JournalRCAMode // read once; safe because set before engine starts
+
 	var services []model.ServiceLogStats
 	for _, unit := range l.trackedUnits {
 		h := l.history[unit]
 		if h == nil {
-			h = &logHistory{ringBuf: make([]float64, 60)}
+			h = &logHistory{
+				ringBuf:         make([]float64, 60),
+				highPrioHistory: make([]float64, 10),
+			}
 			l.history[unit] = h
+		}
+		// Ensure highPrioHistory is allocated for units seeded before this field existed.
+		if h.highPrioHistory == nil {
+			h.highPrioHistory = make([]float64, 10)
 		}
 
 		if shouldQuery {
@@ -114,7 +156,7 @@ func (l *LogsCollector) Collect(snap *model.Snapshot) error {
 			name = strings.TrimSuffix(name, ".service")
 		}
 
-		services = append(services, model.ServiceLogStats{
+		svc := model.ServiceLogStats{
 			Name:        name,
 			Unit:        unit,
 			ErrorRate:   errRate,
@@ -123,11 +165,77 @@ func (l *LogsCollector) Collect(snap *model.Snapshot) error {
 			TotalWarns:  h.totalWarns,
 			LastError:   h.lastError,
 			RateHistory: copyRing(h.ringBuf, h.ringIdx),
-		})
+		}
+
+		// Tier-2: structured journal RCA for tracked units.
+		if shouldQuery && mode != "off" {
+			svc.Findings = l.tier2Scan(unit, h, querySinceSec)
+		}
+
+		services = append(services, svc)
 	}
 
 	snap.Global.Logs.Services = services
 	return nil
+}
+
+// tier2Scan runs journal.Query + journal.Classify for one tracked unit and
+// returns findings only when a signature fires OR a rate spike is detected.
+// Returns nil when the service is quiet (emit-only-on-signal).
+//
+// querySinceSec is the look-back window in seconds (matches the existing cadence).
+func (l *LogsCollector) tier2Scan(unit string, h *logHistory, querySinceSec int) []model.JournalFinding {
+	return tier2ScanWith(l.tier2QueryFn, unit, h, querySinceSec)
+}
+
+// tier2ScanWith is the pure/injectable core of the Tier-2 scan, factored out
+// so tests can inject a stub queryFn without a real LogsCollector.
+func tier2ScanWith(
+	queryFn func(ctx context.Context, unit string, since time.Time) ([]journal.Entry, error),
+	unit string,
+	h *logHistory,
+	querySinceSec int,
+) []model.JournalFinding {
+	since := time.Now().Add(-time.Duration(querySinceSec) * time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+
+	entries, err := queryFn(ctx, unit, since)
+	if err != nil || len(entries) == 0 {
+		return nil
+	}
+
+	baseline := h.highPrioBaseline()
+	raw := journal.Classify(entries, baseline)
+
+	// Update high-priority count ring for next cycle's baseline.
+	var hpCount float64
+	for _, e := range entries {
+		if e.Priority <= 3 {
+			hpCount++
+		}
+	}
+	h.highPrioHistory[h.hpIdx%10] = hpCount
+	h.hpIdx++
+
+	if len(raw) == 0 {
+		return nil
+	}
+
+	// Convert journal.JournalFinding → model.JournalFinding.
+	out := make([]model.JournalFinding, len(raw))
+	for i, f := range raw {
+		out[i] = model.JournalFinding{
+			Signature: f.Signature,
+			Severity:  model.DiagSeverity(f.Severity),
+			Count:     f.Count,
+			Sample:    f.Sample,
+			PID:       f.PID,
+			FirstSeen: f.FirstSeen,
+			LastSeen:  f.LastSeen,
+		}
+	}
+	return out
 }
 
 func (l *LogsCollector) discoverServices() {
@@ -149,10 +257,20 @@ func (l *LogsCollector) discoverServices() {
 	}
 
 	l.trackedUnits = nil
-	for _, name := range knownUnits {
-		unit := name + ".service"
-		if activeUnits[unit] {
-			l.trackedUnits = append(l.trackedUnits, unit)
+
+	// In "all" mode, track every discovered active service unit.
+	if JournalRCAMode == "all" {
+		for unit := range activeUnits {
+			if strings.HasSuffix(unit, ".service") {
+				l.trackedUnits = append(l.trackedUnits, unit)
+			}
+		}
+	} else {
+		for _, name := range knownUnits {
+			unit := name + ".service"
+			if activeUnits[unit] {
+				l.trackedUnits = append(l.trackedUnits, unit)
+			}
 		}
 	}
 

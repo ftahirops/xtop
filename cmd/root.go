@@ -17,6 +17,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	xtopcfg "github.com/ftahirops/xtop/config"
+	"github.com/ftahirops/xtop/collector"
 	"github.com/ftahirops/xtop/engine"
 	"github.com/ftahirops/xtop/model"
 	"github.com/ftahirops/xtop/ui"
@@ -270,6 +271,8 @@ func Run() error {
 	flag.BoolVar(&cfg.MaskIPs, "mask-ips", false, "Mask IP addresses in output (for demos/screenshots)")
 	// RCA tuning
 	flag.BoolVar(&cfg.NoHysteresis, "no-hysteresis", false, "Disable sustained-threshold alert gating (one-shot mode: score maps directly to health)")
+	var journalRCAMode string
+	flag.StringVar(&journalRCAMode, "journal-rca", "critical", "Tier-2 journal RCA scope: critical (tracked/critical services), all (every discovered unit), off (disabled)")
 	var updateMode bool
 	flag.BoolVar(&updateMode, "update", false, "Check for latest release on GitHub and install it")
 	// Fleet (multi-host aggregation) flags
@@ -303,6 +306,14 @@ func Run() error {
 	cfg.Interval = time.Duration(intervalSec) * time.Second
 	MaskIPsEnabled = cfg.MaskIPs
 	model.MaskIPsEnabled = cfg.MaskIPs
+
+	// Wire Tier-2 journal RCA scope; must be set before engine starts collectors.
+	switch journalRCAMode {
+	case "critical", "all", "off":
+		collector.JournalRCAMode = journalRCAMode
+	default:
+		return fmt.Errorf("invalid --journal-rca value %q: must be critical, all, or off", journalRCAMode)
+	}
 
 	// Resolve default data directory
 	if cfg.DataDir == "" {
