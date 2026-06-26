@@ -487,7 +487,7 @@ type JournalFinding struct {
 	Signature string
 	Severity  DiagSeverity
 	Count     int
-	Sample    string    // representative message, truncated to ~120 chars
+	Sample    string    // representative message; truncation to ~120 chars is applied by journal.Classify (the producer), not enforced by this field
 	PID       int
 	FirstSeen time.Time
 	LastSeen  time.Time

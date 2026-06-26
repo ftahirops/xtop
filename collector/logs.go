@@ -15,6 +15,19 @@ import (
 // Set this before the first collect cycle (e.g. from a CLI flag).
 var JournalRCAMode = "critical"
 
+const (
+	// maxTier2Units caps the number of units scanned per Tier-2 cycle.
+	// In "all" mode the tracked set can be large; scanning every unit
+	// synchronously (4 s/unit) would freeze Collect for minutes.
+	// A rotating offset ensures full coverage over ceil(N/maxTier2Units) cycles.
+	maxTier2Units = 30
+
+	// tier2CycleBudget is the hard wall-clock budget for all Tier-2 scans
+	// in a single Collect call. If cumulative scan time exceeds this limit,
+	// remaining units in the window are skipped until the next cycle.
+	tier2CycleBudget = 5 * time.Second
+)
+
 // LogsCollector gathers per-service error/warning rates from journald.
 type LogsCollector struct {
 	trackedUnits  []string
@@ -23,6 +36,7 @@ type LogsCollector struct {
 	lastQuery     time.Time // #7: rate-limit journalctl queries
 	lastDiscover  time.Time // #25: re-discover periodically
 	history       map[string]*logHistory
+	tier2Offset   int // rotating window start index for Tier-2 scan cap
 
 	// tier2QueryFn is injectable for tests; defaults to journal.Query at collect time.
 	tier2QueryFn func(ctx context.Context, unit string, since time.Time) ([]journal.Entry, error)
@@ -88,15 +102,17 @@ func (l *LogsCollector) Collect(snap *model.Snapshot) error {
 		l.tier2QueryFn = journal.Query
 	}
 
+	mode := JournalRCAMode // read once; safe because set before engine starts
+
 	if !l.discovered {
-		l.discoverServices()
+		l.discoverServices(mode)
 		l.discovered = true
 		l.lastDiscover = time.Now()
 	}
 
 	// #25: Re-discover services every 5 minutes
 	if time.Since(l.lastDiscover) >= 5*time.Minute {
-		l.discoverServices()
+		l.discoverServices(mode)
 		l.lastDiscover = time.Now()
 	}
 
@@ -114,7 +130,29 @@ func (l *LogsCollector) Collect(snap *model.Snapshot) error {
 		l.lastQuery = now
 	}
 
-	mode := JournalRCAMode // read once; safe because set before engine starts
+	// Tier-2 scan: build a rotating window of at most maxTier2Units units,
+	// and enforce a per-cycle wall-clock budget of tier2CycleBudget.
+	// This prevents "all" mode from stalling Collect for N×4s (e.g. 200s for 50 units).
+	// Units not scanned this cycle are picked up in subsequent cycles.
+	var tier2Set map[string]bool
+	if shouldQuery && mode != "off" {
+		tier2Set = make(map[string]bool)
+		n := len(l.trackedUnits)
+		if n <= maxTier2Units {
+			// Small set: scan all units every cycle.
+			for _, u := range l.trackedUnits {
+				tier2Set[u] = true
+			}
+		} else {
+			// Large set: pick a rotating window of maxTier2Units units.
+			off := l.tier2Offset % n
+			for i := 0; i < maxTier2Units; i++ {
+				tier2Set[l.trackedUnits[(off+i)%n]] = true
+			}
+			l.tier2Offset = (l.tier2Offset + maxTier2Units) % n
+		}
+	}
+	tier2Deadline := time.Now().Add(tier2CycleBudget)
 
 	var services []model.ServiceLogStats
 	for _, unit := range l.trackedUnits {
@@ -167,8 +205,9 @@ func (l *LogsCollector) Collect(snap *model.Snapshot) error {
 			RateHistory: copyRing(h.ringBuf, h.ringIdx),
 		}
 
-		// Tier-2: structured journal RCA for tracked units.
-		if shouldQuery && mode != "off" {
+		// Tier-2: scan only units in the rotating window and only while the
+		// per-cycle budget has not been exhausted (hard cap on stall time).
+		if tier2Set[unit] && time.Now().Before(tier2Deadline) {
 			svc.Findings = l.tier2Scan(unit, h, querySinceSec)
 		}
 
@@ -238,7 +277,18 @@ func tier2ScanWith(
 	return out
 }
 
-func (l *LogsCollector) discoverServices() {
+// selectTrackedUnits returns the units to track for the given mode.
+// allServices contains every active .service unit found by systemctl.
+// criticalSvcs is the intersection of knownUnits and allServices.
+// This is a pure helper so it can be unit-tested independently of systemctl.
+func selectTrackedUnits(mode string, allServices []string, criticalSvcs []string) []string {
+	if mode == "all" {
+		return allServices
+	}
+	return criticalSvcs
+}
+
+func (l *LogsCollector) discoverServices(mode string) {
 	// #37: Use single systemctl call instead of N sequential calls
 	out, err := exec.Command("systemctl", "list-units", "--type=service",
 		"--state=active", "--no-legend", "--no-pager", "--plain").Output()
@@ -256,23 +306,22 @@ func (l *LogsCollector) discoverServices() {
 		}
 	}
 
-	l.trackedUnits = nil
-
-	// In "all" mode, track every discovered active service unit.
-	if JournalRCAMode == "all" {
-		for unit := range activeUnits {
-			if strings.HasSuffix(unit, ".service") {
-				l.trackedUnits = append(l.trackedUnits, unit)
-			}
-		}
-	} else {
-		for _, name := range knownUnits {
-			unit := name + ".service"
-			if activeUnits[unit] {
-				l.trackedUnits = append(l.trackedUnits, unit)
-			}
+	// Build the two candidate sets for selectTrackedUnits.
+	var allServices []string
+	for unit := range activeUnits {
+		if strings.HasSuffix(unit, ".service") {
+			allServices = append(allServices, unit)
 		}
 	}
+	var criticalSvcs []string
+	for _, name := range knownUnits {
+		unit := name + ".service"
+		if activeUnits[unit] {
+			criticalSvcs = append(criticalSvcs, unit)
+		}
+	}
+
+	l.trackedUnits = selectTrackedUnits(mode, allServices, criticalSvcs)
 
 	// Prune history for services no longer tracked
 	l.pruneHistory()

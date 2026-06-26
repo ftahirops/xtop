@@ -156,56 +156,56 @@ func TestTier2ScanOffModeSkipsCollection(t *testing.T) {
 	}
 }
 
-// TestTier2ScanAllModeSelectsAllUnits: when JournalRCAMode is "all",
-// discoverServices should track all active .service units (verified via
-// set-selection logic rather than invoking systemctl).
+// TestTier2ScanAllModeSelectsAllUnits: verifies the real selectTrackedUnits
+// helper (called by discoverServices) correctly distinguishes "all" from
+// "critical" mode. This exercises the production code path — if the all-mode
+// branch logic is wrong the assertions below will fail.
 func TestTier2ScanAllModeSelectsAllUnits(t *testing.T) {
-	orig := JournalRCAMode
-	defer func() { JournalRCAMode = orig }()
-	JournalRCAMode = "all"
+	// Simulate what discoverServices builds from systemctl output.
+	allServices := []string{"nginx.service", "mysql.service", "custom-app.service"}
+	// criticalSvcs is the knownUnits ∩ allServices (custom-app is not a known unit).
+	criticalSvcs := []string{"nginx.service", "mysql.service"}
 
-	// Simulate the active-unit map that discoverServices would build.
-	activeUnits := map[string]bool{
-		"nginx.service":    true,
-		"mysql.service":    true,
-		"custom-app.service": true,
+	// --- "all" mode: every discovered .service unit must be returned ---
+	gotAll := selectTrackedUnits("all", allServices, criticalSvcs)
+	if len(gotAll) != len(allServices) {
+		t.Errorf("all mode: expected %d units, got %d: %v", len(allServices), len(gotAll), gotAll)
 	}
-
-	// Run the selection logic directly (mirrors the inner loop in discoverServices).
-	var trackedAll []string
-	for unit := range activeUnits {
-		trackedAll = append(trackedAll, unit)
+	allSet := make(map[string]bool, len(gotAll))
+	for _, u := range gotAll {
+		allSet[u] = true
 	}
-
-	// In "all" mode every .service from the map should be tracked.
-	if len(trackedAll) != len(activeUnits) {
-		t.Errorf("expected %d tracked units in all mode, got %d", len(activeUnits), len(trackedAll))
-	}
-
-	// In "critical" mode only knownUnits overlap would be tracked.
-	JournalRCAMode = "critical"
-	var trackedCrit []string
-	for _, name := range knownUnits {
-		unit := name + ".service"
-		if activeUnits[unit] {
-			trackedCrit = append(trackedCrit, unit)
+	for _, u := range allServices {
+		if !allSet[u] {
+			t.Errorf("all mode: expected %q in result, not found", u)
 		}
 	}
-	// custom-app.service is not in knownUnits so it should be absent.
-	for _, u := range trackedCrit {
+
+	// --- "critical" mode: only knownUnits overlap is returned ---
+	gotCrit := selectTrackedUnits("critical", allServices, criticalSvcs)
+	if len(gotCrit) != len(criticalSvcs) {
+		t.Errorf("critical mode: expected %d units, got %d: %v", len(criticalSvcs), len(gotCrit), gotCrit)
+	}
+	// custom-app.service must not appear in critical mode.
+	for _, u := range gotCrit {
 		if u == "custom-app.service" {
-			t.Error("custom-app.service should not be tracked in critical mode")
+			t.Error("critical mode: custom-app.service should not be tracked")
 		}
 	}
-	// nginx and mysql are in knownUnits so they should be present.
-	found := map[string]bool{}
-	for _, u := range trackedCrit {
-		found[u] = true
+	// nginx and mysql must be present.
+	critSet := make(map[string]bool, len(gotCrit))
+	for _, u := range gotCrit {
+		critSet[u] = true
 	}
 	for _, want := range []string{"nginx.service", "mysql.service"} {
-		if !found[want] {
-			t.Errorf("expected %q tracked in critical mode, not found", want)
+		if !critSet[want] {
+			t.Errorf("critical mode: expected %q tracked, not found", want)
 		}
+	}
+
+	// "all" must select strictly more units than "critical".
+	if len(gotAll) <= len(gotCrit) {
+		t.Errorf("all mode should track more units than critical (%d vs %d)", len(gotAll), len(gotCrit))
 	}
 }
 

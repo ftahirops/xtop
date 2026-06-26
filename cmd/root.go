@@ -272,7 +272,7 @@ func Run() error {
 	// RCA tuning
 	flag.BoolVar(&cfg.NoHysteresis, "no-hysteresis", false, "Disable sustained-threshold alert gating (one-shot mode: score maps directly to health)")
 	var journalRCAMode string
-	flag.StringVar(&journalRCAMode, "journal-rca", "critical", "Tier-2 journal RCA scope: critical (tracked/critical services), all (every discovered unit), off (disabled)")
+	flag.StringVar(&journalRCAMode, "journal-rca", "critical", "Tier-2 journal RCA scope: critical (tracked/critical services only), all (every discovered unit), off (disables Tier-2 deep scan; Tier-3 keyword counters still run)")
 	var updateMode bool
 	flag.BoolVar(&updateMode, "update", false, "Check for latest release on GitHub and install it")
 	// Fleet (multi-host aggregation) flags
