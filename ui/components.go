@@ -391,9 +391,16 @@ func boxSection(title string, lines []string, innerW int) string {
 }
 
 // pageInnerW computes box inner width from terminal width.
+// On narrow terminals (< 66 cols) it degrades to actual usable width rather
+// than forcing 60 and overflowing the terminal.
 func pageInnerW(termWidth int) int {
 	w := termWidth - 6
 	if w < 60 {
+		// Narrow terminal: use actual width (single-column degrade) rather
+		// than forcing 60 and overflowing.
+		if termWidth < 66 {
+			return max(20, termWidth-2)
+		}
 		w = 60
 	}
 	return w

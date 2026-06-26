@@ -2092,9 +2092,9 @@ func (m *Model) renderSignalOverlay(content string, width int) string {
 	}
 
 	var sb strings.Builder
-	overlayW := 60
-	if overlayW > width-4 {
-		overlayW = width - 4
+	overlayW := min(width-4, 80)
+	if overlayW < 20 {
+		overlayW = 20
 	}
 
 	borderStyle := lipgloss.NewStyle().Foreground(fg(lipgloss.Color("#ff79c6")))
