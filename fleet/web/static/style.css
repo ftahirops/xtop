@@ -221,3 +221,18 @@ table.incidents tr.clickable:hover { background: rgba(189,147,249,0.08); }
 .kv dd { margin: 0; color: var(--fg); font-family: ui-monospace, SFMono-Regular, monospace; font-size: 13px; }
 
 .empty { color: var(--dim); padding: 24px; text-align: center; font-style: italic; }
+
+/* Responsive layout ─────────────────────────────────────── */
+@media (max-width: 768px) {
+  main { padding: 14px 16px 32px; }
+  header { padding: 10px 16px; }
+  .host-grid { grid-template-columns: 1fr; }
+  .metrics { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 640px) {
+  .filters { flex-wrap: wrap; }
+  .filters input[type="search"] { min-width: 0; width: 100%; }
+}
+@media (max-width: 480px) {
+  .metrics { grid-template-columns: 1fr; }
+}
