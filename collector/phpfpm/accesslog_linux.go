@@ -294,13 +294,13 @@ type lineReader struct {
 func newLineReader(r io.Reader) *lineReader { return &lineReader{r: r, buf: make([]byte, 0, 4096)} }
 
 func (lr *lineReader) readLine() (string, error) {
+	tmp := make([]byte, 4096)
 	for {
 		if i := indexOfByte(lr.buf, '\n'); i >= 0 {
 			line := string(lr.buf[:i])
 			lr.buf = lr.buf[i+1:]
 			return line, nil
 		}
-		tmp := make([]byte, 4096)
 		n, err := lr.r.Read(tmp)
 		if n > 0 {
 			lr.buf = append(lr.buf, tmp[:n]...)

@@ -167,6 +167,11 @@ func (g *EntityGraph) AncestorChain(id string) []*Entity {
 
 // Reindex rebuilds the byID map. Call after deserializing an EntityGraph
 // from JSON or after bulk-appending to Entities without using Add().
+//
+// Note: The index rebuild is O(n) by design. This is acceptable since
+// Reindex() is called only on deserialization and bulk-add paths, not on
+// hot lookup paths. Only optimize this if profiling shows it to be a
+// bottleneck (YAGNI).
 func (g *EntityGraph) Reindex() {
 	if g == nil {
 		return
