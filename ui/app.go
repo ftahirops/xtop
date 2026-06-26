@@ -66,6 +66,9 @@ var signalList = []signalEntry{
 
 type tickMsg time.Time
 
+// spinnerTickMsg drives the loading-state spinner while m.snap == nil.
+type spinnerTickMsg struct{}
+
 type collectMsg struct {
 	snap   *model.Snapshot
 	rates  *model.RateSnapshot
@@ -262,6 +265,11 @@ type Model struct {
 	// Cached SMART data (populated asynchronously to avoid blocking View)
 	cachedSmart []model.SMARTDisk
 
+	// Loading-state spinner: tracks when the TUI started and which frame to show.
+	// spinnerIdx advances each spinnerTickMsg; the spinner stops once m.snap != nil.
+	startTime  time.Time
+	spinnerIdx int
+
 	// Process signal (kill) overlay — works on CPU, Memory, IO pages
 	signalMode       bool   // true = signal overlay is open
 	signalProcIdx    int    // selected process index in sorted list
@@ -304,6 +312,7 @@ func NewModel(ticker engine.Ticker, interval time.Duration, dataDir string) Mode
 		ticker:            ticker,
 		engine:            base,
 		interval:          interval,
+		startTime:         time.Now(),
 		eventDetector:     detector,
 		layoutMode:        layout,
 		serverRoles:       roles,
@@ -334,11 +343,18 @@ func (m *Model) switchPage(p Page) {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(tick(m.interval), collectOnce(m.ticker))
+	return tea.Batch(tick(m.interval), collectOnce(m.ticker), spinnerTick())
 }
 
 func tick(d time.Duration) tea.Cmd {
 	return tea.Tick(d, func(t time.Time) tea.Msg { return tickMsg(t) })
+}
+
+// spinnerTick schedules the next spinner frame update (120 ms).
+// It is only re-scheduled from Update while m.snap == nil, so it
+// stops automatically once the first snapshot arrives.
+func spinnerTick() tea.Cmd {
+	return tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg { return spinnerTickMsg{} })
 }
 
 func collectOnce(ticker engine.Ticker) tea.Cmd {
@@ -1317,6 +1333,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				autoExpandSecSection(m.snap, &m.secSectionExpanded)
 			}
 		}
+	case spinnerTickMsg:
+		// Advance the loading spinner; re-schedule only until first snapshot arrives.
+		m.spinnerIdx++
+		if m.snap == nil {
+			return m, spinnerTick()
+		}
+		return m, nil
 	case saveConfirmMsg:
 		if msg.err != nil {
 			m.saveMsg = fmt.Sprintf("Save failed: %v", msg.err)
@@ -1344,7 +1367,7 @@ func (m Model) View() string {
 		return "Loading..."
 	}
 	if m.snap == nil {
-		return "Collecting first sample..."
+		return renderLoadingState(m.spinnerIdx, m.startTime)
 	}
 
 	// Determine rendering width (narrower when explain panel is open)
@@ -2454,4 +2477,16 @@ func (m Model) injectClock(content string) string {
 	}
 	lines[0] = firstLine + strings.Repeat(" ", gap) + clock
 	return strings.Join(lines, "\n")
+}
+
+// spinnerFrames is the braille spinner cycle used during initial data collection.
+var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+// renderLoadingState renders the animated loading indicator shown before the
+// first snapshot arrives. spinnerIdx is the raw (ever-increasing) frame counter;
+// startTime is when the model was created (used to compute elapsed seconds).
+func renderLoadingState(spinnerIdx int, startTime time.Time) string {
+	frame := spinnerFrames[spinnerIdx%len(spinnerFrames)]
+	elapsed := int(time.Since(startTime).Seconds())
+	return fmt.Sprintf("%s Collecting first sample… (%ds)", frame, elapsed)
 }
