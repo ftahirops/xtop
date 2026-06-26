@@ -23,6 +23,7 @@ package engine
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -91,11 +92,14 @@ func oomEntries(unit string, pid int) []journal.Entry {
 
 // makeScopedStub returns a JournalQueryFn that returns targetEntries when
 // queried for targetUnit, nil for every other unit, and records all queried
-// unit names.
+// unit names. A mutex guards the called slice for race-safety.
 func makeScopedStub(targetUnit string, targetEntries []journal.Entry) (JournalQueryFn, *[]string) {
+	var mu sync.Mutex
 	var called []string
 	fn := func(_ context.Context, unit string, _ time.Time) ([]journal.Entry, error) {
+		mu.Lock()
 		called = append(called, unit)
+		mu.Unlock()
 		if unit == targetUnit {
 			return targetEntries, nil
 		}
@@ -285,6 +289,20 @@ func TestJournalE2E_OOMKilled(t *testing.T) {
 	if !foundOOM {
 		t.Errorf("E2E2: JournalFindings do not mention oom_killed; findings=%+v", result.JournalFindings)
 	}
+
+	// (e) The oom_killed fact must also appear in at least one RCAEntry.Facts
+	//     (the consumer path that the UI/verifier gates read).
+	foundInRCA := false
+	for _, entry := range result.RCA {
+		for _, f := range entry.Facts {
+			if f.Kind == model.FactKindLogEvidence && f.Tags["signature"] == "oom_killed" {
+				foundInRCA = true
+			}
+		}
+	}
+	if !foundInRCA {
+		t.Error("E2E2: oom_killed fact not found in any RCAEntry.Facts")
+	}
 }
 
 // ─── E2E Scenario 3: Non-suspect isolation ───────────────────────────────────
@@ -293,51 +311,119 @@ func TestJournalE2E_OOMKilled(t *testing.T) {
 // the journal of a unit that did NOT make the suspect list (score < 1 or simply
 // absent from the snapshot's RCA entries) is NEVER queried.
 //
-// Setup:
+// Part A — absent units:
 //   - Snapshot makes mysql.service the sole top-scoring suspect.
-//   - Stub also accepts calls for "unrelated-svc.service" and "redis.service".
+//   - Stub accepts calls for "unrelated-svc.service" and "redis.service".
 //   - After AnalyzeRCA, those two units must have zero query calls.
+//
+// Part B — score filter:
+//   - A crafted AnalysisResult has two entries: mysql.service (Score=80, above
+//     minSuspectScore) and lowscore.service (Score=0, below minSuspectScore).
+//   - After injectJournalTier1, lowscore.service must never be queried while
+//     mysql.service IS queried — proving the score guard fires end-to-end.
 func TestJournalE2E_NonSuspectIsolation(t *testing.T) {
 	const targetUnit = "mysql.service"
 	const bystander1 = "unrelated-svc.service"
 	const bystander2 = "redis.service"
+	const lowScoreUnit = "lowscore.service"
 
 	entries := crashLoopEntries(targetUnit)
 
-	var called []string
-	fn := func(_ context.Context, unit string, _ time.Time) ([]journal.Entry, error) {
-		called = append(called, unit)
+	// ── Part A: absent-unit isolation via full AnalyzeRCA ────────────────────
+	var muA sync.Mutex
+	var calledA []string
+	fnA := func(_ context.Context, unit string, _ time.Time) ([]journal.Entry, error) {
+		muA.Lock()
+		calledA = append(calledA, unit)
+		muA.Unlock()
 		if unit == targetUnit {
 			return entries, nil
 		}
 		return nil, nil
 	}
 
-	e := makeEngineWithStub(fn)
+	eA := makeEngineWithStub(fnA)
 	snap, rates := cpuSnapWithCgroup("/system.slice/mysql.service", "mysql")
 	h := newTestHistory()
 	feedHistory(h, snap, rates, 10)
 
-	AnalyzeRCA(snap, rates, h, nil, e)
+	AnalyzeRCA(snap, rates, h, nil, eA)
 
-	for _, u := range called {
+	muA.Lock()
+	snapshotA := append([]string(nil), calledA...)
+	muA.Unlock()
+
+	for _, u := range snapshotA {
 		if u == bystander1 {
-			t.Errorf("E2E3: non-suspect unit %q was queried (leaked query scope)", bystander1)
+			t.Errorf("E2E3 PartA: non-suspect unit %q was queried (leaked query scope)", bystander1)
 		}
 		if u == bystander2 {
-			t.Errorf("E2E3: non-suspect unit %q was queried (leaked query scope)", bystander2)
+			t.Errorf("E2E3 PartA: non-suspect unit %q was queried (leaked query scope)", bystander2)
 		}
 	}
 
 	// Sanity: mysql WAS queried.
 	calledMySQL := false
-	for _, u := range called {
+	for _, u := range snapshotA {
 		if u == targetUnit {
 			calledMySQL = true
 			break
 		}
 	}
 	if !calledMySQL {
-		t.Errorf("E2E3: expected %q to be queried (it is the suspect), but got calls=%v", targetUnit, called)
+		t.Errorf("E2E3 PartA: expected %q to be queried (it is the suspect), but got calls=%v", targetUnit, snapshotA)
+	}
+
+	// ── Part B: score-filter isolation via injectJournalTier1 ────────────────
+	// Craft a result with one high-score entry (will be queried) and one
+	// zero-score entry (must NOT be queried, proving the minSuspectScore guard).
+	var muB sync.Mutex
+	var calledB []string
+	fnB := func(_ context.Context, unit string, _ time.Time) ([]journal.Entry, error) {
+		muB.Lock()
+		calledB = append(calledB, unit)
+		muB.Unlock()
+		if unit == targetUnit {
+			return entries, nil
+		}
+		return nil, nil
+	}
+
+	eB := makeEngineWithStub(fnB)
+	result := &model.AnalysisResult{
+		RCA: []model.RCAEntry{
+			{
+				Bottleneck: "CPU Contention",
+				Score:      80, // above minSuspectScore — must be queried
+				TopCgroup:  "/system.slice/" + targetUnit,
+			},
+			{
+				Bottleneck: "Disk I/O",
+				Score:      0, // below minSuspectScore — must NOT be queried
+				TopCgroup:  "/system.slice/" + lowScoreUnit,
+			},
+		},
+	}
+
+	injectJournalTier1(result, nil, eB)
+
+	muB.Lock()
+	snapshotB := append([]string(nil), calledB...)
+	muB.Unlock()
+
+	for _, u := range snapshotB {
+		if u == lowScoreUnit {
+			t.Errorf("E2E3 PartB: low-score unit %q was queried; score filter not working", lowScoreUnit)
+		}
+	}
+	queriedHigh := false
+	for _, u := range snapshotB {
+		if u == targetUnit {
+			queriedHigh = true
+			break
+		}
+	}
+	if !queriedHigh {
+		t.Errorf("E2E3 PartB: high-score unit %q was never queried; expected ≥1 call", targetUnit)
 	}
 }

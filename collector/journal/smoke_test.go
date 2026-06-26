@@ -73,7 +73,7 @@ func isPermErr(err error) bool {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
-	for _, kw := range []string{"permission denied", "access denied", "not permitted", "failed to", "authorization"} {
+	for _, kw := range []string{"permission denied", "access denied", "not permitted", "authorization"} {
 		if strings.Contains(msg, kw) {
 			return true
 		}
