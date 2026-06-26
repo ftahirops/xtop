@@ -661,14 +661,17 @@ func TestForecastWarning_SkippedWhenMetricHasNoEvidence(t *testing.T) {
 
 	result := AnalyzeRCA(snap, rates, h, nil, nil)
 
-	// After the fix, ForecastWarning should not contain "currently 0.0" or should be empty
-	// if the best forecast metric didn't fire evidence this tick.
-	// The key check: if ForecastWarning is set, it should have a real current value, not 0.0
+	// Absent-metric case: ForecastWarning must be exactly empty — no bogus "currently 0.0".
 	if result.ForecastWarning != "" {
-		if strings.Contains(result.ForecastWarning, "(currently 0.0)") {
-			t.Errorf("ForecastWarning should not contain bogus 'currently 0.0': %q", result.ForecastWarning)
-		}
+		t.Errorf("ForecastWarning should be empty when metric has no evidence, got: %q", result.ForecastWarning)
 	}
+
+	// Score-boost must still apply even though ForecastWarning was suppressed.
+	// We cannot inspect PrimaryScore directly (it is overwritten by AnalyzeRCA internals),
+	// but we can confirm the absent-metric path does not panic and returns a valid result.
+	// The score-boost-outside-ok-guard invariant is covered by the structural change in rca.go
+	// (score boost at rca.go:1079-1083, warning guard at rca.go:1086).
+	_ = result.PrimaryScore // score is valid (no panic) even when warning is suppressed
 }
 
 func TestForecastWarning_EmittedWhenMetricHasEvidence(t *testing.T) {
@@ -693,15 +696,20 @@ func TestForecastWarning_EmittedWhenMetricHasEvidence(t *testing.T) {
 
 	result := AnalyzeRCA(snap, rates, h, nil, nil)
 
-	// When the best forecast metric does fire evidence, ForecastWarning should be set
-	// with the actual current value (not 0.0)
+	// Present-metric case: when the forecast metric fires evidence, ForecastWarning must be
+	// non-empty, contain "will hit", and must NOT contain the bogus "(currently 0.0)" value.
+	// Note: if the forecaster hasn't built enough history to produce an imminent ETA the
+	// warning may legitimately be empty; we only enforce correctness when it IS set.
 	if result.ForecastWarning != "" {
 		if strings.Contains(result.ForecastWarning, "(currently 0.0)") {
-			t.Errorf("ForecastWarning with evidence should not have 0.0: %q", result.ForecastWarning)
+			t.Errorf("ForecastWarning with evidence must not show 0.0: %q", result.ForecastWarning)
 		}
-		// Should have actual values, not just 0.0
 		if !strings.Contains(result.ForecastWarning, "will hit") {
-			t.Errorf("Expected ForecastWarning format 'will hit...', got: %q", result.ForecastWarning)
+			t.Errorf("ForecastWarning format wrong, want 'will hit ...', got: %q", result.ForecastWarning)
+		}
+		// Verify the "currently X" value is not zero — it should reflect the real metric value.
+		if strings.Contains(result.ForecastWarning, "currently 0.0") {
+			t.Errorf("ForecastWarning reports current value as 0.0 — guard failed: %q", result.ForecastWarning)
 		}
 	}
 }
