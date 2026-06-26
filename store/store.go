@@ -251,9 +251,10 @@ func (s *Store) GetIncident(id string) (*IncidentRecord, error) {
 
 	var r IncidentRecord
 	var endTime sql.NullTime
+	var culpritProcess, culpritCgroup, causalChain, narrative, evidenceJSON sql.NullString
 	err := row.Scan(&r.ID, &r.Fingerprint, &r.StartTime, &endTime, &r.DurationSec,
-		&r.PeakHealth, &r.Bottleneck, &r.PeakScore, &r.CulpritProcess, &r.CulpritPID,
-		&r.CulpritCgroup, &r.CausalChain, &r.Narrative, &r.EvidenceJSON,
+		&r.PeakHealth, &r.Bottleneck, &r.PeakScore, &culpritProcess, &r.CulpritPID,
+		&culpritCgroup, &causalChain, &narrative, &evidenceJSON,
 		&r.PeakCPU, &r.PeakMem, &r.PeakIOPSI)
 	if err != nil {
 		return nil, err
@@ -261,6 +262,11 @@ func (s *Store) GetIncident(id string) (*IncidentRecord, error) {
 	if endTime.Valid {
 		r.EndTime = endTime.Time
 	}
+	r.CulpritProcess = culpritProcess.String
+	r.CulpritCgroup = culpritCgroup.String
+	r.CausalChain = causalChain.String
+	r.Narrative = narrative.String
+	r.EvidenceJSON = evidenceJSON.String
 	return &r, nil
 }
 
@@ -380,15 +386,21 @@ func scanIncidents(rows *sql.Rows) ([]IncidentRecord, error) {
 	for rows.Next() {
 		var r IncidentRecord
 		var endTime sql.NullTime
+		var culpritProcess, culpritCgroup, causalChain, narrative, evidenceJSON sql.NullString
 		if err := rows.Scan(&r.ID, &r.Fingerprint, &r.StartTime, &endTime, &r.DurationSec,
-			&r.PeakHealth, &r.Bottleneck, &r.PeakScore, &r.CulpritProcess, &r.CulpritPID,
-			&r.CulpritCgroup, &r.CausalChain, &r.Narrative, &r.EvidenceJSON,
+			&r.PeakHealth, &r.Bottleneck, &r.PeakScore, &culpritProcess, &r.CulpritPID,
+			&culpritCgroup, &causalChain, &narrative, &evidenceJSON,
 			&r.PeakCPU, &r.PeakMem, &r.PeakIOPSI); err != nil {
 			return nil, err
 		}
 		if endTime.Valid {
 			r.EndTime = endTime.Time
 		}
+		r.CulpritProcess = culpritProcess.String
+		r.CulpritCgroup = culpritCgroup.String
+		r.CausalChain = causalChain.String
+		r.Narrative = narrative.String
+		r.EvidenceJSON = evidenceJSON.String
 		records = append(records, r)
 	}
 	return records, rows.Err()
