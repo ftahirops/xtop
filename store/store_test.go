@@ -85,6 +85,12 @@ func TestInsertAndGetIncident(t *testing.T) {
 	if got.PeakMem != ev.PeakMemUsedPct {
 		t.Errorf("PeakMem: %f vs %f", got.PeakMem, ev.PeakMemUsedPct)
 	}
+	if got.CulpritCgroup != ev.CulpritCgroup {
+		t.Errorf("CulpritCgroup: %q vs %q", got.CulpritCgroup, ev.CulpritCgroup)
+	}
+	if got.CausalChain != ev.CausalChain {
+		t.Errorf("CausalChain: %q vs %q", got.CausalChain, ev.CausalChain)
+	}
 }
 
 // TestGetIncident_NotFound asserts that GetIncident returns an error for a

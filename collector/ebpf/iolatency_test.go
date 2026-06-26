@@ -134,20 +134,28 @@ func TestAggregateByDevice_TwoDevices(t *testing.T) {
 	}
 }
 
-func TestAggregateByDevice_SkipsZeroCount(t *testing.T) {
-	// IOLatResult with Count=0 should be excluded before aggregation
-	// (the read() function already excludes them, but verify that a
-	// zero-count result in the slice doesn't corrupt aggregation).
+func TestAggregateByDevice_ZeroCountEntryContributesZero(t *testing.T) {
+	// Verify that a zero-count entry doesn't corrupt aggregation: it aggregates
+	// safely (Count=0 contributes 0 to the totals). aggregateByDevice does NOT
+	// filter zero-count entries; it just includes them in the aggregation.
 	slots := [16]uint32{}
 	slots[1] = 20
+	zeroSlots := [16]uint32{}
 	perPID := []IOLatResult{
+		// Valid entry for device 5
 		{PID: 1, Dev: 5, DevName: "nvme0", TotalNs: 500, Count: 20, Slots: slots},
+		// Zero-count entry for the same device
+		{PID: 2, Dev: 5, DevName: "nvme0", TotalNs: 0, Count: 0, Slots: zeroSlots},
 	}
 	res := aggregateByDevice(perPID)
 	if len(res) != 1 {
 		t.Fatalf("expected 1 device; got %d", len(res))
 	}
+	// The zero-count entry should contribute 0, so totals remain unchanged
 	if res[0].Count != 20 {
-		t.Errorf("Count: %d, want 20", res[0].Count)
+		t.Errorf("Count: %d, want 20 (zero-count entry contributed 0)", res[0].Count)
+	}
+	if res[0].TotalNs != 500 {
+		t.Errorf("TotalNs: %d, want 500 (zero-count entry contributed 0)", res[0].TotalNs)
 	}
 }
