@@ -207,7 +207,7 @@ func renderExplainSidePanel(page Page, result *model.AnalysisResult, width, heig
 	title := fmt.Sprintf(" EXPLAIN: %s ", pageTitleForExplain(page))
 	borderStyle := dimStyle
 	if focused {
-		borderStyle = lipgloss.NewStyle().Foreground(colorCyan)
+		borderStyle = lipgloss.NewStyle().Foreground(fg(colorCyan))
 	}
 	sb.WriteString(borderStyle.Render("\u250c"+strings.Repeat("\u2500", 2)) +
 		titleStyle.Render(title) +

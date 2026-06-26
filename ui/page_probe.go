@@ -279,7 +279,7 @@ func renderProbeSectionHeader(title string, hasData bool, count int, selected, e
 	countStr := dimStyle.Render(fmt.Sprintf("(%d)", count))
 	line := fmt.Sprintf("%s %s %s", arrow, title, countStr)
 	if selected {
-		return lipgloss.NewStyle().Foreground(colorCyan).Bold(true).Render(line) + "\n"
+		return lipgloss.NewStyle().Foreground(fg(colorCyan)).Bold(true).Render(line) + "\n"
 	}
 	return titleStyle.Render(line) + "\n"
 }
