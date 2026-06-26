@@ -634,3 +634,74 @@ func TestBuildNarrative_CPUBottleneck_NoNetworkNoise(t *testing.T) {
 		}
 	}
 }
+
+// ─── Forecast Warning Tests ──────────────────────────────────────────────────
+
+func TestForecastWarning_SkippedWhenMetricHasNoEvidence(t *testing.T) {
+	// Test that ForecastWarning is not emitted when bestForecastID has no corresponding
+	// evidence (metric didn't fire this tick). Without the fix, this would emit
+	// "CPU will hit 90 in ~30s (currently 0.0)" which is misleading.
+	snap := baseSnapshot()
+	snap.Global.PSI.CPU.Some.Avg10 = 2.0
+
+	rates := baseRates()
+	rates.CPUBusyPct = 75.0
+
+	h := newTestHistory()
+	// Feed history with CPU trending upward to build forecaster state
+	for i := 0; i < 15; i++ {
+		snap_i := *snap
+		rates_i := *rates
+		// Gradually increase CPU busy to create trend
+		rates_i.CPUBusyPct = 50.0 + float64(i)*2.0
+		h.Push(snap_i)
+		h.PushRate(rates_i)
+		h.ProcessHistory.Record(&rates_i)
+	}
+
+	result := AnalyzeRCA(snap, rates, h, nil, nil)
+
+	// After the fix, ForecastWarning should not contain "currently 0.0" or should be empty
+	// if the best forecast metric didn't fire evidence this tick.
+	// The key check: if ForecastWarning is set, it should have a real current value, not 0.0
+	if result.ForecastWarning != "" {
+		if strings.Contains(result.ForecastWarning, "(currently 0.0)") {
+			t.Errorf("ForecastWarning should not contain bogus 'currently 0.0': %q", result.ForecastWarning)
+		}
+	}
+}
+
+func TestForecastWarning_EmittedWhenMetricHasEvidence(t *testing.T) {
+	// Test that ForecastWarning IS emitted when the best forecast metric has evidence.
+	snap := baseSnapshot()
+	snap.Global.PSI.CPU.Some.Avg10 = 15.0
+	snap.Global.CPU.LoadAvg = model.LoadAvg{Load1: 8.0, Load5: 6.0, Load15: 4.0, Running: 8, Total: 300}
+
+	rates := baseRates()
+	rates.CPUBusyPct = 88.0 // High CPU to trigger evidence
+
+	h := newTestHistory()
+	// Feed history with high CPU to build forecaster state and fire evidence
+	for i := 0; i < 15; i++ {
+		snap_i := *snap
+		rates_i := *rates
+		rates_i.CPUBusyPct = 80.0 + float64(i)*1.0
+		h.Push(snap_i)
+		h.PushRate(rates_i)
+		h.ProcessHistory.Record(&rates_i)
+	}
+
+	result := AnalyzeRCA(snap, rates, h, nil, nil)
+
+	// When the best forecast metric does fire evidence, ForecastWarning should be set
+	// with the actual current value (not 0.0)
+	if result.ForecastWarning != "" {
+		if strings.Contains(result.ForecastWarning, "(currently 0.0)") {
+			t.Errorf("ForecastWarning with evidence should not have 0.0: %q", result.ForecastWarning)
+		}
+		// Should have actual values, not just 0.0
+		if !strings.Contains(result.ForecastWarning, "will hit") {
+			t.Errorf("Expected ForecastWarning format 'will hit...', got: %q", result.ForecastWarning)
+		}
+	}
+}

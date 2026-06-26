@@ -1075,23 +1075,27 @@ func runStatisticalAnalysis(result *model.AnalysisResult, curr *model.Snapshot, 
 	}
 
 	if bestForecastID != "" {
-		label := forecastLabels[bestForecastID]
-		if label == "" {
-			label = bestForecastID
-		}
-		crit := forecastCritThresholds[bestForecastID]
-		current := evidenceMap[bestForecastID]
-		etaSec := int(bestForecastETA)
-		result.ForecastWarning = fmt.Sprintf("%s will hit %.0f in ~%ds at current trend (currently %.1f)",
-			label, crit, etaSec, current)
+		// Only emit ForecastWarning if the best forecast metric has fired evidence this tick.
+		// Without this check, metrics not present in evidenceMap return 0.0, producing
+		// misleading warnings like "CPU will hit 90 in ~30s (currently 0.0)".
+		if current, ok := evidenceMap[bestForecastID]; ok {
+			label := forecastLabels[bestForecastID]
+			if label == "" {
+				label = bestForecastID
+			}
+			crit := forecastCritThresholds[bestForecastID]
+			etaSec := int(bestForecastETA)
+			result.ForecastWarning = fmt.Sprintf("%s will hit %.0f in ~%ds at current trend (currently %.1f)",
+				label, crit, etaSec, current)
 
-		// Score boost for imminent breach
-		if bestForecastETA <= forecastWarnSteps30/stepsPerSecond {
-			result.PrimaryScore += 10
-		} else if bestForecastETA <= forecastWarnSteps60/stepsPerSecond {
-			result.PrimaryScore += 5
+			// Score boost for imminent breach
+			if bestForecastETA <= forecastWarnSteps30/stepsPerSecond {
+				result.PrimaryScore += 10
+			} else if bestForecastETA <= forecastWarnSteps60/stepsPerSecond {
+				result.PrimaryScore += 5
+			}
+			cap100(&result.PrimaryScore)
 		}
-		cap100(&result.PrimaryScore)
 	}
 }
 
