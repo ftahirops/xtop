@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ftahirops/xtop/model"
 	_ "modernc.org/sqlite"
@@ -288,12 +289,13 @@ func newTestHub(t *testing.T, cfg model.FleetHubConfig) *Hub {
 	}
 
 	h := &Hub{
-		cfg:    cfg,
-		pg:     pg,
-		cache:  cache,
-		hosts:  make(map[string]*model.FleetHost),
-		subs:   make(map[int]*subscriber),
-		quitCh: make(chan struct{}),
+		cfg:      cfg,
+		pg:       pg,
+		cache:    cache,
+		hosts:    make(map[string]*model.FleetHost),
+		subs:     make(map[int]*subscriber),
+		limiters: make(map[string]*limiterEntry),
+		quitCh:   make(chan struct{}),
 	}
 	t.Cleanup(func() {
 		pg.Close()
@@ -593,4 +595,107 @@ func TestHealthEndpointConcurrency(t *testing.T) {
 	}
 
 	wg.Wait()
+}
+
+// TestLimiterPruningByTTL verifies that stale rate limiters are pruned from the
+// limiters map independently of host registration. This test proves the fix for
+// the bounded-leak bug: agents that send only incidents (never heartbeats) will
+// now have their limiters removed after limiterTTL of inactivity.
+func TestLimiterPruningByTTL(t *testing.T) {
+	h := newTestHub(t, model.FleetHubConfig{AllowNoAuth: true})
+
+	// Create a limiter for agent-a by calling allow()
+	if !h.allow("agent-a") {
+		t.Fatalf("agent-a should be within rate limit on first call")
+	}
+
+	// Create a limiter for agent-b, also initially within limit
+	if !h.allow("agent-b") {
+		t.Fatalf("agent-b should be within rate limit on first call")
+	}
+
+	// Verify both limiters exist
+	h.limMu.Lock()
+	if len(h.limiters) != 2 {
+		t.Fatalf("expected 2 limiters, got %d", len(h.limiters))
+	}
+	if _, ok := h.limiters["agent-a"]; !ok {
+		t.Fatal("agent-a limiter should exist")
+	}
+	if _, ok := h.limiters["agent-b"]; !ok {
+		t.Fatal("agent-b limiter should exist")
+	}
+
+	// Manually set agent-a's lastSeen to the past (older than limiterTTL)
+	oldTime := time.Now().Add(-limiterTTL - 1*time.Second)
+	h.limiters["agent-a"].lastSeen = oldTime
+
+	// agent-b's lastSeen is kept fresh (recent)
+	h.limMu.Unlock()
+
+	// Invoke updateStaleStatus() which should prune the stale limiter
+	h.updateStaleStatus()
+
+	// Verify agent-a's limiter was pruned but agent-b's survived
+	h.limMu.Lock()
+	if len(h.limiters) != 1 {
+		t.Fatalf("after pruning, expected 1 limiter, got %d", len(h.limiters))
+	}
+	if _, ok := h.limiters["agent-a"]; ok {
+		t.Fatal("agent-a limiter should have been pruned (stale)")
+	}
+	if _, ok := h.limiters["agent-b"]; !ok {
+		t.Fatal("agent-b limiter should still exist (fresh)")
+	}
+	h.limMu.Unlock()
+}
+
+// TestLimiterCreatedOnIncidentOnly verifies that a limiter is created even when
+// an agent sends incidents but never registers as a host (never sends heartbeats).
+// The limiter is created in allow() during incident ingest and will be pruned
+// by TTL if the agent goes silent.
+func TestLimiterCreatedOnIncidentOnly(t *testing.T) {
+	h := newTestHub(t, model.FleetHubConfig{AllowNoAuth: true})
+
+	// Send an incident from an agent that never registers as a host
+	incidentBody := `{"incident_id":"inc-only","agent_id":"incident-only-agent",` +
+		`"hostname":"some-host","peak_score":80,"confidence":90,"update_type":"started","signature":"sig-incident"}`
+	w := httptest.NewRecorder()
+	h.handleIncident(w, httptest.NewRequest("POST", "/v1/incident", strings.NewReader(incidentBody)))
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("incident POST: want 204, got %d", w.Code)
+	}
+
+	// Verify the host was NOT registered (incident-only agents don't register)
+	h.hostsMu.RLock()
+	_, hostExists := h.hosts["incident-only-agent"]
+	h.hostsMu.RUnlock()
+	// Note: An incident does NOT update the host registry — only heartbeats do.
+	// So we expect hostExists to be false.
+	if hostExists {
+		t.Fatal("incident-only agent should not be registered as a host")
+	}
+
+	// But the limiter should exist because allow() was called during ingest
+	h.limMu.Lock()
+	_, limiterExists := h.limiters["incident-only-agent"]
+	h.limMu.Unlock()
+	if !limiterExists {
+		t.Fatal("limiter should have been created for incident-only agent")
+	}
+
+	// Now mark the limiter as stale and verify it gets pruned
+	h.limMu.Lock()
+	h.limiters["incident-only-agent"].lastSeen = time.Now().Add(-limiterTTL - 1*time.Second)
+	h.limMu.Unlock()
+
+	h.updateStaleStatus()
+
+	// Verify the stale limiter was pruned
+	h.limMu.Lock()
+	_, limiterExists = h.limiters["incident-only-agent"]
+	h.limMu.Unlock()
+	if limiterExists {
+		t.Fatal("stale limiter should have been pruned by TTL")
+	}
 }

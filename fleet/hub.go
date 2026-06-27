@@ -28,6 +28,17 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// limiterTTL is the duration after which an idle rate limiter is considered stale
+// and eligible for pruning. This ensures the limiters map stays bounded even for
+// agents that send only incidents (and never register as heartbeat hosts).
+const limiterTTL = 10 * time.Minute
+
+// limiterEntry tracks a rate limiter and its last-seen timestamp.
+type limiterEntry struct {
+	lim      *rate.Limiter
+	lastSeen time.Time
+}
+
 // Hub is the central aggregator server.
 type Hub struct {
 	cfg model.FleetHubConfig
@@ -52,9 +63,9 @@ type Hub struct {
 	dedupe   map[string]time.Time
 
 	// Per-agent token-bucket rate limiters for ingest endpoints.
-	// Lazily created; pruned alongside expired hosts in updateStaleStatus.
+	// Lazily created; pruned by TTL (independent of host registration).
 	limMu    sync.Mutex
-	limiters map[string]*rate.Limiter
+	limiters map[string]*limiterEntry
 
 	// Tracks stale/expired hosts in background
 	quitCh chan struct{}
@@ -92,7 +103,7 @@ func NewHub(cfg model.FleetHubConfig) (*Hub, error) {
 		cfg:      cfg,
 		hosts:    make(map[string]*model.FleetHost),
 		subs:     make(map[int]*subscriber),
-		limiters: make(map[string]*rate.Limiter),
+		limiters: make(map[string]*limiterEntry),
 		quitCh:   make(chan struct{}),
 	}
 
@@ -275,20 +286,29 @@ func validHostname(s string) bool {
 const maxFleetBody = 5 << 20
 
 // allow returns true if the given agentID is within its per-agent rate limit
-// (50 requests/s with a burst of 100). Limiters are created lazily and pruned
-// when the corresponding host expires from the registry (see updateStaleStatus).
+// (50 requests/s with a burst of 100). Limiters are created lazily. Every call
+// updates the limiter's lastSeen timestamp, which is checked in updateStaleStatus()
+// for TTL-based pruning. This bounds the limiters map regardless of whether the
+// agent registers as a heartbeat host.
 func (h *Hub) allow(agentID string) bool {
 	h.limMu.Lock()
-	lim, ok := h.limiters[agentID]
+	entry, ok := h.limiters[agentID]
+	now := time.Now()
 	if !ok {
 		if h.limiters == nil {
-			h.limiters = make(map[string]*rate.Limiter)
+			h.limiters = make(map[string]*limiterEntry)
 		}
-		lim = rate.NewLimiter(rate.Limit(50), 100)
-		h.limiters[agentID] = lim
+		entry = &limiterEntry{
+			lim:      rate.NewLimiter(rate.Limit(50), 100),
+			lastSeen: now,
+		}
+		h.limiters[agentID] = entry
+	} else {
+		// Update lastSeen to track recent activity for TTL-based pruning.
+		entry.lastSeen = now
 	}
 	h.limMu.Unlock()
-	return lim.Allow()
+	return entry.lim.Allow()
 }
 
 // ─── Endpoints ───────────────────────────────────────────────────────────────
@@ -721,7 +741,8 @@ func (h *Hub) janitor() {
 
 // updateStaleStatus walks the registry and marks hosts stale/expired based on
 // time since last heartbeat. Expired hosts are dropped from memory (their data
-// remains in Postgres).
+// remains in Postgres). Also prunes rate limiters with stale lastSeen times,
+// bounding the limiters map independently of host registration.
 func (h *Hub) updateStaleStatus() {
 	now := time.Now()
 	h.hostsMu.Lock()
@@ -750,6 +771,17 @@ func (h *Hub) updateStaleStatus() {
 		}
 		h.limMu.Unlock()
 	}
+
+	// Also prune limiters with stale lastSeen times, independent of host registry.
+	// This bounds the map even for agents that send only incidents and never
+	// register as heartbeat hosts.
+	h.limMu.Lock()
+	for id, entry := range h.limiters {
+		if now.Sub(entry.lastSeen) > limiterTTL {
+			delete(h.limiters, id)
+		}
+	}
+	h.limMu.Unlock()
 }
 
 func (h *Hub) pruneOldRecords() {
