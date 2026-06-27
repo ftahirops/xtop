@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ftahirops/xtop/collector"
 	"github.com/ftahirops/xtop/model"
 )
 
@@ -185,4 +186,48 @@ func contains(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+// TestDaemonConfigDriftEnabled verifies that DaemonConfig.ConfigDriftEnabled
+// is forwarded to the engine via SetConfigDriftEnabled, so that
+// `xtop --daemon --config-drift=off` actually disables the detector.
+func TestDaemonConfigDriftEnabled(t *testing.T) {
+	t.Parallel()
+
+	// When ConfigDriftEnabled is false, the engine should have its
+	// configDriftEnabled field set to false after RunDaemon wires it.
+	// We test this directly via the Engine API, mirroring what RunDaemon does:
+	//   eng := NewEngineMode(...)
+	//   eng.SetConfigDriftEnabled(cfg.ConfigDriftEnabled)
+	eng := NewEngineMode(30, 3, collector.ModeLean)
+	defer eng.Close()
+
+	// Default: configDriftEnabled is set to true by NewEngineMode (paramDriftDetector is initialised)
+	eng.SetConfigDriftEnabled(false)
+	if eng.configDriftEnabled {
+		t.Fatal("SetConfigDriftEnabled(false) did not disable config drift on the engine")
+	}
+
+	eng.SetConfigDriftEnabled(true)
+	if !eng.configDriftEnabled {
+		t.Fatal("SetConfigDriftEnabled(true) did not enable config drift on the engine")
+	}
+
+	// Simulate what RunDaemon does for the "off" case:
+	cfg := DaemonConfig{ConfigDriftEnabled: false}
+	eng2 := NewEngineMode(30, 3, collector.ModeLean)
+	defer eng2.Close()
+	eng2.SetConfigDriftEnabled(cfg.ConfigDriftEnabled)
+	if eng2.configDriftEnabled {
+		t.Fatal("DaemonConfig.ConfigDriftEnabled=false must result in disabled drift on engine")
+	}
+
+	// Simulate the "on" case (default):
+	cfg2 := DaemonConfig{ConfigDriftEnabled: true}
+	eng3 := NewEngineMode(30, 3, collector.ModeLean)
+	defer eng3.Close()
+	eng3.SetConfigDriftEnabled(cfg2.ConfigDriftEnabled)
+	if !eng3.configDriftEnabled {
+		t.Fatal("DaemonConfig.ConfigDriftEnabled=true must result in enabled drift on engine")
+	}
 }

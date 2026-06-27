@@ -39,6 +39,12 @@ type DaemonConfig struct {
 	// API is the optional Unix-socket API server. When nil, no API socket
 	// is exposed. The concrete implementation lives in cmd/daemonwire.go.
 	API DaemonAPIServer
+
+	// ConfigDriftEnabled mirrors the --config-drift flag value. When false,
+	// the kernel-parameter drift detector is disabled for this daemon run.
+	// Defaults to false (safe), so cmd/root.go must set it explicitly from
+	// the validated configDriftMode flag value.
+	ConfigDriftEnabled bool
 }
 
 // compactSummary is a minimal per-tick record for the rolling log.
@@ -104,6 +110,9 @@ func RunDaemon(cfg DaemonConfig) error {
 	}
 	eng := NewEngineMode(cfg.History, int(cfg.Interval.Seconds()), mode)
 	defer eng.Close()
+
+	// Apply --config-drift flag: honours the operator's opt-out.
+	eng.SetConfigDriftEnabled(cfg.ConfigDriftEnabled)
 
 	// Attach a fleet push client when the daemon was started with a hub
 	// configured. Matches what the foreground TUI path does in cmd/root.go.

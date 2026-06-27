@@ -144,13 +144,11 @@ func TestSuggestedRemediationNoWrite(t *testing.T) {
 	dirs := []string{
 		"../collector/configdrift",
 	}
-	// engine/configdrift*.go files
+	// engine/configdrift*.go files (includes configdrift_remediation.go via glob)
 	engineFiles, err := filepath.Glob("configdrift*.go")
 	if err != nil {
 		t.Fatalf("glob configdrift*.go: %v", err)
 	}
-	engineRemediationFile := "configdrift_remediation.go"
-	engineFiles = append(engineFiles, engineRemediationFile)
 
 	forbiddenPatterns := []string{
 		"os.WriteFile",

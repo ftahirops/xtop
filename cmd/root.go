@@ -459,10 +459,11 @@ func Run() error {
 		defer daemonCleanup()
 
 		return engine.RunDaemon(engine.DaemonConfig{
-			DataDir:  cfg.DataDir,
-			Interval: cfg.Interval,
-			History:  cfg.HistorySize,
-			Metrics:  promStore,
+			DataDir:            cfg.DataDir,
+			Interval:           cfg.Interval,
+			History:            cfg.HistorySize,
+			Metrics:            promStore,
+			ConfigDriftEnabled: configDriftMode != "off",
 			Alerts: engine.AlertConfig{
 				Webhook:          cfg.AlertWebhook,
 				Command:          cfg.AlertCommand,

@@ -281,8 +281,7 @@ func (a *apiServerAdapter) Serve() error {
 }
 
 func (a *apiServerAdapter) Close() error {
-	a.srv.Close()
-	return nil
+	return a.srv.Close()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
