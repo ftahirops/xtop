@@ -96,7 +96,13 @@ func (f *FilelessCollector) scan() []model.FilelessProcess {
 			continue
 		}
 		pid, err := strconv.Atoi(entry.Name())
-		if err != nil || pid < 100 || pid == selfPID {
+		if err != nil {
+			continue
+		}
+		// Skip low-PID host processes (kernel threads / early daemons) but NOT
+		// low-PID containerised processes — container PID namespaces start at 1,
+		// so a low PID inside a container is NOT a trusted host process.
+		if shouldSkipLowPID(pid, isContainerizedPID(pid), selfPID) {
 			continue
 		}
 

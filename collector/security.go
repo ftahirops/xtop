@@ -410,13 +410,19 @@ func (s *SecurityCollector) collectReverseShells(snap *model.Snapshot, sec *mode
 	// Unix domain sockets (local IPC) are legitimate (MCP servers, LSP, Docker, etc.)
 	tcpInodes := loadTCPInodes()
 
+	// Raised from 50 → 1024: the original cap silently missed high-PID daemons
+	// (same class of fix as deletedOpenMaxPIDs).
+	const reverseShellMaxProcs = 1024
 	procs := snap.Processes
-	if len(procs) > 50 {
-		procs = procs[:50]
+	if len(procs) > reverseShellMaxProcs {
+		procs = procs[:reverseShellMaxProcs]
 	}
 
 	for _, p := range procs {
-		if p.PID < 100 {
+		// Skip low-PID host processes (kernel threads / early daemons) but NOT
+		// low-PID containerised processes — container PID namespaces start at 1,
+		// so a low PID inside a container is NOT a trusted host process.
+		if shouldSkipLowPID(p.PID, isContainerizedCgroup(p.CgroupPath), 0) {
 			continue
 		}
 		// Skip whitelisted processes
