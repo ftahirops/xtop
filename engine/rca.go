@@ -610,14 +610,17 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History, 
 		result.Confidence = 100
 	}
 
-	// Trust-gate consistency: finalize() runs early (before forecast and
-	// deploy-correlation bonuses). When the trust gate failed and finalize
-	// set Health=Inconclusive, those later bonuses can inflate PrimaryScore
+	// Trust-gate consistency: finalize() runs early (before any score
+	// mutators). When the trust gate failed and finalize set
+	// Health=Inconclusive, subsequent mutators can inflate PrimaryScore
 	// into the critical/degraded read range, creating a score/verdict
 	// contradiction that TUI and fleet consumers both observe.
-	// Fix (Option A): clamp PrimaryScore below rcaScoreDegraded whenever
-	// Health is still Inconclusive after all post-finalize policy upgrades
-	// (app-health bridge, hysteresis). Gate-passing paths are unaffected.
+	// Placement: after ALL post-finalize score mutators, including:
+	// app-health bridge, hysteresis, DetectHiddenLatencyV2, and
+	// runStatisticalAnalysis. This clamp is the LAST guard: it ensures
+	// that Inconclusive results never report inflated scores that would
+	// visually contradict the health verdict.
+	// Gate-passing paths (Health != Inconclusive) are unaffected.
 	clampInconclusiveScore(result)
 
 	// P2.4: Tier-1 journal RCA — on-demand journal evidence for the top

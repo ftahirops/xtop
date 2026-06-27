@@ -104,12 +104,97 @@ func TestBonusGate_InvariantAcrossScenarios(t *testing.T) {
 		{"netDrops", netDropsSnap},
 		{"netConntrackExhaust", netConntrackExhaustSnap},
 	}
+	inconclusiveCount := 0
 	for _, sc := range scenarios {
 		t.Run(sc.name, func(t *testing.T) {
 			s, r := sc.fn()
 			result := runRCA(s, r)
+			if result.Health == model.HealthInconclusive {
+				inconclusiveCount++
+			}
 			if result.Health == model.HealthInconclusive && result.PrimaryScore >= rcaScoreDegraded {
 				t.Errorf("invariant violated: Health=Inconclusive but PrimaryScore=%d >= rcaScoreDegraded=%d",
+					result.PrimaryScore, rcaScoreDegraded)
+			}
+		})
+	}
+	// Log vacuity warning if none of the standard scenarios produced Inconclusive
+	if inconclusiveCount == 0 {
+		t.Logf("INFO: no standard scenarios produced Health=Inconclusive (vacuous test path); see TestBonusGate_ClampInvariantTable for deterministic coverage")
+	}
+}
+
+// TestBonusGate_ClampInvariantTable is a deterministic table-driven test that
+// verifies clampInconclusiveScore enforces the core invariant: whenever
+// Health==Inconclusive, PrimaryScore must remain below rcaScoreDegraded.
+// This is the real guard against trust-gate bypass: any removal or weakening
+// of clampInconclusiveScore will cause this test to fail.
+func TestBonusGate_ClampInvariantTable(t *testing.T) {
+	tests := []struct {
+		name       string
+		health     model.HealthLevel
+		inputScore int
+		wantScore  int // expected score after clamp
+		desc       string
+	}{
+		{
+			name:       "inconclusive_above_degraded_40",
+			health:     model.HealthInconclusive,
+			inputScore: 40,
+			wantScore:  rcaScoreDegraded - 1, // must clamp from 40 to 24
+			desc:       "Inconclusive with bonus-inflated score (40) must clamp to 24",
+		},
+		{
+			name:       "inconclusive_critical_range_99",
+			health:     model.HealthInconclusive,
+			inputScore: 99,
+			wantScore:  rcaScoreDegraded - 1, // must clamp from 99 to 24
+			desc:       "Inconclusive with critical-range score (99) must clamp to 24",
+		},
+		{
+			name:       "inconclusive_below_degraded_10",
+			health:     model.HealthInconclusive,
+			inputScore: 10,
+			wantScore:  10, // already below threshold, unchanged
+			desc:       "Inconclusive with sub-threshold score (10) remains unchanged",
+		},
+		{
+			name:       "degraded_unchanged_40",
+			health:     model.HealthDegraded,
+			inputScore: 40,
+			wantScore:  40, // gate-passing result, no clamp
+			desc:       "Degraded result (gate-passing) is NOT clamped",
+		},
+		{
+			name:       "critical_unchanged_80",
+			health:     model.HealthCritical,
+			inputScore: 80,
+			wantScore:  80, // gate-passing result, no clamp
+			desc:       "Critical result (gate-passing) is NOT clamped",
+		},
+		{
+			name:       "ok_unchanged_5",
+			health:     model.HealthOK,
+			inputScore: 5,
+			wantScore:  5, // gate-passing result, no clamp
+			desc:       "OK result (gate-passing) is NOT clamped",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := &model.AnalysisResult{
+				Health:       tt.health,
+				PrimaryScore: tt.inputScore,
+			}
+			clampInconclusiveScore(result)
+
+			if result.PrimaryScore != tt.wantScore {
+				t.Errorf("%s: got score=%d, want %d", tt.desc, result.PrimaryScore, tt.wantScore)
+			}
+
+			// Hard invariant: after clamp, if Health==Inconclusive then PrimaryScore < rcaScoreDegraded
+			if result.Health == model.HealthInconclusive && result.PrimaryScore >= rcaScoreDegraded {
+				t.Errorf("INVARIANT VIOLATED: Health=Inconclusive but PrimaryScore=%d >= rcaScoreDegraded=%d (trust-gate bypass)",
 					result.PrimaryScore, rcaScoreDegraded)
 			}
 		})
