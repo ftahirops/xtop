@@ -188,6 +188,16 @@ func (s *Store) Migrate() error {
 			updated_at DATETIME NOT NULL,
 			PRIMARY KEY (metric, window)
 		)`,
+
+		// Config-Drift RCA (P4.2): snapshot of baseline sysctl/config values.
+		// first_seen is preserved across upserts; acked=1 means operator reviewed.
+		`CREATE TABLE IF NOT EXISTS config_baseline (
+			key        TEXT PRIMARY KEY,
+			value      TEXT NOT NULL,
+			domain     TEXT NOT NULL,
+			first_seen INTEGER NOT NULL,
+			acked      INTEGER NOT NULL DEFAULT 0
+		)`,
 	}
 
 	for _, stmt := range stmts {
@@ -523,6 +533,75 @@ func (s *Store) LoadDriftTrackers() ([]DriftTrackerRow, error) {
 			return nil, err
 		}
 		r.RefSet = refSet != 0
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ConfigBaselineRow is one persisted config baseline entry (P4.2).
+// first_seen is preserved across upserts; acked signals operator review.
+type ConfigBaselineRow struct {
+	Key       string
+	Value     string
+	Domain    string
+	FirstSeen time.Time
+	Acked     bool
+}
+
+// SaveConfigBaseline upserts config baseline rows in one transaction.
+// On conflict the value, domain, and acked fields are updated but first_seen
+// is left unchanged (preserving when the key was first observed).
+func (s *Store) SaveConfigBaseline(rows []ConfigBaselineRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`INSERT INTO config_baseline (key, value, domain, first_seen, acked)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(key) DO UPDATE SET
+			value=excluded.value,
+			domain=excluded.domain,
+			acked=excluded.acked`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, r := range rows {
+		acked := 0
+		if r.Acked {
+			acked = 1
+		}
+		if _, err := stmt.Exec(r.Key, r.Value, r.Domain, r.FirstSeen.Unix(), acked); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// LoadConfigBaseline reads all config baseline rows back.
+func (s *Store) LoadConfigBaseline() ([]ConfigBaselineRow, error) {
+	rows, err := s.db.Query(`SELECT key, value, domain, first_seen, acked FROM config_baseline`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []ConfigBaselineRow
+	for rows.Next() {
+		var r ConfigBaselineRow
+		var firstSeenUnix int64
+		var acked int
+		if err := rows.Scan(&r.Key, &r.Value, &r.Domain, &firstSeenUnix, &acked); err != nil {
+			return nil, err
+		}
+		r.FirstSeen = time.Unix(firstSeenUnix, 0).UTC()
+		r.Acked = acked != 0
 		out = append(out, r)
 	}
 	return out, rows.Err()

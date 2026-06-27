@@ -215,6 +215,113 @@ func TestUpsertAndGetFingerprint(t *testing.T) {
 	}
 }
 
+// TestSaveAndLoadConfigBaseline asserts that ConfigBaselineRow values round-trip
+// correctly through SaveConfigBaseline / LoadConfigBaseline.
+func TestSaveAndLoadConfigBaseline(t *testing.T) {
+	s := openTestStore(t)
+
+	now := time.Now().Truncate(time.Second) // stored as unix seconds; sub-second lost
+	rows := []ConfigBaselineRow{
+		{Key: "kernel.pid_max", Value: "4194304", Domain: "kernel", FirstSeen: now, Acked: false},
+		{Key: "vm.swappiness", Value: "60", Domain: "vm", FirstSeen: now, Acked: true},
+	}
+
+	if err := s.SaveConfigBaseline(rows); err != nil {
+		t.Fatalf("SaveConfigBaseline: %v", err)
+	}
+
+	got, err := s.LoadConfigBaseline()
+	if err != nil {
+		t.Fatalf("LoadConfigBaseline: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 rows; got %d", len(got))
+	}
+
+	// Build a map for order-independent comparison.
+	byKey := make(map[string]ConfigBaselineRow, len(got))
+	for _, r := range got {
+		byKey[r.Key] = r
+	}
+
+	for _, want := range rows {
+		r, ok := byKey[want.Key]
+		if !ok {
+			t.Errorf("key %q missing from LoadConfigBaseline", want.Key)
+			continue
+		}
+		if r.Value != want.Value {
+			t.Errorf("key %q: Value=%q want %q", want.Key, r.Value, want.Value)
+		}
+		if r.Domain != want.Domain {
+			t.Errorf("key %q: Domain=%q want %q", want.Key, r.Domain, want.Domain)
+		}
+		if r.Acked != want.Acked {
+			t.Errorf("key %q: Acked=%v want %v", want.Key, r.Acked, want.Acked)
+		}
+		diff := r.FirstSeen.Unix() - want.FirstSeen.Unix()
+		if diff < -1 || diff > 1 {
+			t.Errorf("key %q: FirstSeen=%v want %v (diff %ds)", want.Key, r.FirstSeen, want.FirstSeen, diff)
+		}
+	}
+}
+
+// TestSaveConfigBaselineUpsert asserts that saving the same key twice updates
+// the value/domain/acked but preserves first_seen from the first insert.
+func TestSaveConfigBaselineUpsert(t *testing.T) {
+	s := openTestStore(t)
+
+	t0 := time.Now().Truncate(time.Second).Add(-time.Hour) // clearly in the past
+	initial := []ConfigBaselineRow{
+		{Key: "net.core.somaxconn", Value: "128", Domain: "net", FirstSeen: t0, Acked: false},
+	}
+	if err := s.SaveConfigBaseline(initial); err != nil {
+		t.Fatalf("SaveConfigBaseline (initial): %v", err)
+	}
+
+	updated := []ConfigBaselineRow{
+		{Key: "net.core.somaxconn", Value: "4096", Domain: "net", FirstSeen: time.Now().Truncate(time.Second), Acked: true},
+	}
+	if err := s.SaveConfigBaseline(updated); err != nil {
+		t.Fatalf("SaveConfigBaseline (update): %v", err)
+	}
+
+	got, err := s.LoadConfigBaseline()
+	if err != nil {
+		t.Fatalf("LoadConfigBaseline: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 row after upsert; got %d", len(got))
+	}
+	r := got[0]
+	if r.Value != "4096" {
+		t.Errorf("Value after upsert: %q want 4096", r.Value)
+	}
+	if !r.Acked {
+		t.Errorf("Acked after upsert: want true, got false")
+	}
+	// first_seen must be preserved from the original insert (t0), not overwritten.
+	if r.FirstSeen.Unix() != t0.Unix() {
+		t.Errorf("FirstSeen after upsert: %v want %v (should be preserved)", r.FirstSeen, t0)
+	}
+}
+
+// TestSaveConfigBaselineEmpty asserts that SaveConfigBaseline with an empty
+// slice is a no-op (no error, load returns empty).
+func TestSaveConfigBaselineEmpty(t *testing.T) {
+	s := openTestStore(t)
+	if err := s.SaveConfigBaseline(nil); err != nil {
+		t.Fatalf("SaveConfigBaseline(nil): %v", err)
+	}
+	got, err := s.LoadConfigBaseline()
+	if err != nil {
+		t.Fatalf("LoadConfigBaseline after empty save: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected 0 rows; got %d", len(got))
+	}
+}
+
 // TestPrune asserts old incidents are deleted and recent ones are kept.
 func TestPrune(t *testing.T) {
 	s := openTestStore(t)
