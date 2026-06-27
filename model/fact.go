@@ -58,6 +58,13 @@ const (
 	// syslog entries — e.g. crash-restart loops, OOM kills, segfaults, or
 	// dependency-connection failures. Produced by InjectJournalEvidence.
 	FactKindLogEvidence FactKind = "log_evidence"
+
+	// FactKindConfigChange is a "something changed" signal specifically for
+	// OS/kernel runtime parameter drift — sysctl values, hugepage settings,
+	// CPU governor, cgroup limits, etc. Produced by InjectConfigDriftEvidence.
+	// Confidence is moderate (~0.6) because config drift is derived/interpreted;
+	// onset-correlation (Phase 4.4) is what gives it RCA weight.
+	FactKindConfigChange FactKind = "config_change"
 )
 
 // FactConfidence is how much we trust this fact's measurement, on [0,1].

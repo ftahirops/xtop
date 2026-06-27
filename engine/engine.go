@@ -564,6 +564,16 @@ func (e *Engine) Tick() (*model.Snapshot, *model.RateSnapshot, *model.AnalysisRe
 			}
 		}
 
+		// Phase 4.4 — config-drift onset correlation: if any config_drift_*
+		// changes are recent (within driftCorrelationWindow) and share a
+		// domain with the active bottleneck, boost that candidate's score
+		// and attach the drift as a typed Fact. Runs after result.Changes
+		// is fully populated so both file-level and param-level drift are
+		// considered.
+		if result != nil {
+			correlateConfigDrift(result, result.Changes, time.Now())
+		}
+
 		// Confidence calibration: detect incident completions to record outcomes,
 		// and apply the learned per-bottleneck bias to the live result. The order
 		// matters — we look at what the recorder had as "active" before we pass
