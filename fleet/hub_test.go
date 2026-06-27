@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -489,6 +490,65 @@ func TestSSESubscriberConcurrency(t *testing.T) {
 				<-readDone
 			}
 		}()
+	}
+
+	wg.Wait()
+}
+
+// TestHealthEndpointConcurrency verifies that handleHealth does not race with
+// concurrent heartbeat writes. This test exercises the data race that would occur
+// if handleHealth reads len(h.hosts) without holding h.hostsMu. With the fix
+// (RLock held during the read), this test passes cleanly under -race.
+func TestHealthEndpointConcurrency(t *testing.T) {
+	h := newTestHub(t, model.FleetHubConfig{AllowNoAuth: true})
+
+	const (
+		healthGoroutines   = 10
+		heartbeatGoroutines = 10
+		iterations         = 100
+	)
+
+	var wg sync.WaitGroup
+
+	// Goroutines hammering the /health endpoint
+	wg.Add(healthGoroutines)
+	for i := 0; i < healthGoroutines; i++ {
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				w := httptest.NewRecorder()
+				r := httptest.NewRequest("GET", "/health", nil)
+				h.handleHealth(w, r)
+				if w.Code != http.StatusOK {
+					t.Errorf("handleHealth: expected 200, got %d", w.Code)
+					return
+				}
+				// Decode to validate structure
+				var result map[string]interface{}
+				if err := json.NewDecoder(w.Body).Decode(&result); err != nil {
+					t.Errorf("handleHealth: failed to decode response: %v", err)
+					return
+				}
+			}
+		}(i)
+	}
+
+	// Goroutines writing heartbeats (mutating h.hosts under lock)
+	wg.Add(heartbeatGoroutines)
+	for i := 0; i < heartbeatGoroutines; i++ {
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				body := fmt.Sprintf(
+					`{"hostname":"host-%d-%d","agent_id":"agent-%d-%d"}`,
+					id, j, id, j,
+				)
+				w := httptest.NewRecorder()
+				r := httptest.NewRequest("POST", "/v1/heartbeat", strings.NewReader(body))
+				h.handleHeartbeat(w, r)
+				// Heartbeat may succeed or be rate-limited; both are fine for this test.
+			}
+		}(i)
 	}
 
 	wg.Wait()

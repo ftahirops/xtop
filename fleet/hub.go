@@ -294,9 +294,12 @@ func (h *Hub) allow(agentID string) bool {
 // ─── Endpoints ───────────────────────────────────────────────────────────────
 
 func (h *Hub) handleHealth(w http.ResponseWriter, r *http.Request) {
+	h.hostsMu.RLock()
+	hostCount := len(h.hosts)
+	h.hostsMu.RUnlock()
 	writeJSON(w, map[string]interface{}{
 		"ok":    true,
-		"hosts": len(h.hosts),
+		"hosts": hostCount,
 	})
 }
 
