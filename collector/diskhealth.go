@@ -334,7 +334,9 @@ func readSATASMART(name, sysPath string) (disk model.SMARTDisk) {
 		}
 		normalizedVal := int(data[offset+3])
 		rawVal := int(binary.LittleEndian.Uint32(data[offset+5 : offset+9]))
-		rawVal48 := binary.LittleEndian.Uint64(append(data[offset+5:offset+11], 0, 0))
+		var raw48 [8]byte
+		copy(raw48[:6], data[offset+5:offset+11])
+		rawVal48 := binary.LittleEndian.Uint64(raw48[:])
 
 		switch attrID {
 		case 5: // Reallocated_Sector_Ct
