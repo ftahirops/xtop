@@ -25,6 +25,13 @@ type DeletedOpenCollector struct {
 
 const deletedOpenScanInterval = 30 * time.Second
 
+// deletedOpenMaxPIDs is the maximum number of /proc/<pid> entries scanned per
+// sweep.  The old value of 50 was far too low — long-running daemons commonly
+// have high PIDs and were silently skipped.  4096 covers the vast majority of
+// real systems; the companion 500 ms scanDeadline handles edge cases with
+// thousands of zombie entries.
+const deletedOpenMaxPIDs = 4096
+
 func (d *DeletedOpenCollector) Name() string { return "deleted_open" }
 
 // Trigger forces a rescan on the next Collect call.
@@ -59,10 +66,12 @@ func (d *DeletedOpenCollector) Collect(snap *model.Snapshot) error {
 
 	var results []model.DeletedOpenFile
 	pidsScanned := 0
-	maxPIDs := 50
+	// A 500 ms wall-clock budget guards against pathological /proc layouts
+	// with thousands of zombie entries (pairs with deletedOpenMaxPIDs).
+	scanDeadline := time.Now().Add(500 * time.Millisecond)
 
 	for _, entry := range procEntries {
-		if pidsScanned >= maxPIDs {
+		if pidsScanned >= deletedOpenMaxPIDs || time.Now().After(scanDeadline) {
 			break
 		}
 		if !entry.IsDir() {

@@ -3,8 +3,21 @@ package runtime
 import (
 	"bytes"
 	"encoding/binary"
+	"io"
 	"os"
+	"sync"
 )
+
+// hsperfBufPool holds reusable scratch buffers for reading hsperfdata files,
+// eliminating per-tick heap allocations on systems with multiple JVM processes.
+// Each hsperfdata file is typically 32–64 KiB; pooling avoids creating a new
+// slice on every collection tick.
+var hsperfBufPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 64*1024) // 64 KiB is enough for most JVMs
+		return &b
+	},
+}
 
 // hsperfdataHeader is the binary header of a JVM hsperfdata file.
 type hsperfdataHeader struct {
@@ -35,9 +48,40 @@ const (
 
 // parseHsperfdata reads and parses a JVM hsperfdata binary file.
 // Returns nil if the file cannot be parsed (not a valid hsperfdata file).
+// A pooled buffer is reused across calls to avoid per-tick heap allocation.
 func parseHsperfdata(path string) *JVMPerfData {
-	data, err := os.ReadFile(path)
-	if err != nil || len(data) < 32 {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil || fi.Size() < 32 {
+		return nil
+	}
+	fileSize := fi.Size()
+
+	// Get a scratch buffer from the pool; grow it if the file is larger.
+	bptr := hsperfBufPool.Get().(*[]byte)
+	if int64(cap(*bptr)) < fileSize {
+		*bptr = make([]byte, fileSize)
+	}
+	data := (*bptr)[:fileSize]
+
+	if _, err := io.ReadFull(f, data); err != nil {
+		hsperfBufPool.Put(bptr)
+		return nil
+	}
+
+	result := doParseHsperfdata(data)
+	hsperfBufPool.Put(bptr)
+	return result
+}
+
+// doParseHsperfdata parses the in-memory hsperfdata blob.
+func doParseHsperfdata(data []byte) *JVMPerfData {
+	if len(data) < 32 {
 		return nil
 	}
 

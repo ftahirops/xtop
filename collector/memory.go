@@ -70,6 +70,20 @@ func (m *MemoryCollector) collectMeminfo(snap *model.Snapshot) error {
 	return nil
 }
 
+// sumAllocStall sums all allocstall_* values from a parsed /proc/vmstat map.
+// Kernels >=5.14 split the old allocstall_normal counter into per-zone fields
+// (allocstall_dma, allocstall_dma32, allocstall_normal, allocstall_movable).
+// Summing all matching keys ensures correctness on both old and new kernels.
+func sumAllocStall(kv map[string]string) uint64 {
+	var total uint64
+	for k, v := range kv {
+		if strings.HasPrefix(k, "allocstall_") {
+			total += util.ParseUint64(v)
+		}
+	}
+	return total
+}
+
 // parseKB parses a meminfo value like "1234 kB" and returns bytes.
 func parseKB(s string) uint64 {
 	s = strings.TrimSpace(s)
@@ -96,7 +110,12 @@ func (m *MemoryCollector) collectVmstat(snap *model.Snapshot) error {
 	vm.PgStealKswapd = util.ParseUint64(kv["pgsteal_kswapd"])
 	vm.PgScanDirect = util.ParseUint64(kv["pgscan_direct"])
 	vm.PgScanKswapd = util.ParseUint64(kv["pgscan_kswapd"])
-	vm.AllocStall = util.ParseUint64(kv["allocstall_normal"]) + util.ParseUint64(kv["allocstall_movable"])
+	// Sum all per-zone allocstall_* counters so the metric is correct on both
+	// old kernels (allocstall_normal only) and kernels >=5.14 that split the
+	// counter into allocstall_dma, allocstall_dma32, allocstall_normal and
+	// allocstall_movable.  Reading only allocstall_normal gives 0 on modern
+	// kernels where that zone counter may be absent or always zero.
+	vm.AllocStall = sumAllocStall(kv)
 	vm.CompactStall = util.ParseUint64(kv["compact_stall"])
 	vm.OOMKill = util.ParseUint64(kv["oom_kill"])
 	vm.NrDirtied = util.ParseUint64(kv["nr_dirtied"])
