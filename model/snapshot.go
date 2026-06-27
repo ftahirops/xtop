@@ -456,10 +456,21 @@ type USECheck struct {
 }
 
 // SystemChange represents a detected change on the system between ticks.
+// Type vocabulary:
+//   - "new_process" / "stopped_process" — process lifecycle (ChangeDetector)
+//   - "package_install" / "package_upgrade" — dpkg/rpm events (ChangeDetector)
+//   - "config_added" / "config_modified" / "config_removed" — file-level config drift (ConfigDriftDetector)
+//   - "config_drift_memory" / "config_drift_cpu" / "config_drift_network" /
+//     "config_drift_io" / "config_drift_limits" / "config_drift_unknown" —
+//     kernel-parameter value drift vs persisted baseline (ParamDriftDetector, P4.3)
 type SystemChange struct {
-	Type   string    `json:"type"`   // "new_process", "stopped_process", "package_install", "package_upgrade"
+	Type   string    `json:"type"`
 	Detail string    `json:"detail"`
 	When   time.Time `json:"when"`
+	// Domain is the RCA domain for config_drift_* types (memory/cpu/network/io/limits/unknown).
+	// Empty for non-drift change types. Omitted from JSON when empty to keep
+	// the wire format additive and backward-compatible.
+	Domain string `json:"domain,omitempty"`
 }
 
 // MetricChange represents a notable metric delta for the "what changed?" engine.
