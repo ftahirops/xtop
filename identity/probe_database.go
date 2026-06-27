@@ -54,13 +54,18 @@ func probeMySQL(id *model.ServerIdentity) {
 			}
 		}
 
-		// Check replication
+		// Check replication — try REPLICA STATUS (8.0.22+) then fall back to SLAVE STATUS
 		ctx2, cancel2 := context.WithTimeout(context.Background(), dbProbeTimeout)
-		out, err = exec.CommandContext(ctx2, path, "-N", "-e", "SHOW SLAVE STATUS\\G").Output()
+		out, err = exec.CommandContext(ctx2, path, "-N", "-e", "SHOW REPLICA STATUS\\G").Output()
 		cancel2()
+		if err != nil || !strings.Contains(string(out), "Replica_IO_Running") {
+			ctx3, cancel3 := context.WithTimeout(context.Background(), dbProbeTimeout)
+			out, err = exec.CommandContext(ctx3, path, "-N", "-e", "SHOW SLAVE STATUS\\G").Output()
+			cancel3()
+		}
 		if err == nil {
 			status := string(out)
-			if strings.Contains(status, "Slave_IO_Running") {
+			if strings.Contains(status, "Replica_IO_Running") || strings.Contains(status, "Slave_IO_Running") {
 				// Update last database info with replica role
 				for i := range id.Databases {
 					if id.Databases[i].Engine == "mysql" {

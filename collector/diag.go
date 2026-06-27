@@ -618,9 +618,12 @@ func DiagMySQL() model.ServiceDiag {
 		}
 	}
 
-	// Replication status
-	replOut, err := runCmd("mysql", "-N", "-e", "SHOW SLAVE STATUS\\G")
-	if err == nil && strings.Contains(replOut, "Slave_IO_Running") {
+	// Replication status — try REPLICA STATUS (8.0.22+) then fall back to SLAVE STATUS
+	replOut, err := runCmd("mysql", "-N", "-e", "SHOW REPLICA STATUS\\G")
+	if err != nil || !strings.Contains(replOut, "Replica_IO_Running") {
+		replOut, err = runCmd("mysql", "-N", "-e", "SHOW SLAVE STATUS\\G")
+	}
+	if err == nil && (strings.Contains(replOut, "Slave_IO_Running") || strings.Contains(replOut, "Replica_IO_Running")) {
 		replKV := make(map[string]string)
 		for _, line := range strings.Split(replOut, "\n") {
 			parts := strings.SplitN(line, ":", 2)
@@ -628,14 +631,25 @@ func DiagMySQL() model.ServiceDiag {
 				replKV[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
 			}
 		}
-		ioRunning := replKV["Slave_IO_Running"]
-		sqlRunning := replKV["Slave_SQL_Running"]
+		// Field names differ between REPLICA STATUS (8.0.22+) and SLAVE STATUS.
+		ioRunning := replKV["Replica_IO_Running"]
+		if ioRunning == "" {
+			ioRunning = replKV["Slave_IO_Running"]
+		}
+		sqlRunning := replKV["Replica_SQL_Running"]
+		if sqlRunning == "" {
+			sqlRunning = replKV["Slave_SQL_Running"]
+		}
 		if ioRunning != "Yes" || sqlRunning != "Yes" {
 			addFinding(&sd, model.DiagCrit, "replication",
 				fmt.Sprintf("Replication broken: IO=%s SQL=%s", ioRunning, sqlRunning),
-				"", "Check SHOW SLAVE STATUS\\G for errors")
+				"", "Check SHOW REPLICA STATUS\\G for errors")
 		}
-		lag := atoiSafe(replKV["Seconds_Behind_Master"])
+		lagStr := replKV["Seconds_Behind_Source"]
+		if lagStr == "" {
+			lagStr = replKV["Seconds_Behind_Master"]
+		}
+		lag := atoiSafe(lagStr)
 		if lag > 300 {
 			addFinding(&sd, model.DiagCrit, "replication",
 				fmt.Sprintf("Replication lag: %ds", lag),

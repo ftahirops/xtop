@@ -138,14 +138,13 @@ func (m *mysqlModule) Collect(app *DetectedApp, secrets *AppSecrets) model.AppIn
 }
 
 // mysqlCLIArgs builds the common mysql/mysqladmin CLI args from secrets.
+// The password is NOT included here; pass it via mysqlEnv to avoid exposing
+// it in /proc/<pid>/cmdline.
 func mysqlCLIArgs(secrets *AppSecrets) []string {
 	var args []string
 	if secrets != nil && secrets.MySQL != nil {
 		if secrets.MySQL.User != "" {
 			args = append(args, "-u", secrets.MySQL.User)
-		}
-		if secrets.MySQL.Password != "" {
-			args = append(args, fmt.Sprintf("-p%s", secrets.MySQL.Password))
 		}
 		if secrets.MySQL.Host != "" {
 			args = append(args, "-h", secrets.MySQL.Host)
@@ -157,6 +156,15 @@ func mysqlCLIArgs(secrets *AppSecrets) []string {
 	return args
 }
 
+// mysqlEnv returns an env slice with MYSQL_PWD set when a password is configured.
+// Callers should do: cmd.Env = append(os.Environ(), mysqlEnv(secrets)...)
+func mysqlEnv(secrets *AppSecrets) []string {
+	if secrets != nil && secrets.MySQL != nil && secrets.MySQL.Password != "" {
+		return []string{"MYSQL_PWD=" + secrets.MySQL.Password}
+	}
+	return nil
+}
+
 // mysqlQuery runs a query via the mysql CLI and returns the output.
 func mysqlQuery(secrets *AppSecrets, query string) (string, error) {
 	args := []string{"-N", "-B", "-e", query}
@@ -164,6 +172,7 @@ func mysqlQuery(secrets *AppSecrets, query string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "mysql", args...)
+	cmd.Env = append(os.Environ(), mysqlEnv(secrets)...)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
@@ -175,6 +184,7 @@ func mysqlAdmin(secrets *AppSecrets, subcmd string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "mysqladmin", args...)
+	cmd.Env = append(os.Environ(), mysqlEnv(secrets)...)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }

@@ -9,8 +9,51 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
+
+// btimeCache caches the boot time read from /proc/stat (constant per boot).
+var (
+	btimeMu    sync.Mutex
+	btimeCached int64 // 0 = not yet read
+)
+
+// cachedBtime returns the system boot time (seconds since epoch) from /proc/stat.
+// The value is constant per boot; it is read once and cached to avoid per-tick I/O.
+// Returns 0 if the read fails; the next call will retry.
+func cachedBtime() float64 {
+	btimeMu.Lock()
+	if btimeCached != 0 {
+		v := btimeCached
+		btimeMu.Unlock()
+		return float64(v)
+	}
+	btimeMu.Unlock()
+
+	data, err := os.ReadFile("/proc/stat")
+	if err != nil {
+		return 0
+	}
+	var bt int64
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "btime ") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				bt, _ = strconv.ParseInt(fields[1], 10, 64)
+			}
+			break
+		}
+	}
+	if bt == 0 {
+		return 0
+	}
+
+	btimeMu.Lock()
+	btimeCached = bt
+	btimeMu.Unlock()
+	return float64(bt)
+}
 
 // countTCPConnections counts established TCP connections to a given local port.
 // Parses /proc/net/tcp (and tcp6) looking for connections in ESTABLISHED state (0A=LISTEN, 01=ESTABLISHED).
@@ -229,18 +272,8 @@ func readProcUptime(pid int) int64 {
 		return 0
 	}
 
-	// Read boot time
-	statData, err := os.ReadFile("/proc/stat")
-	if err != nil {
-		return 0
-	}
-	var bootTime float64
-	for _, line := range strings.Split(string(statData), "\n") {
-		if strings.HasPrefix(line, "btime ") {
-			bootTime, _ = strconv.ParseFloat(strings.Fields(line)[1], 64)
-			break
-		}
-	}
+	// Read boot time (constant per boot — use cached value after first successful read).
+	bootTime := cachedBtime()
 	if bootTime == 0 {
 		return 0
 	}
