@@ -277,8 +277,8 @@ func NewEngineMode(historySize, intervalSec int, mode collector.Mode) *Engine {
 	e.topologyCorrelator = topology
 	// NEXTGEN Phase 1A: adaptiveThresholdDB + topologyCorrelator
 	// globals removed. probabilisticCausalGraph global retained for
-	// out-of-tree inspectors.
-	probabilisticCausalGraph = causalGraph
+	// out-of-tree inspectors (stored atomically to avoid data races in tests).
+	atomicCausalGraph.Store(causalGraph)
 
 	// NEXTGEN Phase 5: initialize the incident corpus writer. Disabled
 	// when XTOP_CORPUS=0 (test/CI hosts that don't want to leave

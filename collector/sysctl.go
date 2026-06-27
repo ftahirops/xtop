@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ftahirops/xtop/model"
@@ -14,8 +15,11 @@ import (
 )
 
 // conntrackCLI caches whether the conntrack CLI is available.
-var conntrackCLI string // path to conntrack binary, "" if not found
-var conntrackCLIChecked bool
+// Protected by conntrackCLIOnce so findConntrackCLI is safe for concurrent callers.
+var (
+	conntrackCLI      string // path to conntrack binary, "" if not found
+	conntrackCLIOnce  sync.Once
+)
 
 // parseHex64 parses a hex string to uint64, returning 0 on error.
 func parseHex64(s string) uint64 {
@@ -148,22 +152,20 @@ func (s *SysctlCollector) parseConntrackStatCLI(ct *model.ConntrackStats) {
 }
 
 // findConntrackCLI locates the conntrack binary, caching the result.
+// Safe for concurrent use — the binary path is discovered at most once.
 func findConntrackCLI() string {
-	if conntrackCLIChecked {
-		return conntrackCLI
-	}
-	conntrackCLIChecked = true
-	for _, p := range []string{"/usr/sbin/conntrack", "/sbin/conntrack"} {
-		if _, err := os.Stat(p); err == nil {
-			conntrackCLI = p
-			return p
+	conntrackCLIOnce.Do(func() {
+		for _, p := range []string{"/usr/sbin/conntrack", "/sbin/conntrack"} {
+			if _, err := os.Stat(p); err == nil {
+				conntrackCLI = p
+				return
+			}
 		}
-	}
-	if p, err := exec.LookPath("conntrack"); err == nil {
-		conntrackCLI = p
-		return p
-	}
-	return ""
+		if p, err := exec.LookPath("conntrack"); err == nil {
+			conntrackCLI = p
+		}
+	})
+	return conntrackCLI
 }
 
 func (s *SysctlCollector) collectConntrackTimeouts(snap *model.Snapshot) {
@@ -190,38 +192,53 @@ func (s *SysctlCollector) collectConntrackTimeouts(snap *model.Snapshot) {
 }
 
 // conntrackTableCache holds the last parsed conntrack table dissection.
-var conntrackTableCache model.ConntrackDissection
-
-// conntrackTableTick counts collection ticks for throttling.
-var conntrackTableTick int
+// conntrackTableMu guards conntrackTableCache and conntrackTableTick so
+// concurrent Engine instances in tests don't race on these globals.
+var (
+	conntrackTableMu    sync.Mutex
+	conntrackTableCache model.ConntrackDissection
+	conntrackTableTick  int
+)
 
 // maxConntrackEntries caps the number of entries parsed from nf_conntrack.
 const maxConntrackEntries = 50000
 
 func (s *SysctlCollector) collectConntrackTable(snap *model.Snapshot) {
+	conntrackTableMu.Lock()
 	conntrackTableTick++
+	tick := conntrackTableTick
+	cachedVal := conntrackTableCache
+	conntrackTableMu.Unlock()
+
 	// Parse every 5th tick (~15s at 3s interval)
-	if conntrackTableTick%5 != 1 {
-		snap.Global.ConntrackDissect = conntrackTableCache
+	if tick%5 != 1 {
+		snap.Global.ConntrackDissect = cachedVal
 		return
 	}
 
 	// Try /proc/net/nf_conntrack first (older kernels)
 	if d, ok := s.parseConntrackTableProc(); ok {
+		conntrackTableMu.Lock()
 		conntrackTableCache = d
+		conntrackTableMu.Unlock()
 		snap.Global.ConntrackDissect = d
 		return
 	}
 
 	// Fallback: conntrack -L (kernel 6.1+ removed /proc/net/nf_conntrack)
 	if d, ok := s.parseConntrackTableCLI(); ok {
+		conntrackTableMu.Lock()
 		conntrackTableCache = d
+		conntrackTableMu.Unlock()
 		snap.Global.ConntrackDissect = d
 		return
 	}
 
+	conntrackTableMu.Lock()
 	conntrackTableCache.Available = false
-	snap.Global.ConntrackDissect = conntrackTableCache
+	cachedVal = conntrackTableCache
+	conntrackTableMu.Unlock()
+	snap.Global.ConntrackDissect = cachedVal
 }
 
 // parseConntrackTableProc reads /proc/net/nf_conntrack.

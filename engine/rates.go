@@ -5,6 +5,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ftahirops/xtop/model"
@@ -355,7 +356,10 @@ func computeProcessRates(prev, curr *model.Snapshot, dt time.Duration, r *model.
 }
 
 // writePathCache caches resolved write paths to avoid scanning /proc/PID/fd every tick.
+// mu guards all fields to prevent data races when multiple Engine instances run
+// concurrently (e.g. parallel tests).
 var writePathCache = struct {
+	mu      sync.Mutex
 	entries map[int]string // PID → path
 	at      time.Time
 }{entries: make(map[int]string)}
@@ -367,7 +371,10 @@ const writePathCacheTTL = 5 * time.Second
 // Results are cached for 5 seconds to avoid expensive fd scans every tick.
 func resolveWritePaths(rates []model.ProcessRate) {
 	now := time.Now()
+
+	writePathCache.mu.Lock()
 	stale := now.Sub(writePathCache.at) >= writePathCacheTTL
+	writePathCache.mu.Unlock()
 
 	// Sort indices by WriteMBs descending to find top writers
 	type idx struct {
@@ -388,7 +395,8 @@ func resolveWritePaths(rates []model.ProcessRate) {
 	}
 
 	if stale {
-		// Refresh cache
+		// Refresh cache — build new map outside the lock to avoid holding
+		// the lock while doing /proc/PID/fd I/O.
 		newCache := make(map[int]string, len(writers))
 		for _, w := range writers {
 			pid := rates[w.i].PID
@@ -398,12 +406,17 @@ func resolveWritePaths(rates []model.ProcessRate) {
 				rates[w.i].WritePath = path
 			}
 		}
+		writePathCache.mu.Lock()
 		writePathCache.entries = newCache
 		writePathCache.at = now
+		writePathCache.mu.Unlock()
 	} else {
 		// Use cached values
+		writePathCache.mu.Lock()
+		entries := writePathCache.entries
+		writePathCache.mu.Unlock()
 		for _, w := range writers {
-			if path, ok := writePathCache.entries[rates[w.i].PID]; ok && path != "" {
+			if path, ok := entries[rates[w.i].PID]; ok && path != "" {
 				rates[w.i].WritePath = path
 			}
 		}

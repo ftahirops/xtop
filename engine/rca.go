@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/ftahirops/xtop/engine/verifier"
@@ -18,9 +19,10 @@ import (
 //   - adaptiveThresholdDB: deleted — DB now threaded explicitly through
 //     AnalyzeRCA → analyze{IO,CPU,Memory,Network} + InjectAppEvidence
 //   - probabilisticCausalGraph: read via e.probabilisticCausalGraph;
-//     global stays for any out-of-tree inspector
+//     global stays for any out-of-tree inspector (race-safe via atomic.Pointer)
 //   - topologyCorrelator: deleted (zero readers)
-var probabilisticCausalGraph *ProbabilisticCausalGraph
+var atomicCausalGraph atomic.Pointer[ProbabilisticCausalGraph]
+
 
 const (
 	BottleneckIO      = "IO Starvation"
@@ -508,7 +510,9 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History, 
 		}
 		// Resolve causal graph: prefer the engine's per-instance graph,
 		// fall back to the package global for nil-engine callers (tests).
-		causal := probabilisticCausalGraph
+		// Resolve causal graph: prefer the engine's per-instance graph,
+		// fall back to the package atomic global for nil-engine callers.
+		causal := atomicCausalGraph.Load()
 		if e != nil && e.probabilisticCausalGraph != nil {
 			causal = e.probabilisticCausalGraph
 		}
