@@ -6,7 +6,7 @@ package engine
 // on disk via SHA256). Here we track OS/kernel runtime parameters — sysctl
 // values, hugepage settings, CPU governor, etc. — sourced from the
 // collector/configdrift.Keys registry and compared against a persisted
-// store.ConfigBaselineRow baseline.
+// ConfigBaselineRecord baseline.
 //
 // Design decisions:
 //   - Detect does NOT mutate the in-memory baseline on drift. A changed value
@@ -25,7 +25,6 @@ import (
 
 	"github.com/ftahirops/xtop/collector/configdrift"
 	"github.com/ftahirops/xtop/model"
-	"github.com/ftahirops/xtop/store"
 )
 
 // configBaselineEntry holds the in-memory view of one baseline key.
@@ -50,11 +49,11 @@ type ParamDriftDetector struct {
 	domainByKey map[string]string
 }
 
-// NewParamDriftDetector initialises a detector from the persisted baseline rows
-// (typically loaded via store.LoadConfigBaseline). Passing nil or an empty
-// slice starts with an empty baseline — every first-seen key will be collected
-// as a newBaseline entry on the first Detect call.
-func NewParamDriftDetector(rows []store.ConfigBaselineRow) *ParamDriftDetector {
+// NewParamDriftDetector initialises a detector from the persisted baseline
+// records (typically loaded via DaemonStore.LoadConfigBaseline). Passing nil
+// or an empty slice starts with an empty baseline — every first-seen key will
+// be collected as a newBaseline entry on the first Detect call.
+func NewParamDriftDetector(rows []ConfigBaselineRecord) *ParamDriftDetector {
 	d := &ParamDriftDetector{
 		baseline:    make(map[string]configBaselineEntry, len(rows)),
 		domainByKey: buildDomainMap(),
@@ -82,20 +81,20 @@ func buildDomainMap() map[string]string {
 //   - changes: drift SystemChanges for keys whose value differs from baseline.
 //     Type is "config_drift_<domain>"; Detail is "key: old → new".
 //   - newBaselines: entries for keys not yet in the baseline (first-ever-seen).
-//     The caller should persist these via store.SaveConfigBaseline.
+//     The caller should persist these via DaemonStore.SaveConfigBaseline.
 //
 // Keys present in the baseline but absent from live are silently ignored
 // (treat as "unknown", not "drift") — this respects the P4.1 graceful-skip
 // contract for optional kernel features.
 //
 // The baseline is NOT mutated on drift — the caller (P4.4) handles ack/update.
-func (d *ParamDriftDetector) Detect(live map[string]string, now time.Time) (changes []model.SystemChange, newBaselines []store.ConfigBaselineRow) {
+func (d *ParamDriftDetector) Detect(live map[string]string, now time.Time) (changes []model.SystemChange, newBaselines []ConfigBaselineRecord) {
 	for key, liveVal := range live {
 		entry, inBaseline := d.baseline[key]
 		if !inBaseline {
 			// First-ever-seen: record as new baseline, do not emit drift.
 			domain := d.domainFor(key)
-			newBaselines = append(newBaselines, store.ConfigBaselineRow{
+			newBaselines = append(newBaselines, ConfigBaselineRecord{
 				Key:       key,
 				Value:     liveVal,
 				Domain:    domain,

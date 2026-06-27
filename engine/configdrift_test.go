@@ -4,15 +4,13 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/ftahirops/xtop/store"
 )
 
 // TestParamDrift_ChangeDetectedAsDrift verifies the core drift case:
 // a key present in the baseline with a different live value → one SystemChange
 // with Type="config_drift_memory" and Detail containing the old→new transition.
 func TestParamDrift_ChangeDetectedAsDrift(t *testing.T) {
-	baseline := []store.ConfigBaselineRow{
+	baseline := []ConfigBaselineRecord{
 		{Key: "vm.swappiness", Value: "10", Domain: "memory", FirstSeen: time.Now(), Acked: false},
 	}
 	d := NewParamDriftDetector(baseline)
@@ -69,7 +67,7 @@ func TestParamDrift_FirstSeenKeyBecomesBaseline(t *testing.T) {
 // TestParamDrift_NoChangeWhenEqual verifies that no changes or new baselines
 // are produced when the live value matches the baseline value.
 func TestParamDrift_NoChangeWhenEqual(t *testing.T) {
-	baseline := []store.ConfigBaselineRow{
+	baseline := []ConfigBaselineRecord{
 		{Key: "vm.swappiness", Value: "60", Domain: "memory", FirstSeen: time.Now()},
 	}
 	d := NewParamDriftDetector(baseline)
@@ -89,7 +87,7 @@ func TestParamDrift_NoChangeWhenEqual(t *testing.T) {
 // but absent from the live snapshot does NOT produce a drift event.
 // (Kernel module not loaded, VM without cpufreq, etc. — treat as "unknown".)
 func TestParamDrift_AbsentKeyIgnored(t *testing.T) {
-	baseline := []store.ConfigBaselineRow{
+	baseline := []ConfigBaselineRecord{
 		{Key: "cpu.governor", Value: "performance", Domain: "cpu", FirstSeen: time.Now()},
 	}
 	d := NewParamDriftDetector(baseline)
@@ -108,7 +106,7 @@ func TestParamDrift_AbsentKeyIgnored(t *testing.T) {
 // TestParamDrift_DomainSetOnChange verifies the Domain field on SystemChange is
 // set correctly (maps to the configdrift.Keys registry domain).
 func TestParamDrift_DomainSetOnChange(t *testing.T) {
-	baseline := []store.ConfigBaselineRow{
+	baseline := []ConfigBaselineRecord{
 		{Key: "net.core.somaxconn", Value: "128", Domain: "network", FirstSeen: time.Now()},
 	}
 	d := NewParamDriftDetector(baseline)
@@ -130,7 +128,7 @@ func TestParamDrift_DomainSetOnChange(t *testing.T) {
 // TestParamDrift_BaselineNotMutatedOnDrift verifies that repeated calls to
 // Detect keep emitting drift (baseline is not auto-updated on change).
 func TestParamDrift_BaselineNotMutatedOnDrift(t *testing.T) {
-	baseline := []store.ConfigBaselineRow{
+	baseline := []ConfigBaselineRecord{
 		{Key: "vm.swappiness", Value: "10", Domain: "memory", FirstSeen: time.Now()},
 	}
 	d := NewParamDriftDetector(baseline)

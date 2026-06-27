@@ -2,19 +2,20 @@ package engine
 
 import (
 	"strings"
-
-	"github.com/ftahirops/xtop/store"
 )
 
 // TODO #1: bridge between in-memory Welford stores (Phase 4 app baselines,
-// Phase 5 drift trackers) and the SQLite store/ package.
+// Phase 5 drift trackers) and the DaemonStore persistence interface.
 //
 // Engine calls SaveBaselineState periodically and on Close; calls
 // LoadBaselineState once on startup before the first Tick.
+//
+// The DaemonStore interface (defined in persist_types.go) is implemented by
+// cmd/daemonwire.go (sqlite-backed). The agent passes nil — in-memory only.
 
 // dumpAppBaselineRows serializes the in-memory app baseline store into rows.
 // Locks the store internally; safe to call from any goroutine.
-func dumpAppBaselineRows(hist *History) []store.AppBaselineRow {
+func dumpAppBaselineRows(hist *History) []AppBaselineRecord {
 	if hist == nil {
 		return nil
 	}
@@ -30,7 +31,7 @@ func dumpAppBaselineRows(hist *History) []store.AppBaselineRow {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	rows := make([]store.AppBaselineRow, 0, len(s.buckets))
+	rows := make([]AppBaselineRecord, 0, len(s.buckets))
 	for key, b := range s.buckets {
 		// Key format: "app:<role>:<metric>:<how>" (see appKey).
 		parts := strings.SplitN(key, ":", 4)
@@ -38,11 +39,11 @@ func dumpAppBaselineRows(hist *History) []store.AppBaselineRow {
 			continue
 		}
 		var how int
-		// %03d format — fmt.Sscanf is fine here.
+		// %03d format — fmtSscanInt handles "039" style.
 		if _, err := fmtSscanInt(parts[3], &how); err != nil {
 			continue
 		}
-		rows = append(rows, store.AppBaselineRow{
+		rows = append(rows, AppBaselineRecord{
 			App:        parts[1],
 			Metric:     parts[2],
 			HourOfWeek: how,
@@ -55,9 +56,9 @@ func dumpAppBaselineRows(hist *History) []store.AppBaselineRow {
 }
 
 // loadAppBaselineRows seeds the in-memory app baseline store from rows
-// previously written to SQLite. Idempotent — overwrites any existing
-// in-memory state for keys present in `rows`.
-func loadAppBaselineRows(hist *History, rows []store.AppBaselineRow) {
+// previously written to the persistence backend. Idempotent — overwrites any
+// existing in-memory state for keys present in `rows`.
+func loadAppBaselineRows(hist *History, rows []AppBaselineRecord) {
 	if hist == nil || len(rows) == 0 {
 		return
 	}
@@ -72,8 +73,8 @@ func loadAppBaselineRows(hist *History, rows []store.AppBaselineRow) {
 	}
 }
 
-// dumpDriftRows serializes drift trackers into store rows.
-func dumpDriftRows(hist *History) []store.DriftTrackerRow {
+// dumpDriftRows serializes drift trackers into persistence rows.
+func dumpDriftRows(hist *History) []DriftTrackerRecord {
 	if hist == nil {
 		return nil
 	}
@@ -89,18 +90,18 @@ func dumpDriftRows(hist *History) []store.DriftTrackerRow {
 	ds.mu.Lock()
 	defer ds.mu.Unlock()
 
-	rows := make([]store.DriftTrackerRow, 0, len(ds.trackers)*3)
+	rows := make([]DriftTrackerRecord, 0, len(ds.trackers)*3)
 	for metric, t := range ds.trackers {
-		rows = append(rows, store.DriftTrackerRow{
+		rows = append(rows, DriftTrackerRecord{
 			Metric: metric, Window: "short",
 			Count: t.short.count, Mean: t.short.mean, M2: t.short.m2,
 		})
-		rows = append(rows, store.DriftTrackerRow{
+		rows = append(rows, DriftTrackerRecord{
 			Metric: metric, Window: "long",
 			Count: t.long.count, Mean: t.long.mean, M2: t.long.m2,
 		})
 		if t.refSet {
-			rows = append(rows, store.DriftTrackerRow{
+			rows = append(rows, DriftTrackerRecord{
 				Metric: metric, Window: "ref", RefSet: true,
 				Count: t.ref.count, Mean: t.ref.mean, M2: t.ref.m2,
 			})
@@ -110,7 +111,7 @@ func dumpDriftRows(hist *History) []store.DriftTrackerRow {
 }
 
 // loadDriftRows seeds drift trackers from previously persisted rows.
-func loadDriftRows(hist *History, rows []store.DriftTrackerRow) {
+func loadDriftRows(hist *History, rows []DriftTrackerRecord) {
 	if hist == nil || len(rows) == 0 {
 		return
 	}
@@ -138,7 +139,7 @@ func loadDriftRows(hist *History, rows []store.DriftTrackerRow) {
 // SaveBaselineState writes the in-memory Welford state for app baselines,
 // drift trackers, and pending kernel-param baselines to the supplied store.
 // Engine calls this periodically and on Close. Safe to call with nil store (no-op).
-func (e *Engine) SaveBaselineState(s *store.Store) error {
+func (e *Engine) SaveBaselineState(s DaemonStore) error {
 	if e == nil || s == nil || e.History == nil {
 		return nil
 	}
@@ -161,7 +162,7 @@ func (e *Engine) SaveBaselineState(s *store.Store) error {
 // LoadBaselineState reads previously persisted Welford state and seeds the
 // in-memory stores. Engine calls this once on startup, before the first
 // Tick. Safe with nil store (no-op).
-func (e *Engine) LoadBaselineState(s *store.Store) error {
+func (e *Engine) LoadBaselineState(s DaemonStore) error {
 	if e == nil || s == nil || e.History == nil {
 		return nil
 	}
@@ -188,8 +189,8 @@ func (e *Engine) LoadBaselineState(s *store.Store) error {
 	return nil
 }
 
-// fmtSscanInt is a tiny helper around fmt.Sscanf to parse "039" style keys.
-// Kept inline so the file stays in package engine without a fmt import bloat.
+// fmtSscanInt is a tiny helper to parse "039" style integer strings.
+// Kept inline so the file stays in package engine without a fmt import.
 func fmtSscanInt(s string, dst *int) (int, error) {
 	n := 0
 	sign := 1

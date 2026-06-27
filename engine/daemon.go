@@ -13,10 +13,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ftahirops/xtop/api"
 	"github.com/ftahirops/xtop/collector"
 	"github.com/ftahirops/xtop/model"
-	"github.com/ftahirops/xtop/store"
 )
 
 // DaemonConfig holds daemon-specific configuration.
@@ -31,6 +29,16 @@ type DaemonConfig struct {
 	// to the hub alongside its local event/summary writes.
 	Fleet   model.FleetAgentConfig
 	Version string // baked-in build version, passed to fleet heartbeats
+
+	// Persistence is the optional sqlite-backed store. When nil, incident
+	// storage and baseline persistence are disabled (in-memory only).
+	// The concrete implementation lives in cmd/daemonwire.go to keep
+	// modernc.org/sqlite out of the agent's import graph.
+	Persistence DaemonStore
+
+	// API is the optional Unix-socket API server. When nil, no API socket
+	// is exposed. The concrete implementation lives in cmd/daemonwire.go.
+	API DaemonAPIServer
 }
 
 // compactSummary is a minimal per-tick record for the rolling log.
@@ -118,25 +126,16 @@ func RunDaemon(cfg DaemonConfig) error {
 	eventWriter := NewEventLogWriter(filepath.Join(cfg.DataDir, "events.jsonl"))
 	summaryPath := filepath.Join(cfg.DataDir, "current.jsonl")
 
-	// SQLite incident store (fallback to JSONL-only if init fails)
-	dbPath := filepath.Join(cfg.DataDir, "incidents.db")
-	var db *store.Store
-	if st, err := store.Open(dbPath); err != nil {
-		log.Printf("SQLite init failed (JSONL fallback): %v", err)
-	} else if err := st.Migrate(); err != nil {
-		log.Printf("SQLite migrate failed (JSONL fallback): %v", err)
-		st.Close()
-	} else {
-		db = st
-		defer db.Close()
-		log.Printf("SQLite incident store: %s", dbPath)
+	// Use the injected persistence backend (nil = in-memory only / JSONL fallback).
+	db := cfg.Persistence
+	if db != nil {
+		log.Printf("daemon: persistence backend active")
 
-		// TODO #1: load persisted Welford state for app baselines + drift
-		// trackers before the first Tick. Save periodically + on shutdown.
+		// Load persisted Welford state before the first Tick.
 		if err := eng.LoadBaselineState(db); err != nil {
 			log.Printf("baseline state load: %v", err)
 		} else {
-			log.Printf("baseline state loaded from %s", dbPath)
+			log.Printf("baseline state loaded")
 		}
 		// Periodic save: every 10 min so a crash loses at most that.
 		go func() {
@@ -154,38 +153,29 @@ func RunDaemon(cfg DaemonConfig) error {
 			}
 		}()
 		// Best-effort flush on shutdown — defer order: SaveBaselineState
-		// runs before db.Close() because LIFO.
+		// runs before any db cleanup because LIFO.
 		defer func() {
 			if err := eng.SaveBaselineState(db); err != nil {
 				log.Printf("baseline state final save: %v", err)
 			}
 		}()
+	} else {
+		log.Printf("daemon: no persistence backend — JSONL fallback only")
 	}
 
 	// Enable multi-resolution buffer on the engine
 	eng.MultiRes = NewMultiResBuffer()
 
-	// Start Unix socket API server.
-	// NewServer binds the Unix listener synchronously before returning, so
-	// s.listener is fully initialised before the goroutine below starts.
-	// That means Close() is race-free: it can be called at any time
-	// (including via defer) without risking a nil-listener dereference or
-	// a double-bind race.
-	apiProvider := api.NewDaemonSnapshotProvider()
-	sockPath := api.DefaultSockPath()
-	apiSrv, err := api.NewServer(sockPath, apiProvider, db)
-	if err != nil {
-		log.Printf("API server init failed: %v", err)
-	} else {
+	// Start Unix socket API server if one was provided.
+	apiSrv := cfg.API
+	if apiSrv != nil {
 		go func() {
 			if err := apiSrv.Serve(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				// Only log genuinely unexpected errors; http.ErrServerClosed
-				// is the normal return when Close() shuts down the listener.
 				log.Printf("API server error: %v", err)
 			}
 		}()
 		defer apiSrv.Close()
-		log.Printf("API server listening on %s", sockPath)
+		log.Printf("API server active")
 	}
 
 	// Signal handling
@@ -221,7 +211,9 @@ func RunDaemon(cfg DaemonConfig) error {
 
 			// Update API snapshot provider
 			scores := ComputeImpactScores(snap, rates, result)
-			apiProvider.Update(snap, rates, result, scores)
+			if apiSrv != nil {
+				apiSrv.Update(snap, rates, result, scores)
+			}
 
 			// Event detection
 			detector.Process(snap, rates, result)
@@ -272,17 +264,16 @@ func RunDaemon(cfg DaemonConfig) error {
 						}
 					}
 
-					// SQLite: update incident with end time
+					// Persistence: update incident with end time + upsert fingerprint
 					if db != nil {
 						if err := db.UpdateIncident(evt.ID, evt); err != nil {
-							log.Printf("sqlite update incident: %v", err)
+							log.Printf("persist update incident: %v", err)
 						}
-						// Update fingerprint
 						fp := ComputeFingerprint(&evt, result)
-						fpRec := store.Fingerprint{
+						fpRec := IncidentFingerprint{
 							FP:          fp,
 							FirstSeen:   evt.StartTime,
-							LastSeen:     evt.EndTime,
+							LastSeen:    evt.EndTime,
 							Count:       1,
 							AvgDuration: evt.Duration,
 							SymptomType: evt.Bottleneck,
@@ -290,24 +281,23 @@ func RunDaemon(cfg DaemonConfig) error {
 							TopOffender: evt.CulpritProcess,
 						}
 						if err := db.UpsertFingerprint(fpRec); err != nil {
-							log.Printf("sqlite upsert fingerprint: %v", err)
+							log.Printf("persist upsert fingerprint: %v", err)
 						}
 					}
 				}
 				prevCompleted = len(completed)
 			}
 
-			// SQLite: insert active event (if any)
+			// Persistence: insert active event (if any)
 			if db != nil && active != nil && active.Active {
 				fp := ComputeFingerprint(active, result)
 				scores := ComputeImpactScores(snap, rates, result)
-				// Only insert if new (ignore duplicate key on subsequent ticks)
 				if err := db.InsertIncident(*active, fp, scores); err != nil {
 					log.Printf("WARNING: failed to insert incident: %v", err)
 				}
 			}
 
-			// SQLite: insert 10s aggregate (every 10th tick)
+			// Persistence: insert 10s aggregate (every 10th tick)
 			if db != nil && tickCount%10 == 0 {
 				memPctAgg := float64(0)
 				if snap.Global.Memory.Total > 0 {
@@ -322,7 +312,7 @@ func RunDaemon(cfg DaemonConfig) error {
 					topPID = result.PrimaryPID
 					topComm = primaryDisplayName(result)
 				}
-				agg := store.AggregateSample{
+				agg := DaemonAggregateSample{
 					Health:  result.Health.String(),
 					Score:   result.PrimaryScore,
 					CPUBusy: cpuBusyAgg,
@@ -332,7 +322,7 @@ func RunDaemon(cfg DaemonConfig) error {
 					TopComm: topComm,
 				}
 				if err := db.InsertAggregate(snap.Timestamp, agg); err != nil {
-					log.Printf("sqlite aggregate: %v", err)
+					log.Printf("persist aggregate: %v", err)
 				}
 			}
 
@@ -342,7 +332,7 @@ func RunDaemon(cfg DaemonConfig) error {
 				lastPruneDay = today
 				cutoff := snap.Timestamp.Add(-30 * 24 * time.Hour)
 				if n, err := db.Prune(cutoff); err != nil {
-					log.Printf("sqlite prune: %v", err)
+					log.Printf("persist prune: %v", err)
 				} else if n > 0 {
 					log.Printf("pruned %d old incidents", n)
 				}

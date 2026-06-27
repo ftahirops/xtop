@@ -452,6 +452,12 @@ func Run() error {
 		// path the foreground TUI takes below, just without instantiating
 		// the client outside RunDaemon's engine.
 		fleetCfg := resolveFleetAgentConfig(cfg.DataDir, fleetHub, fleetToken, fleetInsecure)
+
+		// Build sqlite persistence + API server outside the engine so that
+		// modernc.org/sqlite never enters the engine's import graph.
+		persistence, apiSrv, daemonCleanup := BuildDaemonBackends(cfg.DataDir)
+		defer daemonCleanup()
+
 		return engine.RunDaemon(engine.DaemonConfig{
 			DataDir:  cfg.DataDir,
 			Interval: cfg.Interval,
@@ -465,8 +471,10 @@ func Run() error {
 				TelegramBotToken: userCfg.Alerts.TelegramBotToken,
 				TelegramChatID:   userCfg.Alerts.TelegramChatID,
 			},
-			Fleet:   fleetCfg,
-			Version: Version,
+			Fleet:       fleetCfg,
+			Version:     Version,
+			Persistence: persistence,
+			API:         apiSrv,
 		})
 	}
 

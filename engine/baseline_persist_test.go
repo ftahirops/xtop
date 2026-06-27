@@ -3,23 +3,145 @@ package engine
 import (
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/ftahirops/xtop/model"
 	"github.com/ftahirops/xtop/store"
 )
+
+// testStoreAdapter wraps *store.Store to implement engine.DaemonStore for tests.
+// Lives here (package engine) to avoid importing cmd/ which would be circular.
+type testStoreAdapter struct {
+	s *store.Store
+}
+
+func (a *testStoreAdapter) SaveAppBaselines(rows []AppBaselineRecord) error {
+	sr := make([]store.AppBaselineRow, len(rows))
+	for i, r := range rows {
+		sr[i] = store.AppBaselineRow{
+			App:        r.App,
+			Metric:     r.Metric,
+			HourOfWeek: r.HourOfWeek,
+			Count:      r.Count,
+			Mean:       r.Mean,
+			M2:         r.M2,
+		}
+	}
+	return a.s.SaveAppBaselines(sr)
+}
+
+func (a *testStoreAdapter) LoadAppBaselines() ([]AppBaselineRecord, error) {
+	rows, err := a.s.LoadAppBaselines()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]AppBaselineRecord, len(rows))
+	for i, r := range rows {
+		out[i] = AppBaselineRecord{
+			App:        r.App,
+			Metric:     r.Metric,
+			HourOfWeek: r.HourOfWeek,
+			Count:      r.Count,
+			Mean:       r.Mean,
+			M2:         r.M2,
+		}
+	}
+	return out, nil
+}
+
+func (a *testStoreAdapter) SaveDriftTrackers(rows []DriftTrackerRecord) error {
+	sr := make([]store.DriftTrackerRow, len(rows))
+	for i, r := range rows {
+		sr[i] = store.DriftTrackerRow{
+			Metric: r.Metric,
+			Window: r.Window,
+			Count:  r.Count,
+			Mean:   r.Mean,
+			M2:     r.M2,
+			RefSet: r.RefSet,
+		}
+	}
+	return a.s.SaveDriftTrackers(sr)
+}
+
+func (a *testStoreAdapter) LoadDriftTrackers() ([]DriftTrackerRecord, error) {
+	rows, err := a.s.LoadDriftTrackers()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]DriftTrackerRecord, len(rows))
+	for i, r := range rows {
+		out[i] = DriftTrackerRecord{
+			Metric: r.Metric,
+			Window: r.Window,
+			Count:  r.Count,
+			Mean:   r.Mean,
+			M2:     r.M2,
+			RefSet: r.RefSet,
+		}
+	}
+	return out, nil
+}
+
+func (a *testStoreAdapter) SaveConfigBaseline(rows []ConfigBaselineRecord) error {
+	sr := make([]store.ConfigBaselineRow, len(rows))
+	for i, r := range rows {
+		sr[i] = store.ConfigBaselineRow{
+			Key:       r.Key,
+			Value:     r.Value,
+			Domain:    r.Domain,
+			FirstSeen: r.FirstSeen,
+			Acked:     r.Acked,
+		}
+	}
+	return a.s.SaveConfigBaseline(sr)
+}
+
+func (a *testStoreAdapter) LoadConfigBaseline() ([]ConfigBaselineRecord, error) {
+	rows, err := a.s.LoadConfigBaseline()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ConfigBaselineRecord, len(rows))
+	for i, r := range rows {
+		out[i] = ConfigBaselineRecord{
+			Key:       r.Key,
+			Value:     r.Value,
+			Domain:    r.Domain,
+			FirstSeen: r.FirstSeen,
+			Acked:     r.Acked,
+		}
+	}
+	return out, nil
+}
+
+// Stub out incident operations — not exercised by baseline persistence tests.
+func (a *testStoreAdapter) InsertIncident(e model.Event, fp string, offenders []model.ImpactScore) error {
+	return nil
+}
+func (a *testStoreAdapter) UpdateIncident(id string, e model.Event) error { return nil }
+func (a *testStoreAdapter) InsertAggregate(ts time.Time, agg DaemonAggregateSample) error {
+	return nil
+}
+func (a *testStoreAdapter) UpsertFingerprint(fp IncidentFingerprint) error { return nil }
+func (a *testStoreAdapter) Prune(cutoff time.Time) (int, error)            { return 0, nil }
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 // TestBaselinePersist_Roundtrip: in-memory state persisted to SQLite then
 // loaded back into a fresh History reproduces the same Welford values.
 func TestBaselinePersist_Roundtrip(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
-	s, err := store.Open(dbPath)
+	raw, err := store.Open(dbPath)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer s.Close()
-	if err := s.Migrate(); err != nil {
+	defer raw.Close()
+	if err := raw.Migrate(); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
+	s := &testStoreAdapter{s: raw}
 
 	hist1 := NewHistory(10, 3)
 	bs1 := getAppBaselineStore(hist1)

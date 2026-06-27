@@ -22,7 +22,6 @@ import (
 	rt "github.com/ftahirops/xtop/collector/runtime"
 	"github.com/ftahirops/xtop/config"
 	"github.com/ftahirops/xtop/model"
-	"github.com/ftahirops/xtop/store"
 )
 
 // Engine orchestrates collection, analysis, and scoring.
@@ -96,7 +95,7 @@ type Engine struct {
 	tickCount          int // monotonic counter; used for 30-tick param-drift cadence
 	// pendingParamBaselines accumulates first-ever-seen keys returned by
 	// paramDriftDetector.Detect until SaveBaselineState flushes them to SQLite.
-	pendingParamBaselines []store.ConfigBaselineRow
+	pendingParamBaselines []ConfigBaselineRecord
 }
 
 // NewEngine creates a new engine with all collectors registered.

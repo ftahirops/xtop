@@ -8,8 +8,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/ftahirops/xtop/store"
 )
 
 // TestConfigDriftWire_TickTriggersDetection verifies that when the
@@ -23,7 +21,7 @@ func TestConfigDriftWire_TickTriggersDetection(t *testing.T) {
 	defer eng.Close()
 
 	// Seed the detector with a known baseline for vm.swappiness = "60".
-	eng.paramDriftDetector = NewParamDriftDetector([]store.ConfigBaselineRow{
+	eng.paramDriftDetector = NewParamDriftDetector([]ConfigBaselineRecord{
 		{Key: "vm.swappiness", Value: "60", Domain: "memory", FirstSeen: time.Now()},
 	})
 
@@ -73,7 +71,7 @@ func TestConfigDriftWire_FlagOff(t *testing.T) {
 	eng := NewEngine(10, 1)
 	defer eng.Close()
 
-	eng.paramDriftDetector = NewParamDriftDetector([]store.ConfigBaselineRow{
+	eng.paramDriftDetector = NewParamDriftDetector([]ConfigBaselineRecord{
 		{Key: "vm.swappiness", Value: "60", Domain: "memory", FirstSeen: time.Now()},
 	})
 
