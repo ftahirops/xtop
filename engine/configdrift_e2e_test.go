@@ -169,7 +169,8 @@ func TestConfigDriftE2E_FullPipeline(t *testing.T) {
 
 	// -----------------------------------------------------------------------
 	// Assertion (c): Narrative.Evidence contains SUGGESTED remediation hint
-	//   naming the key, the old value, and "sysctl".
+	//   naming the key, the old value (10), the new value (60), and "sysctl".
+	//   The hint must convey the drift: old → new.
 	// -----------------------------------------------------------------------
 	if result.Narrative == nil {
 		t.Fatal("Narrative is nil after correlateConfigDrift — SUGGESTED hint not appended")
@@ -179,13 +180,14 @@ func TestConfigDriftE2E_FullPipeline(t *testing.T) {
 		if strings.HasPrefix(ev, "SUGGESTED:") &&
 			strings.Contains(ev, "vm.swappiness") &&
 			strings.Contains(ev, "10") && // old value
+			strings.Contains(ev, "60") && // new value — drift conveyance
 			strings.Contains(ev, "sysctl") {
 			foundSuggestion = true
 			break
 		}
 	}
 	if !foundSuggestion {
-		t.Errorf("expected SUGGESTED remediation in Narrative.Evidence; got: %v", result.Narrative.Evidence)
+		t.Errorf("expected SUGGESTED remediation with old→new drift in Narrative.Evidence; got: %v", result.Narrative.Evidence)
 	}
 
 	// -----------------------------------------------------------------------
@@ -298,6 +300,78 @@ func TestConfigDriftE2E_FlagOff(t *testing.T) {
 			if f.Kind == model.FactKindConfigChange {
 				t.Errorf("unexpected FactKindConfigChange Fact when flag=off: %+v", f)
 			}
+		}
+	}
+}
+
+// TestConfigDriftE2E_ThroughTickEnabled verifies that the Tick() pipeline
+// properly drives config-drift detection through the full path when
+// configDriftEnabled=true. This exercises the wiring:
+// Tick → (every 30 ticks) configSnapshotFn → Detect → correlateConfigDrift.
+//
+// Complement to TestConfigDriftE2E_FlagOff which verifies the flag-off path
+// through Tick. This ensures the positive (flag-on) Tick path is covered.
+func TestConfigDriftE2E_ThroughTickEnabled(t *testing.T) {
+	t.Parallel()
+
+	eng := NewEngine(10, 1)
+	defer eng.Close()
+
+	eng.paramDriftDetector = NewParamDriftDetector([]ConfigBaselineRecord{
+		{Key: "vm.swappiness", Value: "10", Domain: "memory", FirstSeen: time.Now()},
+	})
+
+	snapshotCalled := 0
+	eng.configSnapshotFn = func() (map[string]string, error) {
+		snapshotCalled++
+		return map[string]string{"vm.swappiness": "60"}, nil
+	}
+	eng.configDriftEnabled = true // FLAG ON
+
+	// Force tick count to trigger the 30-tick check window.
+	eng.tickCount = 29
+	eng.Tick()
+	eng.tickCount = 29
+	_, _, result := eng.Tick()
+
+	// Snapshot fn must be called at least once when flag is on.
+	if snapshotCalled < 1 {
+		t.Errorf("configSnapshotFn must be called when configDriftEnabled=true; called %d times", snapshotCalled)
+	}
+
+	// Config-drift SystemChange and FactKindConfigChange must appear when flag is on.
+	if result != nil {
+		var foundConfigDriftChange bool
+		var foundConfigDriftFact bool
+
+		for _, ch := range result.Changes {
+			if strings.HasPrefix(ch.Type, "config_drift_") {
+				foundConfigDriftChange = true
+				if !strings.Contains(ch.Detail, "vm.swappiness") ||
+					!strings.Contains(ch.Detail, "10") ||
+					!strings.Contains(ch.Detail, "60") {
+					t.Errorf("config_drift change Detail should contain key and old→new values, got %q", ch.Detail)
+				}
+				break
+			}
+		}
+		if !foundConfigDriftChange {
+			t.Errorf("expected config_drift_* Change when flag=on; got changes: %+v", result.Changes)
+		}
+
+		for _, f := range result.Facts {
+			if f.Kind == model.FactKindConfigChange && f.Source == "config" {
+				foundConfigDriftFact = true
+				if f.Tags["key"] != "vm.swappiness" ||
+					f.Tags["old"] != "10" ||
+					f.Tags["new"] != "60" {
+					t.Errorf("config_drift Fact tags incorrect: %+v", f.Tags)
+				}
+				break
+			}
+		}
+		if !foundConfigDriftFact {
+			t.Errorf("expected FactKindConfigChange Fact with Source=\"config\" when flag=on; got facts: %+v", result.Facts)
 		}
 	}
 }

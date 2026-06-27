@@ -509,8 +509,6 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History, 
 			learner = hist.CausalLearner
 		}
 		// Resolve causal graph: prefer the engine's per-instance graph,
-		// fall back to the package global for nil-engine callers (tests).
-		// Resolve causal graph: prefer the engine's per-instance graph,
 		// fall back to the package atomic global for nil-engine callers.
 		causal := atomicCausalGraph.Load()
 		if e != nil && e.probabilisticCausalGraph != nil {

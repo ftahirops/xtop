@@ -289,8 +289,8 @@ func correlateConfigDrift(result *model.AnalysisResult, changes []model.SystemCh
 			// Surface a suggested (never applied) remediation in the narrative
 			// when this drift is the primary or a contributing bottleneck.
 			if result.Narrative != nil {
-				key, oldVal, _ := parseDetailParts(rd.ch.Detail)
-				if hint := suggestedRemediation(key, oldVal); hint != "" {
+				key, oldVal, newVal := parseDetailParts(rd.ch.Detail)
+				if hint := suggestedRemediation(key, oldVal, newVal); hint != "" {
 					result.Narrative.Evidence = append(
 						result.Narrative.Evidence,
 						"SUGGESTED: "+hint,

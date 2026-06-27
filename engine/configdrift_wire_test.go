@@ -109,27 +109,28 @@ func TestSuggestedRemediation(t *testing.T) {
 	cases := []struct {
 		key        string
 		oldVal     string
+		newVal     string
 		wantSysctl bool
 		wantKey    bool
 	}{
-		{"vm.swappiness", "60", true, true},
-		{"net.core.somaxconn", "128", true, true},
-		{"kernel.pid_max", "32768", true, true},
-		{"vm.overcommit_memory", "0", true, true},
-		{"unknown.param", "42", false, true},
+		{"vm.swappiness", "60", "10", true, true},
+		{"net.core.somaxconn", "128", "4096", true, true},
+		{"kernel.pid_max", "32768", "65536", true, true},
+		{"vm.overcommit_memory", "0", "1", true, true},
+		{"unknown.param", "42", "99", false, true},
 	}
 
 	for _, tc := range cases {
-		got := suggestedRemediation(tc.key, tc.oldVal)
+		got := suggestedRemediation(tc.key, tc.oldVal, tc.newVal)
 		if got == "" {
-			t.Errorf("suggestedRemediation(%q, %q) returned empty string", tc.key, tc.oldVal)
+			t.Errorf("suggestedRemediation(%q, %q, %q) returned empty string", tc.key, tc.oldVal, tc.newVal)
 			continue
 		}
 		if tc.wantSysctl && !strings.Contains(got, "sysctl") {
-			t.Errorf("suggestedRemediation(%q, %q) = %q — expected to contain 'sysctl'", tc.key, tc.oldVal, got)
+			t.Errorf("suggestedRemediation(%q, %q, %q) = %q — expected to contain 'sysctl'", tc.key, tc.oldVal, tc.newVal, got)
 		}
 		if tc.wantKey && !strings.Contains(got, tc.key) {
-			t.Errorf("suggestedRemediation(%q, %q) = %q — expected to contain key name", tc.key, tc.oldVal, got)
+			t.Errorf("suggestedRemediation(%q, %q, %q) = %q — expected to contain key name", tc.key, tc.oldVal, tc.newVal, got)
 		}
 	}
 }
