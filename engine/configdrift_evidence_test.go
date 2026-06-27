@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"strings"
 	"testing"
 	"time"
 
@@ -202,6 +201,13 @@ func TestCorrelateConfigDrift_MemoryDriftBoostsMemoryAnomaly(t *testing.T) {
 		t.Errorf("expected score boost: got %d, original was %d", result.RCA[0].Score, origScore)
 	}
 
+	// PrimaryScore must be kept in sync with the boosted RCA entry score because
+	// the entry's Bottleneck matches the PrimaryBottleneck.
+	if result.PrimaryScore != result.RCA[0].Score {
+		t.Errorf("PrimaryScore = %d, want %d (should mirror boosted RCA entry)",
+			result.PrimaryScore, result.RCA[0].Score)
+	}
+
 	// Verify a config-change fact was attached to the host-level facts.
 	foundFact := false
 	for _, f := range result.Facts {
@@ -293,27 +299,63 @@ func TestCorrelateConfigDrift_NoActiveAnomaly(t *testing.T) {
 
 // TestInjectConfigDriftEvidence_TagsParsedFromDetail ensures the old/new
 // values are correctly extracted from the "key: old → new" detail string.
+// Uses EXACT equality so a stray leading byte (e.g. from an off-by-N UTF-8
+// slice) causes a clear failure rather than a silent pass.
 func TestInjectConfigDriftEvidence_TagsParsedFromDetail(t *testing.T) {
 	now := time.Now()
-	changes := []model.SystemChange{
+
+	cases := []struct {
+		detail  string
+		wantKey string
+		wantOld string
+		wantNew string
+	}{
 		{
-			Type:   "config_drift_memory",
-			Detail: "vm.swappiness: 60 → 100",
-			Domain: "memory",
-			When:   now,
+			detail:  "vm.swappiness: 60 → 100",
+			wantKey: "vm.swappiness",
+			wantOld: "60",
+			wantNew: "100",
+		},
+		{
+			detail:  "net.core.somaxconn: 128 → 4096",
+			wantKey: "net.core.somaxconn",
+			wantOld: "128",
+			wantNew: "4096",
+		},
+		{
+			detail:  "cpu.governor: powersave -> performance",
+			wantKey: "cpu.governor",
+			wantOld: "powersave",
+			wantNew: "performance",
 		},
 	}
 
-	facts := InjectConfigDriftEvidence(nil, changes, now)
-	if len(facts) != 1 {
-		t.Fatalf("expected 1 fact")
-	}
-	f := facts[0]
+	for _, tc := range cases {
+		t.Run(tc.detail, func(t *testing.T) {
+			changes := []model.SystemChange{
+				{
+					Type:   "config_drift_memory",
+					Detail: tc.detail,
+					Domain: "memory",
+					When:   now,
+				},
+			}
 
-	if !strings.Contains(f.Tags["old"], "60") {
-		t.Errorf("Tags[old] = %q, want to contain \"60\"", f.Tags["old"])
-	}
-	if !strings.Contains(f.Tags["new"], "100") {
-		t.Errorf("Tags[new] = %q, want to contain \"100\"", f.Tags["new"])
+			facts := InjectConfigDriftEvidence(nil, changes, now)
+			if len(facts) != 1 {
+				t.Fatalf("expected 1 fact, got %d", len(facts))
+			}
+			f := facts[0]
+
+			if f.Tags["key"] != tc.wantKey {
+				t.Errorf("Tags[key] = %q, want %q", f.Tags["key"], tc.wantKey)
+			}
+			if f.Tags["old"] != tc.wantOld {
+				t.Errorf("Tags[old] = %q, want exactly %q", f.Tags["old"], tc.wantOld)
+			}
+			if f.Tags["new"] != tc.wantNew {
+				t.Errorf("Tags[new] = %q, want exactly %q", f.Tags["new"], tc.wantNew)
+			}
+		})
 	}
 }

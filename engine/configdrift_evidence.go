@@ -67,6 +67,14 @@ func bottleneckDomain(bottleneck string) model.Domain {
 	}
 }
 
+// Separator constants for parseDetailParts. arrowUnicode is U+2192 (→) which
+// encodes to 3 bytes in UTF-8, making the full token " → " 5 bytes — NOT 3.
+// Using len(sep) in the slice avoids off-by-N bugs when the rune width changes.
+const (
+	arrowUnicode = " → " // 5 bytes: 0x20 0xE2 0x86 0x92 0x20
+	arrowASCII   = " -> " // 4 bytes
+)
+
 // parseDetailParts splits a Detail string of the form "key: old → new" into
 // (key, old, new). Falls back gracefully when the format is unexpected.
 func parseDetailParts(detail string) (key, oldVal, newVal string) {
@@ -78,17 +86,16 @@ func parseDetailParts(detail string) (key, oldVal, newVal string) {
 	key = strings.TrimSpace(detail[:colonIdx])
 	rest := strings.TrimSpace(detail[colonIdx+2:])
 
-	// Arrow can be "→" (UTF-8) or "->" (ASCII fallback)
-	arrowIdx := strings.Index(rest, " → ")
-	if arrowIdx >= 0 {
+	// Arrow can be "→" (UTF-8, 5-byte token) or "->" (ASCII fallback, 4-byte token).
+	// Advance by len(sep) so the slice never lands mid-rune.
+	if arrowIdx := strings.Index(rest, arrowUnicode); arrowIdx >= 0 {
 		oldVal = strings.TrimSpace(rest[:arrowIdx])
-		newVal = strings.TrimSpace(rest[arrowIdx+3:])
+		newVal = strings.TrimSpace(rest[arrowIdx+len(arrowUnicode):])
 		return
 	}
-	arrowIdx = strings.Index(rest, " -> ")
-	if arrowIdx >= 0 {
+	if arrowIdx := strings.Index(rest, arrowASCII); arrowIdx >= 0 {
 		oldVal = strings.TrimSpace(rest[:arrowIdx])
-		newVal = strings.TrimSpace(rest[arrowIdx+4:])
+		newVal = strings.TrimSpace(rest[arrowIdx+len(arrowASCII):])
 		return
 	}
 	// Can't split — leave old/new empty
@@ -122,8 +129,9 @@ func InjectConfigDriftEvidence(
 	}
 
 	const (
-		driftConfidence  = 0.6 // derived/interpreted per FactConfidence rubric
-		driftWarnThresh  = 1.0 // any drift event is at least warn
+		driftConfidence        = 0.6 // derived/interpreted per FactConfidence rubric
+		driftUnknownConfidence = 0.3 // lower confidence when domain can't be routed
+		driftPresenceValue     = 1.0 // presence magnitude (dimensionless)
 	)
 
 	var facts []model.Fact
@@ -133,10 +141,11 @@ func InjectConfigDriftEvidence(
 			continue
 		}
 
-		dom, ok := driftDomainToModel(ch.Domain)
-		if !ok {
+		dom, knownDomain := driftDomainToModel(ch.Domain)
+		if !knownDomain {
 			// Unknown domain — emit as DomainProcess to land in verifier rather
-			// than being silently lost. Low confidence because we can't route it.
+			// than being silently lost. Confidence is lower because we can't
+			// route the domain and it is therefore weaker RCA evidence.
 			dom = model.DomainProcess
 		}
 
@@ -160,14 +169,19 @@ func InjectConfigDriftEvidence(
 			"domain": ch.Domain,
 		}
 
+		conf := driftConfidence
+		if !knownDomain {
+			conf = driftUnknownConfidence
+		}
+
 		f := buildFactScoped(
 			id,
 			key,
 			dom,
-			1.0,             // Value: presence magnitude
-			"",              // Unit: dimensionless
-			driftWarnThresh, // warnThreshold: any drift ≥ warn
-			driftConfidence,
+			driftPresenceValue, // Value: presence magnitude (dimensionless)
+			"",                 // Unit: dimensionless
+			driftPresenceValue, // warnThreshold: any drift event is ≥ warn
+			conf,
 			ts,
 			"config",
 			"host",
