@@ -5,10 +5,16 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 )
+
+// maxKubepodsEntries is the upper bound on the number of entries the kubepods
+// cache may hold. When exceeded, expired entries are purged first; if still
+// over, the oldest entries are evicted.
+const maxKubepodsEntries = 2048
 
 // KubepodsResolver maps cgroup paths under kubepods.slice (or the v1
 // equivalent) to their pod identity (namespace, name, container, QoS class).
@@ -20,7 +26,8 @@ import (
 //  2. If the pod directory under /var/log/pods/<ns>_<name>_<uid>/ exists,
 //     upgrade the raw pod UID to a human-readable namespace/name/container.
 //  3. Results cached for 30 s so repeated lookups during a tick don't stat
-//     the filesystem for every process.
+//     the filesystem for every process. Cache is bounded by TTL expiration
+//     and a hard cap; oldest entries are evicted on overflow.
 type KubepodsResolver struct {
 	mu       sync.RWMutex
 	cache    map[string]PodIdentity
@@ -73,8 +80,48 @@ func (r *KubepodsResolver) Resolve(cgroupPath string) PodIdentity {
 	r.mu.Lock()
 	r.cache[cgroupPath] = id
 	r.cachedAt[cgroupPath] = time.Now()
+	r.pruneIfNeeded()
 	r.mu.Unlock()
 	return id
+}
+
+// pruneIfNeeded must be called under r.mu.Lock (write lock).
+// It is a no-op when len(r.cache) <= maxKubepodsEntries.
+// First pass: removes entries whose TTL has expired.
+// Second pass: if still over cap, evicts the oldest entries (earliest cachedAt)
+// in one sorted pass to avoid O(n^2) map iteration. Both cache and cachedAt
+// maps are kept consistent.
+func (r *KubepodsResolver) pruneIfNeeded() {
+	if len(r.cache) <= maxKubepodsEntries {
+		return
+	}
+	// First pass: remove entries whose TTL has expired.
+	now := time.Now()
+	for k, t := range r.cachedAt {
+		if now.Sub(t) >= r.ttl {
+			delete(r.cache, k)
+			delete(r.cachedAt, k)
+		}
+	}
+	// Second pass: if still over cap, evict the oldest entries (earliest cachedAt)
+	// in one sorted pass to avoid O(n^2) map iteration.
+	if excess := len(r.cache) - maxKubepodsEntries; excess > 0 {
+		type kv struct {
+			key      string
+			cachedAt time.Time
+		}
+		pairs := make([]kv, 0, len(r.cache))
+		for k, t := range r.cachedAt {
+			pairs = append(pairs, kv{k, t})
+		}
+		sort.Slice(pairs, func(i, j int) bool {
+			return pairs[i].cachedAt.Before(pairs[j].cachedAt)
+		})
+		for _, p := range pairs[:excess] {
+			delete(r.cache, p.key)
+			delete(r.cachedAt, p.key)
+		}
+	}
 }
 
 // Empty reports whether the resolver produced no identifying data.
