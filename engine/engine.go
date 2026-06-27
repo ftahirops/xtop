@@ -14,6 +14,7 @@ import (
 	"github.com/ftahirops/xtop/collector"
 	"github.com/ftahirops/xtop/collector/apps"
 	cgcollector "github.com/ftahirops/xtop/collector/cgroup"
+	"github.com/ftahirops/xtop/collector/configdrift"
 	bpf "github.com/ftahirops/xtop/collector/ebpf"
 	"github.com/ftahirops/xtop/collector/journal"
 	"github.com/ftahirops/xtop/collector/phpfpm"
@@ -21,6 +22,7 @@ import (
 	rt "github.com/ftahirops/xtop/collector/runtime"
 	"github.com/ftahirops/xtop/config"
 	"github.com/ftahirops/xtop/model"
+	"github.com/ftahirops/xtop/store"
 )
 
 // Engine orchestrates collection, analysis, and scoring.
@@ -84,6 +86,17 @@ type Engine struct {
 	journalQueryFn JournalQueryFn
 	// journalCache holds per-unit journal findings for the 30s TTL cache.
 	journalCache *journalTier1Cache
+
+	// P4.5: kernel-parameter drift detection (sysctl / /proc/sys).
+	// configSnapshotFn is injectable so tests can stub the live snapshot.
+	// Defaults to collector/configdrift.Snapshot (reads /proc/sys, /sys).
+	configSnapshotFn   func() (map[string]string, error)
+	configDriftEnabled bool
+	paramDriftDetector *ParamDriftDetector
+	tickCount          int // monotonic counter; used for 30-tick param-drift cadence
+	// pendingParamBaselines accumulates first-ever-seen keys returned by
+	// paramDriftDetector.Detect until SaveBaselineState flushes them to SQLite.
+	pendingParamBaselines []store.ConfigBaselineRow
 }
 
 // NewEngine creates a new engine with all collectors registered.
@@ -221,6 +234,12 @@ func NewEngineMode(historySize, intervalSec int, mode collector.Mode) *Engine {
 		memReliefQuit:    make(chan struct{}),
 		journalQueryFn:   journal.Query,
 		journalCache:     newJournalTier1Cache(),
+		// P4.5: kernel-parameter drift detector.
+		// Starts with empty baseline; LoadBaselineState seeds it from SQLite.
+		// configSnapshotFn is the live reader — injectable for tests.
+		configSnapshotFn:   func() (map[string]string, error) { return configdrift.Snapshot() },
+		configDriftEnabled: true,
+		paramDriftDetector: NewParamDriftDetector(nil),
 	}
 	// Initialize RCA thresholds to compiled-in defaults. Callers may
 	// override via ApplyRCAThresholds after construction.
@@ -564,6 +583,29 @@ func (e *Engine) Tick() (*model.Snapshot, *model.RateSnapshot, *model.AnalysisRe
 			}
 		}
 
+		// P4.5 — kernel-parameter drift (sysctl / /proc/sys).
+		// Runs every 30 ticks (~30 s at 1 Hz). Best-effort: panics are
+		// recovered so a bad Snapshot() never aborts the tick.
+		e.tickCount++
+		if e.configDriftEnabled && e.paramDriftDetector != nil && e.tickCount%30 == 0 {
+			func() {
+				defer func() { recover() }() //nolint:errcheck
+				live, err := e.configSnapshotFn()
+				if err != nil || len(live) == 0 {
+					return
+				}
+				now := time.Now()
+				changes, newBaselines := e.paramDriftDetector.Detect(live, now)
+				if len(newBaselines) > 0 {
+					// Stage for the next SaveBaselineState flush.
+					e.pendingParamBaselines = append(e.pendingParamBaselines, newBaselines...)
+				}
+				if len(changes) > 0 && result != nil {
+					result.Changes = append(result.Changes, changes...)
+				}
+			}()
+		}
+
 		// Phase 4.4 — config-drift onset correlation: if any config_drift_*
 		// changes are recent (within driftCorrelationWindow) and share a
 		// domain with the active bottleneck, boost that candidate's score
@@ -850,6 +892,12 @@ func (e *Engine) Calibrator() *ConfidenceCalibrator { return e.calibrator }
 // full markdown body for a matched runbook (which isn't carried on the
 // AnalysisResult to keep it small).
 func (e *Engine) Runbooks() *RunbookLibrary { return e.runbooks }
+
+// SetConfigDriftEnabled enables or disables the kernel-parameter drift
+// detector (--config-drift flag). Default is true (enabled).
+func (e *Engine) SetConfigDriftEnabled(enabled bool) {
+	e.configDriftEnabled = enabled
+}
 
 // AttachFleetClient wires a fleet push client into the engine. Called once at
 // startup by cmd/root.go when --fleet-hub is configured. Hostname and version

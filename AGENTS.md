@@ -109,6 +109,48 @@ xtop classifies systemd journal errors into structured findings at two tiers:
 
 Journal findings do not yet flow through the fleet heartbeat/incident payload (`model.FleetHeartbeat`, `model.FleetIncident`). Surfacing them in the fleet web dashboard requires extending those structs — deferred to a follow-up task.
 
+## Config-Drift RCA feature
+
+xtop detects kernel-parameter drift — changes to sysctl / `/proc/sys` / `/sys` values that deviate from a persisted baseline — and surfaces them as RCA evidence.
+
+### What is monitored (curated keys — `collector/configdrift/keys.go`)
+
+| Key | Domain | Path |
+|---|---|---|
+| `vm.swappiness` | memory | `/proc/sys/vm/swappiness` |
+| `vm.overcommit_memory` | memory | `/proc/sys/vm/overcommit_memory` |
+| `vm.dirty_ratio` | memory | `/proc/sys/vm/dirty_ratio` |
+| `vm.max_map_count` | memory | `/proc/sys/vm/max_map_count` |
+| `thp.enabled` | memory | `/sys/kernel/mm/transparent_hugepage/enabled` |
+| `net.core.somaxconn` | network | `/proc/sys/net/core/somaxconn` |
+| `net.ipv4.tcp_tw_reuse` | network | `/proc/sys/net/ipv4/tcp_tw_reuse` |
+| `net.ipv4.ip_local_port_range` | network | `/proc/sys/net/ipv4/ip_local_port_range` |
+| `net.netfilter.nf_conntrack_max` | network | `/proc/sys/net/netfilter/nf_conntrack_max` |
+| `cpu.governor` | cpu | `/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor` |
+
+### Architecture
+
+| Layer | File | Responsibility |
+|---|---|---|
+| Collector | `collector/configdrift/snapshot.go` | Read curated keys from `/proc/sys`, `/sys` |
+| Detector | `engine/configdrift.go` | `ParamDriftDetector.Detect()` — compare live vs baseline |
+| Evidence | `engine/configdrift_evidence.go` | `correlateConfigDrift`, `InjectConfigDriftEvidence` |
+| Remediation | `engine/configdrift_remediation.go` | `suggestedRemediation()` — text-only suggestion strings |
+| Persistence | `store/store.go` | `SaveConfigBaseline`/`LoadConfigBaseline` (SQLite) |
+| Engine wiring | `engine/engine.go` | Every 30 ticks (~30 s at 1 Hz); seeded from store at startup |
+
+### `--config-drift` flag
+
+`--config-drift=on|off` (default: `on`) — enables/disables the kernel-param drift detector.
+
+### Detect + explain, never auto-remediate
+
+**xtop NEVER writes to `/proc/sys`, `/sys`, invokes `sysctl`, or modifies any unit file.**
+`suggestedRemediation(key, oldVal)` returns a plain text string (`"sysctl -w vm.swappiness=60"`)
+that is surfaced in the narrative as `SUGGESTED: …`. The user decides whether and how to act on it.
+This is enforced by `TestSuggestedRemediationNoWrite` which grep-asserts no `os.WriteFile` /
+`os.OpenFile` calls exist in the configdrift packages.
+
 ## Logging convention
 
 | Package | Logger |

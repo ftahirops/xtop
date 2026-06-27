@@ -135,9 +135,9 @@ func loadDriftRows(hist *History, rows []store.DriftTrackerRow) {
 	}
 }
 
-// SaveBaselineState writes the in-memory Welford state for app baselines
-// and drift trackers to the supplied store. Engine calls this periodically
-// and on Close. Safe to call with nil store (no-op).
+// SaveBaselineState writes the in-memory Welford state for app baselines,
+// drift trackers, and pending kernel-param baselines to the supplied store.
+// Engine calls this periodically and on Close. Safe to call with nil store (no-op).
 func (e *Engine) SaveBaselineState(s *store.Store) error {
 	if e == nil || s == nil || e.History == nil {
 		return nil
@@ -145,7 +145,17 @@ func (e *Engine) SaveBaselineState(s *store.Store) error {
 	if err := s.SaveAppBaselines(dumpAppBaselineRows(e.History)); err != nil {
 		return err
 	}
-	return s.SaveDriftTrackers(dumpDriftRows(e.History))
+	if err := s.SaveDriftTrackers(dumpDriftRows(e.History)); err != nil {
+		return err
+	}
+	// Flush pending kernel-param baselines accumulated by paramDriftDetector.
+	if len(e.pendingParamBaselines) > 0 {
+		if err := s.SaveConfigBaseline(e.pendingParamBaselines); err != nil {
+			return err
+		}
+		e.pendingParamBaselines = e.pendingParamBaselines[:0]
+	}
+	return nil
 }
 
 // LoadBaselineState reads previously persisted Welford state and seeds the
@@ -166,6 +176,15 @@ func (e *Engine) LoadBaselineState(s *store.Store) error {
 		return err
 	}
 	loadDriftRows(e.History, drifts)
+
+	// Seed kernel-param drift detector from persisted baselines.
+	// Errors are non-fatal — a missing table (first run) just means
+	// the detector starts with an empty baseline.
+	if e.paramDriftDetector != nil {
+		if rows, err := s.LoadConfigBaseline(); err == nil && len(rows) > 0 {
+			e.paramDriftDetector = NewParamDriftDetector(rows)
+		}
+	}
 	return nil
 }
 

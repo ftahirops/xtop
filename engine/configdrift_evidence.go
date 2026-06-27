@@ -286,6 +286,18 @@ func correlateConfigDrift(result *model.AnalysisResult, changes []model.SystemCh
 			driftFacts := InjectConfigDriftEvidence(nil, []model.SystemChange{rd.ch}, now)
 			result.Facts = append(result.Facts, driftFacts...)
 
+			// Surface a suggested (never applied) remediation in the narrative
+			// when this drift is the primary or a contributing bottleneck.
+			if result.Narrative != nil {
+				key, oldVal, _ := parseDetailParts(rd.ch.Detail)
+				if hint := suggestedRemediation(key, oldVal); hint != "" {
+					result.Narrative.Evidence = append(
+						result.Narrative.Evidence,
+						"SUGGESTED: "+hint,
+					)
+				}
+			}
+
 			// Only apply the first matching drift per entry to avoid double-boosting.
 			break
 		}

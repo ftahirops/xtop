@@ -273,6 +273,8 @@ func Run() error {
 	flag.BoolVar(&cfg.NoHysteresis, "no-hysteresis", false, "Disable sustained-threshold alert gating (one-shot mode: score maps directly to health)")
 	var journalRCAMode string
 	flag.StringVar(&journalRCAMode, "journal-rca", "critical", "Tier-2 journal RCA scope: critical (tracked/critical services only), all (every discovered unit), off (disables Tier-2 deep scan; Tier-3 keyword counters still run)")
+	var configDriftMode string
+	flag.StringVar(&configDriftMode, "config-drift", "on", "Kernel-param drift detector: on (default) or off. Checks /proc/sys and /sys every ~30 s; surfaces suggested remediations in the narrative (never auto-applied).")
 	var updateMode bool
 	flag.BoolVar(&updateMode, "update", false, "Check for latest release on GitHub and install it")
 	// Fleet (multi-host aggregation) flags
@@ -313,6 +315,14 @@ func Run() error {
 		collector.JournalRCAMode = journalRCAMode
 	default:
 		return fmt.Errorf("invalid --journal-rca value %q: must be critical, all, or off", journalRCAMode)
+	}
+
+	// Validate --config-drift flag (applied to engine after construction below).
+	switch configDriftMode {
+	case "on", "off":
+		// valid
+	default:
+		return fmt.Errorf("invalid --config-drift value %q: must be on or off", configDriftMode)
 	}
 
 	// Resolve default data directory
@@ -464,6 +474,7 @@ func Run() error {
 	eng := engine.NewEngine(cfg.HistorySize, intervalSec)
 	eng.ApplyRCAThresholds(userCfg.RCAThresholds)
 	eng.SetNoHysteresis(cfg.NoHysteresis)
+	eng.SetConfigDriftEnabled(configDriftMode == "on")
 	defer eng.Close()
 
 	// Attach fleet push client if configured (CLI flags override ~/.xtop/fleet.json)
