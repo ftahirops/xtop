@@ -3,6 +3,7 @@ package collector
 import (
 	"encoding/hex"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
@@ -222,7 +223,8 @@ func (s *SocketCollector) collectTCPStates(snap *model.Snapshot) {
 			// Remote IP tracking (rem_address is fields[2]), skip LISTEN
 			if state != 0x0A {
 				remIP := parseRemoteIP(fields[2])
-				if remIP != "" && remIP != "0.0.0.0" && remIP != "127.0.0.1" {
+				if remIP != "" && remIP != "0.0.0.0" && remIP != "127.0.0.1" &&
+					remIP != "::" && remIP != "::1" {
 					agg := remoteIPs[remIP]
 					if agg == nil {
 						agg = &ipAgg{}
@@ -533,8 +535,13 @@ func parseFullAddr(addr string) string {
 	return fmt.Sprintf("%s:%d", ip, port)
 }
 
-// parseRemoteIP extracts the remote IP from a /proc/net/tcp rem_address field.
-// Returns empty string on error.
+// parseRemoteIP extracts the remote IP from a /proc/net/tcp or /proc/net/tcp6
+// rem_address field (hex-encoded). Returns empty string on error.
+//
+// /proc/net/tcp  – 8 hex chars (4 bytes), little-endian 32-bit host order.
+// /proc/net/tcp6 – 32 hex chars (16 bytes), four consecutive little-endian
+// 32-bit words in host order.  Reverse each 4-byte group to recover network
+// byte order, then format with net.IP.String().
 func parseRemoteIP(remAddr string) string {
 	parts := strings.SplitN(remAddr, ":", 2)
 	if len(parts) != 2 {
@@ -545,9 +552,20 @@ func parseRemoteIP(remAddr string) string {
 		return ""
 	}
 	if len(b) == 4 {
-		// /proc/net/tcp stores IPv4 in little-endian host order
+		// /proc/net/tcp: IPv4 stored in little-endian host order
 		return fmt.Sprintf("%d.%d.%d.%d", b[3], b[2], b[1], b[0])
 	}
-	// IPv6 — skip for now (too verbose for top-IP display)
+	if len(b) == 16 {
+		// /proc/net/tcp6: IPv6 stored as four little-endian 32-bit words.
+		// Swap bytes within each 4-byte group to recover network byte order.
+		ip6 := make([]byte, 16)
+		for i := 0; i < 4; i++ {
+			ip6[i*4+0] = b[i*4+3]
+			ip6[i*4+1] = b[i*4+2]
+			ip6[i*4+2] = b[i*4+1]
+			ip6[i*4+3] = b[i*4+0]
+		}
+		return net.IP(ip6).String()
+	}
 	return ""
 }
