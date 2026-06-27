@@ -13,6 +13,11 @@ type holtWintersState struct {
 	Count    int64
 	Ready    bool
 
+	// Per-metric smoothing parameters (seeded from HoltForecaster defaults,
+	// then adapted independently per regime — never shared across metrics).
+	alpha float64 // level smoothing (0.1-0.5)
+	beta  float64 // trend smoothing (0.01-0.3)
+
 	// Forecast accuracy tracking (RMSE)
 	lastForecast float64
 	errorSum     float64
@@ -58,18 +63,19 @@ func (r ForecastRegime) String() string {
 // HoltForecaster provides Holt-Winters triple exponential smoothing forecasting
 // with 24-hour seasonal cycle and accuracy tracking.
 type HoltForecaster struct {
-	mu    sync.RWMutex
-	alpha float64 // level smoothing (0.1-0.5)
-	beta  float64 // trend smoothing (0.01-0.3)
-	state map[string]*holtWintersState
+	mu           sync.RWMutex
+	defaultAlpha float64 // seed value for level smoothing when a new metric state is created
+	defaultBeta  float64 // seed value for trend smoothing when a new metric state is created
+	state        map[string]*holtWintersState
 }
 
 // NewHoltForecaster creates a Holt forecaster with given alpha (level) and beta (trend) params.
+// These values seed each new per-metric state; per-metric alpha/beta then evolve independently.
 func NewHoltForecaster(alpha, beta float64) *HoltForecaster {
 	return &HoltForecaster{
-		alpha: alpha,
-		beta:  beta,
-		state: make(map[string]*holtWintersState),
+		defaultAlpha: alpha,
+		defaultBeta:  beta,
+		state:        make(map[string]*holtWintersState),
 	}
 }
 
@@ -86,7 +92,14 @@ func (hf *HoltForecaster) UpdateWithHour(id string, value float64, hour int) {
 
 	s, ok := hf.state[id]
 	if !ok {
-		s = &holtWintersState{Level: value, Trend: 0, Count: 0}
+		s = &holtWintersState{
+			Level: value,
+			Trend: 0,
+			Count: 0,
+			// Seed per-metric params from forecaster defaults; they adapt independently.
+			alpha: hf.defaultAlpha,
+			beta:  hf.defaultBeta,
+		}
 		// Initialize seasonal factors to 1.0 (neutral)
 		for i := range s.Seasonal {
 			s.Seasonal[i] = 1.0
@@ -144,10 +157,10 @@ func (hf *HoltForecaster) UpdateWithHour(id string, value float64, hour int) {
 		deseasonalized = value / seasonFactor
 	}
 
-	// Standard Holt update on deseasonalized value
+	// Standard Holt update on deseasonalized value (uses per-metric alpha/beta).
 	prevLevel := s.Level
-	s.Level = hf.alpha*deseasonalized + (1-hf.alpha)*(s.Level+s.Trend)
-	s.Trend = hf.beta*(s.Level-prevLevel) + (1-hf.beta)*s.Trend
+	s.Level = s.alpha*deseasonalized + (1-s.alpha)*(s.Level+s.Trend)
+	s.Trend = s.beta*(s.Level-prevLevel) + (1-s.beta)*s.Trend
 
 	// Update seasonal factor if hour is provided
 	if seasonIdx >= 0 && s.Level != 0 {
@@ -354,7 +367,8 @@ func (s *holtWintersState) detectRegime() {
 	}
 }
 
-// adjustParams dynamically adjusts alpha and beta based on detected regime.
+// adjustParams dynamically adjusts the per-metric alpha and beta based on detected regime.
+// Each metric state carries its own alpha/beta so changes here are isolated to that metric.
 func (hf *HoltForecaster) adjustParams(s *holtWintersState) {
 	// Only adjust if regime has been stable for at least 2 detection cycles (10 ticks)
 	if s.regimeStableTicks < 2 {
@@ -364,20 +378,20 @@ func (hf *HoltForecaster) adjustParams(s *holtWintersState) {
 	switch s.regime {
 	case RegimeStable:
 		// Low alpha/beta: smooth out noise, trust the model
-		hf.alpha = 0.1
-		hf.beta = 0.01
+		s.alpha = 0.1
+		s.beta = 0.01
 	case RegimeTrending:
 		// Higher beta to track trend, moderate alpha
-		hf.alpha = 0.2
-		hf.beta = 0.15
+		s.alpha = 0.2
+		s.beta = 0.15
 	case RegimeNoisy:
 		// Low alpha to ignore noise, very low beta
-		hf.alpha = 0.05
-		hf.beta = 0.005
+		s.alpha = 0.05
+		s.beta = 0.005
 	case RegimeSpiky:
 		// Moderate alpha to catch spikes quickly, low beta
-		hf.alpha = 0.3
-		hf.beta = 0.01
+		s.alpha = 0.3
+		s.beta = 0.01
 	}
 }
 
