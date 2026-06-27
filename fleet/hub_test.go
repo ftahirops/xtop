@@ -2,6 +2,7 @@ package fleet
 
 import (
 	"bytes"
+	"context"
 	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
@@ -493,6 +494,46 @@ func TestSSESubscriberConcurrency(t *testing.T) {
 	}
 
 	wg.Wait()
+}
+
+// TestHandleStreamSSEDeadlineGraceful verifies two things:
+//  1. handleStream returns HTTP 200 with Content-Type text/event-stream — the
+//     happy path still works after the ResponseController call was added.
+//  2. The SetWriteDeadline call is best-effort: httptest.ResponseRecorder does
+//     not implement the net.Conn interface required by ResponseController, so
+//     SetWriteDeadline returns http.ErrNotSupported. The handler must NOT crash
+//     or return an error to the client in that case — it must continue streaming.
+//
+// Because handleStream blocks in its event loop until the request context is
+// cancelled, we cancel the context to let the test return cleanly.
+func TestHandleStreamSSEDeadlineGraceful(t *testing.T) {
+	h := newTestHub(t, model.FleetHubConfig{AllowNoAuth: true})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	r := httptest.NewRequest(http.MethodGet, "/v1/stream", nil).WithContext(ctx)
+	w := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.handleStream(w, r)
+	}()
+
+	// Cancel the request context to unblock the streaming loop.
+	cancel()
+	<-done
+
+	// Assert the handler set up the SSE stream correctly despite the recorder
+	// not supporting SetWriteDeadline.
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", w.Code)
+	}
+	ct := w.Header().Get("Content-Type")
+	if ct != "text/event-stream" {
+		t.Fatalf("expected Content-Type text/event-stream, got %q", ct)
+	}
 }
 
 // TestHealthEndpointConcurrency verifies that handleHealth does not race with

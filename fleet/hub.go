@@ -525,6 +525,15 @@ func (h *Hub) handleStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 
+	// SSE is long-lived; clear the server WriteTimeout for this connection only.
+	// http.NewResponseController is Go 1.20+. A zero time.Time{} means no deadline.
+	// Some ResponseWriters (e.g. httptest.ResponseRecorder) do not support
+	// SetWriteDeadline — that is not fatal; we log at debug level and continue.
+	rc := http.NewResponseController(w)
+	if err := rc.SetWriteDeadline(time.Time{}); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		log.Printf("[debug] handleStream: SetWriteDeadline: %v", err)
+	}
+
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
