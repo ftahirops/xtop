@@ -1,7 +1,7 @@
 package collector
 
 import (
-	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -110,27 +110,94 @@ func haproxySocketCmd(socketPath, cmd string) (string, error) {
 	return string(out), err
 }
 
-// tailFile reads the last N lines of a file.
+// tailFile reads the last N lines of a file efficiently via seek-from-end.
+// I/O is bounded by the size of the tail, not the total file size.
+// On any error it returns nil. The returned slice has at most n lines in order.
 func tailFile(path string, n int) []string {
+	if n <= 0 {
+		return nil
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return nil
 	}
 	defer f.Close()
 
-	var lines []string
-	scanner := bufio.NewScanner(f)
-	// Use a ring buffer approach
-	for scanner.Scan() {
-		lines = append(lines, scanner.Text())
-		if len(lines) > n*2 {
-			lines = lines[len(lines)-n:]
+	fi, err := f.Stat()
+	if err != nil {
+		return nil
+	}
+	size := fi.Size()
+	if size == 0 {
+		return nil
+	}
+
+	const blockSize = 64 * 1024 // 64 KB
+
+	// Fast path: small file — read entirely.
+	if size <= blockSize {
+		data, err := io.ReadAll(f)
+		if err != nil {
+			return nil
+		}
+		return splitLastN(data, n)
+	}
+
+	// Seek-backward path: accumulate chunks from the end until we have
+	// collected more than n newlines (then we know the last n lines are in
+	// the buffer) or we reach the start of the file.
+	var chunks []byte
+	newlines := 0
+	remaining := size
+	for remaining > 0 && newlines <= n {
+		chunk := int64(blockSize)
+		if remaining < chunk {
+			chunk = remaining
+		}
+		remaining -= chunk
+		if _, err := f.Seek(remaining, io.SeekStart); err != nil {
+			return nil
+		}
+		buf := make([]byte, chunk)
+		nr, err := io.ReadFull(f, buf)
+		if err != nil && nr == 0 {
+			return nil
+		}
+		buf = buf[:nr]
+		chunks = append(buf, chunks...) // prepend so result is in file order
+		for _, b := range buf {
+			if b == '\n' {
+				newlines++
+			}
 		}
 	}
-	if len(lines) > n {
-		lines = lines[len(lines)-n:]
+
+	return splitLastN(chunks, n)
+}
+
+// splitLastN splits data on newlines and returns the last n lines in order.
+// A trailing newline does not produce a spurious empty element.
+func splitLastN(data []byte, n int) []string {
+	if len(data) == 0 {
+		return nil
 	}
-	return lines
+	// Trim a single trailing newline to avoid a spurious empty final line.
+	if data[len(data)-1] == '\n' {
+		data = data[:len(data)-1]
+	}
+	if len(data) == 0 {
+		return nil
+	}
+	parts := bytes.Split(data, []byte("\n"))
+	start := 0
+	if len(parts) > n {
+		start = len(parts) - n
+	}
+	result := make([]string, len(parts)-start)
+	for i, p := range parts[start:] {
+		result[i] = string(p)
+	}
+	return result
 }
 
 // addFinding appends a finding to a service diag and updates worst severity.
