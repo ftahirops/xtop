@@ -41,10 +41,23 @@
 
 ## What is new in v0.49.0
 
-**Security hardening, memory/concurrency fixes, and groundwork for Phase 2 (journal-driven service RCA) and Phase 4 (config-drift detection).**
+**A large hardening + features release: every Critical/High audit finding fixed, two new RCA evidence subsystems, and a real CI pipeline. ~96 commits, test files nearly doubled (55 → 111), `-race`-clean, and the lean fleet agent stays free of TUI/SQLite (now CI-enforced).**
 
-- **Security & Stability.** Fixed buffer overflow in SMART disk-health parser. Fixed race condition in fleet hub host-state tracking. Proper resource cleanup in engine shutdown (AdaptiveThresholdDB close). Unbounded cache eviction fix in kubepods cgroup tracking.
-- **Test Infrastructure.** Enhanced integration test coverage. Replay harness for RCA verification. Groundwork for Phase 2 journal-driven findings and Phase 4 config-drift correlation.
+### New features
+- **Journal-driven service RCA.** systemd journal output is parsed structurally (`journalctl -o json`, not keyword grep) and classified into 7 typed failure signatures (crash/restart loop, OOM-kill, segfault/panic, resource exhaustion, dependency failure, config/auth error, error-rate spike). Findings become verifier-gated `FactKindLogEvidence` facts attached to the owning service and surface in that service's RCA narrative. Three-tier scope via `--journal-rca=critical|all|off` (default `critical`).
+- **Config-drift RCA.** Baselines RCA-relevant kernel/OS config (vm.swappiness, overcommit, somaxconn, nf_conntrack_max, THP, CPU governor, …), persists it, detects drift, and correlates drift timing+domain with anomaly onset to blame the right change. **Detect + explain only — never auto-remediates;** the narrative suggests a fix as text, nothing is ever written to `/proc/sys`. Toggle with `--config-drift=on|off` (default `on`).
+
+### Security hardening (fleet hub)
+- Auth enforced by default (refuses to start tokenless unless `--allow-no-auth`), constant-time token compare, request-body size cap (OOM-DoS), per-agent rate limiting with TTL pruning, client-facing error sanitization, agent→hub TLS verification on by default (`--insecure` opt-out), credential scrubbing from shipped process command-lines, hostname path-segment validation. MySQL probe password moved off the command line to `MYSQL_PWD`.
+
+### Stability & correctness
+- **Outage-class bugs fixed:** SMART disk-health parser buffer corruption (disk-failure prediction was unreliable); `/health` map data race; AdaptiveThresholdDB goroutine/ticker leak on shutdown; unbounded caches bounded (rdns, container-id, log-history, **kubepods**, signalOnsets, per-PID maps). Three further pre-existing data races surfaced by `-race` and fixed.
+- **Collector correctness:** `allocstall` summed across all zones (memory-stall signal was silently 0 on kernels ≥5.14); cgroup tree walk recurses to k8s depth (pod/container cgroups were invisible); `tailFile` seeks from end instead of reading multi-GB logs; IPv6 CLOSE_WAIT remote-IP attribution; Redis RESP blank-line panic guards; identity DB-probe timeouts; container-aware security scan (no longer skips low-PID processes inside containers).
+- **RCA engine:** per-metric Holt-Winters α/β (cross-metric contamination fixed); `PrimaryScore` now respects the trust gate (bonus stacking can no longer read critical/degraded while the verdict is Inconclusive); forecast/sigma narrative consistency.
+
+### TUI / web / tooling
+- TUI: `NO_COLOR` support, responsive widths, per-page scroll memory, loading spinner, ANSI-safe wrap. Web dashboard: responsive layout, render-on-change (no flicker), drawer fetch-abort, stale-stream banner, WCAG-AA contrast, keyboard nav.
+- **CI added** (`.github/workflows/ci.yml`): build, `go vet`, tests, `-race`, coverage, agent-leanness gate, Dependabot — where there was none.
 
 All v0.48.0 features (NEXTGEN proof-system, multi-gate verifier, entity graph, replay corpus) remain intact and unchanged.
 

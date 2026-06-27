@@ -24,3 +24,15 @@ Each entry below corresponds to one source comment; the originals are kept in pl
 - TODO-4 (eBPF probes) is gated on availability of `bpftrace` or a compatible eBPF loader;
   it should probe at startup and degrade gracefully when unavailable.
 - TODO-5 and TODO-6 are independent of each other and of the baseline work.
+
+## Deferred medium-severity items (from PRODUCTION_READINESS_AUDIT.md §4, Phase 3 Batch 11)
+Lower-value/needs-investigation; fixed the high-value mediums (ParseFloat64 NaN/Inf, ZScore/IsAnomaly sigma, eBPF tcprtt NaN sort, MySQL password→env, SHOW REPLICA fallback, btime cache). Remaining:
+- IPv6 CLOSE_WAIT sockets invisible (collector/socket.go ~528) — extend the fd-walk to count IPv6 CLOSE_WAIT owners.
+- `allocstall_normal` removed in kernel ~5.14 (collector/memory.go ~99) → AllocStall always 0; use the per-zone allocstall fields or PSI as fallback.
+- `pid < 100` security filter misses fileless/reverse-shell in containers whose PID ns starts at 1.
+- Deleted-open-files scan aborted after 50 PIDs (collector/deleted_open.go ~62) — misses long-running daemons holding deleted files.
+- `parseHsperfdata` reads whole file per JVM per tick (collector/runtime/hsperfdata.go ~39) — cache/incremental.
+- Bonus-stack score inflation can bypass the trust gate (rca.go ~434) when Health is downgraded to Inconclusive — make PrimaryScore respect the gate. (Scoring-semantics change; needs care + RCA owner sign-off.)
+
+## §1 accuracy/marketing (product decision — NOT auto-changed)
+The second audit flagged "AI-powered / Bayesian / belief-propagation / Holt-Winters triple-exponential" framing as overstated. grep found 0 such claims in README — they may live in other marketing surfaces. DECISION for the owner: either rename those claims to "heuristic + statistical RCA" where they appear, or implement the named techniques for real. Also: confidence calibration is circular (labels use the engine's own score); causal "learning" is in-memory only (resets on restart) — persist it if it's to be claimed as learning.
