@@ -128,8 +128,13 @@ func BuildNarrative(result *model.AnalysisResult, curr *model.Snapshot, rates *m
 	// Enrich narrative with statistical findings
 	if len(result.BaselineAnomalies) > 0 {
 		top := result.BaselineAnomalies[0]
-		n.Evidence = append(n.Evidence, fmt.Sprintf("- %s deviating %.1f sigma from baseline (%.1f vs normal %.1f)",
-			top.EvidenceID, top.Sigma, top.Value, top.Baseline))
+		if top.Sigma != 0 {
+			n.Evidence = append(n.Evidence, fmt.Sprintf("- %s deviating %.1f sigma from baseline (%.1f vs normal %.1f)",
+				top.EvidenceID, top.Sigma, top.Value, top.Baseline))
+		} else {
+			n.Evidence = append(n.Evidence, fmt.Sprintf("- %s above baseline (%.1f vs normal %.1f)",
+				top.EvidenceID, top.Value, top.Baseline))
+		}
 	}
 	if len(result.Correlations) > 0 {
 		top := result.Correlations[0]

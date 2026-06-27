@@ -2,6 +2,7 @@ package util
 
 import (
 	"bufio"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -88,9 +89,13 @@ func ParseInt(s string) int {
 }
 
 // ParseFloat64 parses a string to float64, returning 0 on error.
+// NaN and Inf inputs are also treated as 0 to prevent downstream poisoning.
 func ParseFloat64(s string) float64 {
 	s = strings.TrimSpace(s)
 	v, _ := strconv.ParseFloat(s, 64)
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0
+	}
 	return v
 }
 

@@ -589,6 +589,9 @@ func RunProbeCtxDomain(ctx context.Context, duration time.Duration, domain strin
 						return err
 					}
 					sort.Slice(r, func(i, j int) bool {
+						if r[i].Count == 0 || r[j].Count == 0 {
+							return r[i].Count > r[j].Count
+						}
 						avgI := float64(r[i].SumUs) / float64(r[i].Count)
 						avgJ := float64(r[j].SumUs) / float64(r[j].Count)
 						return avgI > avgJ
