@@ -15,8 +15,8 @@ type holtWintersState struct {
 
 	// Per-metric smoothing parameters (seeded from HoltForecaster defaults,
 	// then adapted independently per regime — never shared across metrics).
-	alpha float64 // level smoothing (0.1-0.5)
-	beta  float64 // trend smoothing (0.01-0.3)
+	alpha float64 // level smoothing, seeded from default, adapted by adjustParams per regime
+	beta  float64 // trend smoothing, seeded from default, adapted by adjustParams per regime
 
 	// Forecast accuracy tracking (RMSE)
 	lastForecast float64

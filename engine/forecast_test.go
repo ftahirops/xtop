@@ -99,7 +99,7 @@ func TestHoltCrossMetricIsolation(t *testing.T) {
 	// test actually exercises the adaptation path, and that isolation matters).
 	regimeA := contaminated.Regime("metric.a")
 	if regimeA == RegimeStable {
-		t.Logf("note: metric.a regime is still Stable after spike pattern — "+
-			"adaptation may not have triggered; regime=%v", regimeA)
+		t.Errorf("metric.a did not leave Stable regime — adjustParams never fired; "+
+			"isolation test would be a tautology. regime=%v", regimeA)
 	}
 }
