@@ -143,8 +143,13 @@ func BuildNarrative(result *model.AnalysisResult, curr *model.Snapshot, rates *m
 	}
 	if len(result.ProcessAnomalies) > 0 {
 		top := result.ProcessAnomalies[0]
-		n.Evidence = append(n.Evidence, fmt.Sprintf("- %s (PID %d) %s: %.1f vs baseline %.1f (%.1f sigma)",
-			top.Comm, top.PID, top.Metric, top.Current, top.Baseline, top.Sigma))
+		if top.Sigma != 0 {
+			n.Evidence = append(n.Evidence, fmt.Sprintf("- %s (PID %d) %s: %.1f vs baseline %.1f (%.1f sigma)",
+				top.Comm, top.PID, top.Metric, top.Current, top.Baseline, top.Sigma))
+		} else {
+			n.Evidence = append(n.Evidence, fmt.Sprintf("- %s (PID %d) %s: %.1f vs baseline %.1f (above baseline)",
+				top.Comm, top.PID, top.Metric, top.Current, top.Baseline))
+		}
 	}
 
 	return n

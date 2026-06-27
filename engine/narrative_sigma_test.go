@@ -92,3 +92,98 @@ func TestNarrativeSigmaZeroNotPrinted(t *testing.T) {
 		t.Errorf("expected '9.0 sigma' phrase in evidence, got: %v", n2.Evidence)
 	}
 }
+
+// TestProcessAnomalySigmaZeroNotPrinted verifies that when a ProcessAnomaly is detected
+// but Sigma is 0 (flat baseline), the narrative does NOT emit "0.0 sigma".
+func TestProcessAnomalySigmaZeroNotPrinted(t *testing.T) {
+	// Case 1: ProcessAnomaly with Sigma == 0
+	result := &model.AnalysisResult{
+		Health:           model.HealthDegraded,
+		PrimaryBottleneck: "cpu",
+		RCA: []model.RCAEntry{
+			{
+				Bottleneck: "cpu",
+				Score:      80,
+				EvidenceV2: []model.Evidence{
+					{
+						ID:       "cpu.busy",
+						Strength: 0.9,
+						Domain:   model.DomainCPU,
+					},
+				},
+			},
+		},
+		ProcessAnomalies: []model.ProcessAnomaly{
+			{
+				Comm:     "python",
+				PID:      12345,
+				Metric:   "cpu_percent",
+				Current:  95.0,
+				Baseline: 50.0,
+				Sigma:    0, // flat baseline — sigma not computable
+			},
+		},
+	}
+
+	n := BuildNarrative(result, nil, nil)
+	if n == nil {
+		t.Fatal("BuildNarrative returned nil; expected a narrative")
+	}
+
+	for _, ev := range n.Evidence {
+		if strings.Contains(ev, "0.0 sigma") {
+			t.Errorf("narrative evidence contains misleading '0.0 sigma' for ProcessAnomaly: %q", ev)
+		}
+	}
+
+	// Verify that sigma=0 case includes "above baseline" phrasing
+	found := false
+	for _, ev := range n.Evidence {
+		if strings.Contains(ev, "python") && strings.Contains(ev, "PID 12345") && strings.Contains(ev, "above baseline") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected 'above baseline' phrase for ProcessAnomaly with sigma=0, got: %v", n.Evidence)
+	}
+
+	// Case 2: ProcessAnomaly with non-zero Sigma should still print sigma phrase
+	result2 := &model.AnalysisResult{
+		Health:           model.HealthDegraded,
+		PrimaryBottleneck: "cpu",
+		RCA: []model.RCAEntry{
+			{
+				Bottleneck: "cpu",
+				Score:      80,
+				EvidenceV2: []model.Evidence{
+					{ID: "cpu.busy", Strength: 0.9, Domain: model.DomainCPU},
+				},
+			},
+		},
+		ProcessAnomalies: []model.ProcessAnomaly{
+			{
+				Comm:     "python",
+				PID:      12345,
+				Metric:   "cpu_percent",
+				Current:  95.0,
+				Baseline: 50.0,
+				Sigma:    8.5,
+			},
+		},
+	}
+
+	n2 := BuildNarrative(result2, nil, nil)
+	if n2 == nil {
+		t.Fatal("BuildNarrative returned nil for non-zero sigma case")
+	}
+
+	found = false
+	for _, ev := range n2.Evidence {
+		if strings.Contains(ev, "python") && strings.Contains(ev, "8.5 sigma") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected '8.5 sigma' phrase for ProcessAnomaly with non-zero sigma, got: %v", n2.Evidence)
+	}
+}
