@@ -610,6 +610,16 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History, 
 		result.Confidence = 100
 	}
 
+	// Trust-gate consistency: finalize() runs early (before forecast and
+	// deploy-correlation bonuses). When the trust gate failed and finalize
+	// set Health=Inconclusive, those later bonuses can inflate PrimaryScore
+	// into the critical/degraded read range, creating a score/verdict
+	// contradiction that TUI and fleet consumers both observe.
+	// Fix (Option A): clamp PrimaryScore below rcaScoreDegraded whenever
+	// Health is still Inconclusive after all post-finalize policy upgrades
+	// (app-health bridge, hysteresis). Gate-passing paths are unaffected.
+	clampInconclusiveScore(result)
+
 	// P2.4: Tier-1 journal RCA — on-demand journal evidence for the top
 	// suspect services identified above. Runs AFTER all suspects are known
 	// and AFTER result.Entities is built so InjectJournalEvidence can scope
@@ -832,6 +842,19 @@ func detectHiddenLatency(curr *model.Snapshot, rates *model.RateSnapshot, result
 func cap100(score *int) {
 	if *score > 100 {
 		*score = 100
+	}
+}
+
+// clampInconclusiveScore enforces trust-gate consistency: when the trust gate
+// failed and Health==Inconclusive, PrimaryScore must not reach the
+// critical/degraded read thresholds (rcaScoreDegraded / rcaScoreCritical).
+// Bonuses applied after finalize() (forecast +10, deploy-correlation +15)
+// can otherwise inflate an Inconclusive result into the degraded range,
+// contradicting the verdict.  Gate-passing results (Health != Inconclusive)
+// are left unchanged.
+func clampInconclusiveScore(r *model.AnalysisResult) {
+	if r.Health == model.HealthInconclusive && r.PrimaryScore >= rcaScoreDegraded {
+		r.PrimaryScore = rcaScoreDegraded - 1
 	}
 }
 
