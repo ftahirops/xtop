@@ -577,7 +577,7 @@ func parseSlowlogResp(reader *bufio.Reader) []slowlogEntry {
 		return nil
 	}
 	line = strings.TrimSpace(line)
-	if line[0] != '*' {
+	if len(line) == 0 || line[0] != '*' {
 		return nil
 	}
 	outerCount, _ := strconv.Atoi(line[1:])
@@ -602,7 +602,7 @@ func parseSlowlogEntry(reader *bufio.Reader) *slowlogEntry {
 		return nil
 	}
 	line = strings.TrimSpace(line)
-	if line[0] != '*' {
+	if len(line) == 0 || line[0] != '*' {
 		return nil
 	}
 	fields, _ := strconv.Atoi(line[1:])
@@ -626,7 +626,7 @@ func parseSlowlogEntry(reader *bufio.Reader) *slowlogEntry {
 	}
 	cmdLine = strings.TrimSpace(cmdLine)
 	var cmdParts []string
-	if cmdLine[0] == '*' {
+	if len(cmdLine) > 0 && cmdLine[0] == '*' {
 		argCount, _ := strconv.Atoi(cmdLine[1:])
 		for j := 0; j < argCount; j++ {
 			s := readRespBulk(reader)
@@ -659,6 +659,9 @@ func readRespInt(reader *bufio.Reader) int64 {
 		return 0
 	}
 	line = strings.TrimSpace(line)
+	if len(line) == 0 {
+		return 0
+	}
 	if line[0] == ':' {
 		v, _ := strconv.ParseInt(line[1:], 10, 64)
 		return v
@@ -672,7 +675,7 @@ func readRespBulk(reader *bufio.Reader) string {
 		return ""
 	}
 	line = strings.TrimSpace(line)
-	if line[0] != '$' {
+	if len(line) == 0 || line[0] != '$' {
 		return ""
 	}
 	size, _ := strconv.Atoi(line[1:])

@@ -264,7 +264,11 @@ func (d *DeepBigFileScanner) run() {
 		case <-saveTick.C:
 			// Only persists state; continue with the settle wait below.
 			d.saveState()
-			<-time.After(10 * time.Minute)
+			select {
+			case <-d.quit:
+				return
+			case <-time.After(10 * time.Minute):
+			}
 		}
 		_ = pass // keeps linter happy when building without -tags
 	}

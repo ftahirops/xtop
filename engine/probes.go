@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"strings"
@@ -275,6 +276,17 @@ func (r *ProbeRunner) MaybeRun(result *model.AnalysisResult) []model.ProbeResult
 			go func(j job) {
 				defer wg.Done()
 				defer func() { <-r.sem }()
+				defer func() {
+					if rec := recover(); rec != nil {
+						log.Printf("probe %s panicked: %v", j.probe.Name, rec)
+						resultsCh <- model.ProbeResult{
+							Name:       j.probe.Name,
+							EvidenceID: j.ev.ID,
+							StartedAt:  time.Now(),
+							Error:      fmt.Sprintf("panic: %v", rec),
+						}
+					}
+				}()
 				resultsCh <- runProbe(j.probe, j.ev)
 			}(j)
 		default:

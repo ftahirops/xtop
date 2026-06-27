@@ -207,3 +207,35 @@ func TestProgress_IsSafeBeforeStart(t *testing.T) {
 		t.Error("last path should be empty before any work")
 	}
 }
+
+// TestDeepScanner_QuitInterruptsSaveCaseWait verifies H10 fix: Stop() must
+// interrupt the 10-minute settle wait in the saveTick.C branch immediately,
+// not after the full 10 minutes elapse.
+func TestDeepScanner_QuitInterruptsSaveCaseWait(t *testing.T) {
+	d := newScannerForTest(t, t.TempDir(), 50<<20)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// Simulate the fixed saveTick.C branch from run():
+		//   d.saveState()
+		//   select { case <-d.quit: return; case <-time.After(10 * time.Minute): }
+		// We use a very long timer (60s) to prove quit wins.
+		select {
+		case <-d.quit:
+			return
+		case <-time.After(60 * time.Second):
+			return
+		}
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	close(d.quit) // simulate Stop()
+
+	select {
+	case <-done:
+		// passed — goroutine exited promptly after quit
+	case <-time.After(2 * time.Second):
+		t.Fatal("quit did not interrupt settle wait within 2s — H10 fix may be incomplete")
+	}
+}

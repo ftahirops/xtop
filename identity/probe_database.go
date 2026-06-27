@@ -1,11 +1,15 @@
 package identity
 
 import (
+	"context"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/ftahirops/xtop/model"
 )
+
+const dbProbeTimeout = 3 * time.Second
 
 // probeDatabases checks health and inventory for detected database services.
 func probeDatabases(id *model.ServerIdentity) {
@@ -23,7 +27,9 @@ func probeMySQL(id *model.ServerIdentity) {
 
 	// Check health via mysqladmin ping
 	if path, err := exec.LookPath("mysqladmin"); err == nil {
-		out, err := exec.Command(path, "ping", "--connect-timeout=2").CombinedOutput()
+		ctx, cancel := context.WithTimeout(context.Background(), dbProbeTimeout)
+		out, err := exec.CommandContext(ctx, path, "ping", "--connect-timeout=2").CombinedOutput()
+		cancel()
 		if err == nil && strings.Contains(string(out), "alive") {
 			svc.Healthy = true
 		}
@@ -31,7 +37,9 @@ func probeMySQL(id *model.ServerIdentity) {
 
 	// List databases
 	if path, err := exec.LookPath("mysql"); err == nil {
-		out, err := exec.Command(path, "-N", "-e", "SHOW DATABASES").Output()
+		ctx1, cancel1 := context.WithTimeout(context.Background(), dbProbeTimeout)
+		out, err := exec.CommandContext(ctx1, path, "-N", "-e", "SHOW DATABASES").Output()
+		cancel1()
 		if err == nil {
 			for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 				db := strings.TrimSpace(line)
@@ -47,7 +55,9 @@ func probeMySQL(id *model.ServerIdentity) {
 		}
 
 		// Check replication
-		out, err = exec.Command(path, "-N", "-e", "SHOW SLAVE STATUS\\G").Output()
+		ctx2, cancel2 := context.WithTimeout(context.Background(), dbProbeTimeout)
+		out, err = exec.CommandContext(ctx2, path, "-N", "-e", "SHOW SLAVE STATUS\\G").Output()
+		cancel2()
 		if err == nil {
 			status := string(out)
 			if strings.Contains(status, "Slave_IO_Running") {
@@ -70,7 +80,9 @@ func probePostgreSQL(id *model.ServerIdentity) {
 
 	// Check health via pg_isready
 	if path, err := exec.LookPath("pg_isready"); err == nil {
-		err := exec.Command(path, "-t", "2").Run()
+		ctx, cancel := context.WithTimeout(context.Background(), dbProbeTimeout)
+		err := exec.CommandContext(ctx, path, "-t", "2").Run()
+		cancel()
 		if err == nil {
 			svc.Healthy = true
 		}
@@ -78,8 +90,10 @@ func probePostgreSQL(id *model.ServerIdentity) {
 
 	// List databases
 	if path, err := exec.LookPath("psql"); err == nil {
-		out, err := exec.Command(path, "-U", "postgres", "-t", "-A", "-c",
+		ctx1, cancel1 := context.WithTimeout(context.Background(), dbProbeTimeout)
+		out, err := exec.CommandContext(ctx1, path, "-U", "postgres", "-t", "-A", "-c",
 			"SELECT datname FROM pg_database WHERE NOT datistemplate").Output()
+		cancel1()
 		if err == nil {
 			for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 				db := strings.TrimSpace(line)
@@ -95,8 +109,10 @@ func probePostgreSQL(id *model.ServerIdentity) {
 		}
 
 		// Check replication role
-		out, err = exec.Command(path, "-U", "postgres", "-t", "-A", "-c",
+		ctx2, cancel2 := context.WithTimeout(context.Background(), dbProbeTimeout)
+		out, err = exec.CommandContext(ctx2, path, "-U", "postgres", "-t", "-A", "-c",
 			"SELECT pg_is_in_recovery()").Output()
+		cancel2()
 		if err == nil {
 			val := strings.TrimSpace(string(out))
 			role := "primary"
@@ -119,13 +135,17 @@ func probeRedis(id *model.ServerIdentity) {
 	}
 
 	if path, err := exec.LookPath("redis-cli"); err == nil {
-		out, err := exec.Command(path, "ping").Output()
+		ctx1, cancel1 := context.WithTimeout(context.Background(), dbProbeTimeout)
+		out, err := exec.CommandContext(ctx1, path, "ping").Output()
+		cancel1()
 		if err == nil && strings.TrimSpace(string(out)) == "PONG" {
 			svc.Healthy = true
 		}
 
 		// Get keyspace info
-		out, err = exec.Command(path, "info", "keyspace").Output()
+		ctx2, cancel2 := context.WithTimeout(context.Background(), dbProbeTimeout)
+		out, err = exec.CommandContext(ctx2, path, "info", "keyspace").Output()
+		cancel2()
 		if err == nil {
 			info := string(out)
 			for _, line := range strings.Split(info, "\n") {
@@ -150,7 +170,9 @@ func probeMongoDB(id *model.ServerIdentity) {
 	}
 
 	if path, err := exec.LookPath("mongosh"); err == nil {
-		out, err := exec.Command(path, "--quiet", "--eval", "db.adminCommand('ping')").Output()
+		ctx, cancel := context.WithTimeout(context.Background(), dbProbeTimeout)
+		out, err := exec.CommandContext(ctx, path, "--quiet", "--eval", "db.adminCommand('ping')").Output()
+		cancel()
 		if err == nil && strings.Contains(string(out), "ok") {
 			svc.Healthy = true
 		}
