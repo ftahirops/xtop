@@ -168,12 +168,30 @@ func findV1Controller(name string) string {
 	return ""
 }
 
-// walkCgroupDirs calls fn for each directory under root that looks like a cgroup.
-func walkCgroupDirs(root string, fn func(path string)) {
-	// Always include root
-	fn(root)
+// maxCgroupDepth is the maximum directory depth walkCgroupDirs will descend
+// below root (depth 0). Six levels is deep enough for Kubernetes cgroup v2
+// hierarchies (depth 4: kubepods.slice → besteffort.slice → pod.slice →
+// cri-containerd.scope) with headroom, and prevents runaway on pathological
+// or symlinked trees.
+const maxCgroupDepth = 6
 
-	entries, err := os.ReadDir(root)
+// walkCgroupDirs calls fn for each directory under root that looks like a
+// cgroup, up to maxCgroupDepth levels deep.  It applies the same skip filters
+// (dirs prefixed with "sys-" or named "init.scope") at every level.
+func walkCgroupDirs(root string, fn func(path string)) {
+	walkCgroupDirsRecursive(root, fn, 0)
+}
+
+// walkCgroupDirsRecursive is the bounded recursive helper for walkCgroupDirs.
+// depth is the current recursion depth (0 = root).
+func walkCgroupDirsRecursive(dir string, fn func(path string), depth int) {
+	fn(dir)
+
+	if depth >= maxCgroupDepth {
+		return
+	}
+
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return
 	}
@@ -182,21 +200,10 @@ func walkCgroupDirs(root string, fn func(path string)) {
 			continue
 		}
 		name := e.Name()
-		// Skip system directories
+		// Skip system directories at every level.
 		if strings.HasPrefix(name, "sys-") || name == "init.scope" {
 			continue
 		}
-		subPath := filepath.Join(root, name)
-		fn(subPath)
-		// Recurse one level deeper for service units
-		subEntries, err := os.ReadDir(subPath)
-		if err != nil {
-			continue
-		}
-		for _, se := range subEntries {
-			if se.IsDir() && !strings.HasPrefix(se.Name(), "sys-") && se.Name() != "init.scope" {
-				fn(filepath.Join(subPath, se.Name()))
-			}
-		}
+		walkCgroupDirsRecursive(filepath.Join(dir, name), fn, depth+1)
 	}
 }
