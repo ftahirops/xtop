@@ -41,6 +41,12 @@ func (s *SecurityCollector) Name() string { return "security" }
 var failedAuthRE = regexp.MustCompile(`Failed password.*from\s+(\S+)`)
 var authFailureRE = regexp.MustCompile(`authentication failure.*rhost=(\S+)`)
 
+// ReverseShellMaxProcs is the maximum number of processes inspected per scan
+// for reverse-shell detection.  Exported so tests can assert the cap is not
+// regressed to a value that would silently miss high-PID daemons.
+// Raised from the original 50 → 1024 (same class of fix as deletedOpenMaxPIDs).
+const ReverseShellMaxProcs = 1024
+
 // reverseShellWhitelist: legitimate processes that commonly have stdin+stdout as sockets (#13)
 var reverseShellWhitelist = map[string]bool{
 	"sshd": true, "ssh": true, "postgres": true, "mysqld": true, "mariadbd": true,
@@ -410,12 +416,9 @@ func (s *SecurityCollector) collectReverseShells(snap *model.Snapshot, sec *mode
 	// Unix domain sockets (local IPC) are legitimate (MCP servers, LSP, Docker, etc.)
 	tcpInodes := loadTCPInodes()
 
-	// Raised from 50 → 1024: the original cap silently missed high-PID daemons
-	// (same class of fix as deletedOpenMaxPIDs).
-	const reverseShellMaxProcs = 1024
 	procs := snap.Processes
-	if len(procs) > reverseShellMaxProcs {
-		procs = procs[:reverseShellMaxProcs]
+	if len(procs) > ReverseShellMaxProcs {
+		procs = procs[:ReverseShellMaxProcs]
 	}
 
 	for _, p := range procs {

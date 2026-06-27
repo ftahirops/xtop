@@ -118,14 +118,44 @@ func TestShouldSkipLowPID_HostKernelThreadsSafe(t *testing.T) {
 // reverseShellMaxProcs cap — mirrors the pattern in deleted_open_cap_test.go
 // ---------------------------------------------------------------------------
 
+// TestReverseShellMaxProcsCap asserts that ReverseShellMaxProcs has not been
+// regressed to a small value that would silently miss high-PID daemons.
 func TestReverseShellMaxProcsCap(t *testing.T) {
-	const wantMinCap = 1024 // raised from original 50
-	// The constant is defined inside collectReverseShells; we verify it
-	// indirectly by checking that at most wantMinCap procs would be scanned.
-	// Because it is a local const we cannot reference it directly — instead we
-	// document the intent here and rely on the code review / build to confirm.
-	//
-	// If this test needs to be more assertive in future, expose the constant at
-	// package scope (e.g. var reverseShellMaxProcs = 1024) and compare here.
-	_ = wantMinCap // acknowledged
+	const wantMinCap = 1024
+	if ReverseShellMaxProcs < wantMinCap {
+		t.Errorf("ReverseShellMaxProcs = %d; want >= %d (regression: would miss high-PID daemons)",
+			ReverseShellMaxProcs, wantMinCap)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// isContainerizedCgroup — Podman rootless / libpod (Fix 2)
+// ---------------------------------------------------------------------------
+
+func TestIsContainerizedCgroup_Libpod(t *testing.T) {
+	// Podman rootless cgroupv2 paths look like:
+	//   /user.slice/user@1000.service/user.slice/libpod-<hex-id>.scope
+	// The marker "libpod" must be detected so low-PID payloads in Podman
+	// containers are not skipped.
+	cases := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{"podman rootless libpod scope",
+			"0::/user.slice/user@1000.service/user.slice/libpod-abc123def456.scope", true},
+		{"podman libpod nested",
+			"0::/user.slice/user@0.service/libpod-deadbeef.scope/container", true},
+		// Sanity: host user slice without libpod must NOT match
+		{"host user slice no libpod",
+			"0::/user.slice/user@1000.service/app.service", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isContainerizedCgroup(tc.path)
+			if got != tc.want {
+				t.Errorf("isContainerizedCgroup(%q) = %v; want %v", tc.path, got, tc.want)
+			}
+		})
+	}
 }

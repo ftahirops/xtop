@@ -102,7 +102,14 @@ func (f *FilelessCollector) scan() []model.FilelessProcess {
 		// Skip low-PID host processes (kernel threads / early daemons) but NOT
 		// low-PID containerised processes — container PID namespaces start at 1,
 		// so a low PID inside a container is NOT a trusted host process.
-		if shouldSkipLowPID(pid, isContainerizedPID(pid), selfPID) {
+		// Only read /proc/<pid>/cgroup for low PIDs (pid < 100) — the only range
+		// where containerization changes the skip decision. This bounds cgroup
+		// reads to ≤ ~99 entries per scan instead of one per /proc entry.
+		containerized := false
+		if pid < 100 {
+			containerized = isContainerizedPID(pid)
+		}
+		if shouldSkipLowPID(pid, containerized, selfPID) {
 			continue
 		}
 

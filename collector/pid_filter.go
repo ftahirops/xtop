@@ -3,12 +3,17 @@ package collector
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
 // containerCgroupMarkers are substrings found in cgroup paths of containerised
 // processes.  The PID namespace inside a container starts at 1, so low-PID
 // processes there are NOT trusted host kernel threads and must NOT be skipped.
+//
+// This is a heuristic marker list; non-standard or future runtimes may not
+// match any marker.  Known gaps should be added here conservatively to avoid
+// host false-positives (treating a host process as containerised).
 var containerCgroupMarkers = []string{
 	"docker",
 	"containerd",
@@ -17,6 +22,7 @@ var containerCgroupMarkers = []string{
 	"cri-containerd",
 	"lxc",
 	"machine.slice",
+	"libpod", // Podman rootless / libpod (cgroupv2: …/libpod-<id>.scope)
 }
 
 // isContainerizedCgroup reports whether a cgroup path string belongs to a
@@ -37,36 +43,11 @@ func isContainerizedCgroup(cgroupPath string) bool {
 // bytes at most) so the read is cheap even in a per-process loop.
 // Returns false on any I/O error (conservative: treat as host process).
 func isContainerizedPID(pid int) bool {
-	data, err := os.ReadFile(filepath.Join("/proc", itoa(pid), "cgroup"))
+	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "cgroup"))
 	if err != nil {
 		return false
 	}
 	return isContainerizedCgroup(string(data))
-}
-
-// itoa converts an int to its decimal string representation without importing
-// strconv (which is already imported in every caller, but keeping this local
-// avoids a cross-package import for a tiny helper).
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	var buf [20]byte
-	pos := len(buf)
-	for n > 0 {
-		pos--
-		buf[pos] = byte('0' + n%10)
-		n /= 10
-	}
-	if neg {
-		pos--
-		buf[pos] = '-'
-	}
-	return string(buf[pos:])
 }
 
 // shouldSkipLowPID returns true when a process should be excluded from the
