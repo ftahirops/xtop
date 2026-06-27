@@ -40,6 +40,7 @@ type AdaptiveThresholdDB struct {
 	dataDir    string
 	saveTicker *time.Ticker
 	quit       chan struct{}
+	closed     bool
 }
 
 type workloadProfile struct {
@@ -84,8 +85,17 @@ func NewAdaptiveThresholdDB(dataDir string) *AdaptiveThresholdDB {
 	return db
 }
 
-// Close stops the background save goroutine.
+// Close stops the background save goroutine and flushes final state.
+// Safe to call multiple times (idempotent).
 func (db *AdaptiveThresholdDB) Close() {
+	db.mu.Lock()
+	if db.closed {
+		db.mu.Unlock()
+		return
+	}
+	db.closed = true
+	db.mu.Unlock()
+
 	close(db.quit)
 	if db.saveTicker != nil {
 		db.saveTicker.Stop()

@@ -895,6 +895,10 @@ func (e *Engine) Close() {
 			wg.Add(1)
 			go func() { defer wg.Done(); e.deepScan.Stop() }()
 		}
+		if e.adaptiveThresholdDB != nil {
+			wg.Add(1)
+			go func() { defer wg.Done(); e.adaptiveThresholdDB.Close() }()
+		}
 		wg.Wait()
 		close(done)
 	}()

@@ -1,7 +1,9 @@
 package engine
 
 import (
+	"runtime"
 	"testing"
+	"time"
 
 	"github.com/ftahirops/xtop/model"
 )
@@ -110,4 +112,61 @@ func TestAdaptiveThreshold_NeverBelowBase(t *testing.T) {
 	if c < 90 {
 		t.Errorf("crit threshold should never drop below base: got %.1f < 90", c)
 	}
+}
+
+// TestAdaptiveThresholdDB_GoroutineLeakFix verifies that the background
+// save goroutine (spawned in NewAdaptiveThresholdDB) is properly cleaned up
+// when Close() is called. This test ensures audit finding C3 is fixed.
+func TestAdaptiveThresholdDB_GoroutineLeakFix(t *testing.T) {
+	dir := t.TempDir()
+
+	// Record baseline goroutine count
+	runtime.GC()
+	baselineGoroutines := runtime.NumGoroutine()
+
+	// Create a new AdaptiveThresholdDB and verify the background goroutine starts
+	db := NewAdaptiveThresholdDB(dir)
+
+	// Give the goroutine time to start
+	time.Sleep(10 * time.Millisecond)
+	afterCreateGoroutines := runtime.NumGoroutine()
+
+	// The background save goroutine should have been created
+	if afterCreateGoroutines <= baselineGoroutines {
+		t.Logf("WARNING: Expected goroutine count to increase after NewAdaptiveThresholdDB; baseline=%d, after=%d",
+			baselineGoroutines, afterCreateGoroutines)
+	}
+
+	// Close the DB and verify the goroutine exits
+	db.Close()
+
+	// Give the goroutine time to exit and wait for cleanup
+	time.Sleep(50 * time.Millisecond)
+	runtime.GC()
+	afterCloseGoroutines := runtime.NumGoroutine()
+
+	// Allow a small slack (±1) for timing variations between runs
+	if afterCloseGoroutines > baselineGoroutines+1 {
+		t.Errorf("goroutine leak detected: baseline=%d, after close=%d (slack allowed: 1)",
+			baselineGoroutines, afterCloseGoroutines)
+	}
+	t.Logf("goroutine counts: baseline=%d, after create=%d, after close=%d",
+		baselineGoroutines, afterCreateGoroutines, afterCloseGoroutines)
+}
+
+// TestAdaptiveThresholdDB_CloseIdempotent verifies that calling Close()
+// multiple times does not panic or cause issues.
+func TestAdaptiveThresholdDB_CloseIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	db := NewAdaptiveThresholdDB(dir)
+
+	// Observe some data to ensure there's something to save
+	db.Observe(WorkloadWeb, "cpu.busy", 50.0)
+
+	// Close should be safe to call multiple times
+	db.Close()
+	db.Close() // Should not panic
+	db.Close() // Should not panic
+
+	t.Log("Close() is idempotent")
 }
