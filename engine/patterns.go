@@ -52,7 +52,10 @@ var patternLibrary = []Pattern{
 		Name:     "Memory-Induced IO Storm",
 		Priority: 90,
 		Conditions: []PatternCondition{
-			{EvidenceID: "mem.swap.activity"},
+			// Swap activity is the DEFINING cause here — without it this is just
+			// disk IO, not swap thrashing. Required so the generic io.* co-signals
+			// can't fire the swap narrative on their own.
+			{EvidenceID: "mem.swap.activity", Required: true},
 			{EvidenceID: "io.psi"},
 			{EvidenceID: "io.disk.latency"},
 		},

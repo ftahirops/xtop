@@ -102,7 +102,18 @@ func analyzeMemory(db *AdaptiveThresholdDB, curr *model.Snapshot, rates *model.R
 	w3, c3 := thresholdAdaptive(db, "mem.reclaim.direct", 10, 500, curr)
 	w5, c5 := thresholdAdaptive(db, "mem.major.faults", 10, 200, curr)
 	w6, c6 := thresholdAdaptive(db, "mem.oom.kills", 1, 1, curr)
+	// Aggregate swap activity (in+out MB/s). The pattern/narrative/causal/temporal
+	// layers all key off "mem.swap.activity"; without this emit that ID never fires,
+	// so swap-thrashing patterns matched on their generic co-conditions instead
+	// (labelling pure disk IO as "swap thrashing"). Emit it so those patterns fire
+	// only when swap is genuinely active.
+	wSwap, cSwap := thresholdAdaptive(db, "mem.swap.activity", 1, 20, curr)
+	swapActivity := swapInRate + swapOutRate
 	r.EvidenceV2 = append(r.EvidenceV2,
+		emitEvidence("mem.swap.activity", model.DomainMemory,
+			swapActivity, wSwap, cSwap, true, 0.85,
+			fmt.Sprintf("swap activity=%.1f MB/s (in %.1f + out %.1f)", swapActivity, swapInRate, swapOutRate), "1s",
+			nil, nil),
 		emitEvidence("mem.psi", model.DomainMemory,
 			memSome*100, w, c, true, 0.9,
 			fmt.Sprintf("MEM PSI some=%.1f%% full=%.1f%%", memSome*100, memFull*100), "avg10",
@@ -142,6 +153,7 @@ func analyzeMemory(db *AdaptiveThresholdDB, curr *model.Snapshot, rates *model.R
 		buildFact("mem.reclaim.direct", "direct_reclaim_pages_per_sec", model.DomainMemory, directReclaimRate, "count/s", w3, reclaimConf, now, "vmstat", nil),
 		buildFact("mem.swap.in", "swap_in_mb_per_sec", model.DomainMemory, swapInRate, "MB/s", 1, 0.85, now, "vmstat", nil),
 		buildFact("mem.swap.out", "swap_out_mb_per_sec", model.DomainMemory, swapOutRate, "MB/s", 2, 0.7, now, "vmstat", nil),
+		buildFact("mem.swap.activity", "swap_activity_mb_per_sec", model.DomainMemory, swapActivity, "MB/s", wSwap, 0.85, now, "vmstat", nil),
 		buildFact("mem.major.faults", "major_faults_per_sec", model.DomainMemory, majFaultRate, "count/s", w5, 0.7, now, "vmstat", nil),
 		buildFact("mem.oom.kills", "oom_kills", model.DomainMemory, oomVal, "count", w6, 1.0, now, "vmstat", nil),
 	)
