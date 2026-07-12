@@ -370,6 +370,14 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History, 
 	// proc host — within the engine's per-tick budget.
 	result.Entities = BuildEntityGraph(curr)
 
+	// P2.4 / readiness #3: Tier-1 journal RCA runs BEFORE verification and
+	// finalization so its evidence can strengthen VerifiedCauses and the verdict
+	// in the same tick (it was previously injected post-finalize, purely as
+	// after-the-fact context). Needs result.RCA (scored suspects) and
+	// result.Entities, both available here. Best-effort; no-op when no journal
+	// query fn is configured (e.g. the test path).
+	injectJournalTier1(result, curr, e)
+
 	// NEXTGEN Phase 4: derive candidates from each RCA entry and run
 	// them through the verifier. Output is VerifiedCauses — abstaining
 	// by default (Tier D) when proof is weak. Runs additive to the
@@ -633,12 +641,6 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History, 
 	// visually contradict the health verdict.
 	// Gate-passing paths (Health != Inconclusive) are unaffected.
 	clampInconclusiveScore(result)
-
-	// P2.4: Tier-1 journal RCA — on-demand journal evidence for the top
-	// suspect services identified above. Runs AFTER all suspects are known
-	// and AFTER result.Entities is built so InjectJournalEvidence can scope
-	// Facts to the right entity. Best-effort: never fails the tick.
-	injectJournalTier1(result, curr, e)
 
 	// NEXTGEN Phase 5: persist the frame to the corpus for offline
 	// replay. Best-effort, dedup'd to 1 write/sec, only triggers on
