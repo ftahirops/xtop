@@ -105,7 +105,9 @@ var patternLibrary = []Pattern{
 		Priority: 75,
 		Conditions: []PatternCondition{
 			{EvidenceID: "io.disk.util"},
-			{EvidenceID: "io.dstate"},
+			// The narrative asserts D-state threads — require the D-state signal
+			// so util+latency alone can't claim it.
+			{EvidenceID: "io.dstate", Required: true},
 			{EvidenceID: "io.disk.latency"},
 		},
 		MinMatch:  2,
@@ -126,7 +128,9 @@ var patternLibrary = []Pattern{
 		Name:     "VM Noisy Neighbor",
 		Priority: 65,
 		Conditions: []PatternCondition{
-			{EvidenceID: "cpu.steal", MinStrength: 0.1},
+			// Steal is the DEFINING cause — required, so CPU PSI alone can't
+			// print "hypervisor stealing CPU" on a locally-saturated host.
+			{EvidenceID: "cpu.steal", MinStrength: 0.1, Required: true},
 			{EvidenceID: "cpu.psi"},
 		},
 		MinMatch:  1,
@@ -190,8 +194,10 @@ var patternLibrary = []Pattern{
 		Name:     "Network Congestion",
 		Priority: 60,
 		Conditions: []PatternCondition{
-			{EvidenceID: "net.tcp.retrans"},
-			{EvidenceID: "net.drops"},
+			// The narrative asserts both retransmits AND drops — require both so
+			// drops+softirq can't claim "retransmits", nor retrans+softirq claim drops.
+			{EvidenceID: "net.tcp.retrans", Required: true},
+			{EvidenceID: "net.drops", Required: true},
 			{EvidenceID: "net.softirq"},
 		},
 		MinMatch:  2,
@@ -340,7 +346,9 @@ var patternLibrary = []Pattern{
 		Name:     "VM CPU Throttle",
 		Priority: 65,
 		Conditions: []PatternCondition{
-			{EvidenceID: "pve.vm.throttle"},
+			// Real cgroup throttling is required — guest CPU PSI alone doesn't
+			// prove the VM is hitting its CPU limit.
+			{EvidenceID: "pve.vm.throttle", Required: true},
 			{EvidenceID: "pve.vm.cpupsi"},
 		},
 		MinMatch:  1,
@@ -350,7 +358,9 @@ var patternLibrary = []Pattern{
 		Name:     "VM Memory Pressure",
 		Priority: 62,
 		Conditions: []PatternCondition{
-			{EvidenceID: "pve.vm.memlimit"},
+			// "Near memory limit" requires the limit signal — PSI+swap alone
+			// can't establish the guest is close to its cap.
+			{EvidenceID: "pve.vm.memlimit", Required: true},
 			{EvidenceID: "pve.vm.mempsi"},
 			{EvidenceID: "pve.vm.swap"},
 		},
