@@ -125,8 +125,11 @@ var patternLibrary = []Pattern{
 		Narrative: "Writeback flood — dirty page flush driving IO stalls",
 	},
 	{
-		Name:     "VM Noisy Neighbor",
-		Priority: 65,
+		Name: "VM Noisy Neighbor",
+		// Priority 79: above CPU Oversubscription (78). Stolen CPU also inflates
+		// the run queue, so oversubscription would otherwise mask the real cause.
+		// Safe because cpu.steal is Required — this only wins when steal is real.
+		Priority: 79,
 		Conditions: []PatternCondition{
 			// Steal is the DEFINING cause — required, so CPU PSI alone can't
 			// print "hypervisor stealing CPU" on a locally-saturated host.
@@ -217,8 +220,11 @@ var patternLibrary = []Pattern{
 		Name:     "Conntrack Exhaustion",
 		Priority: 55,
 		Conditions: []PatternCondition{
-			{EvidenceID: "net.conntrack"},
-			{EvidenceID: "net.drops"},
+			// Table fullness is the defining signal; the drops must be
+			// conntrack-specific — generic NIC/qdisc net.drops don't indicate
+			// conntrack saturation.
+			{EvidenceID: "net.conntrack", Required: true},
+			{EvidenceID: "net.conntrack.drops"},
 		},
 		MinMatch:  2,
 		Narrative: "Conntrack exhaustion — connection tracking table saturated",
