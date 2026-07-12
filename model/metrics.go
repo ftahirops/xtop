@@ -201,6 +201,15 @@ type BigFile struct {
 	ModTime   int64 // unix timestamp
 }
 
+// BigDir represents a directory subtree consuming significant disk space.
+// SizeBytes is the recursive total of files walked beneath Path (du-style),
+// bounded by the scanner's stat budget — i.e. a lower bound, not exact du(1).
+type BigDir struct {
+	Path      string
+	SizeBytes uint64
+	FileCount int // number of regular files counted in the subtree
+}
+
 // DeletedOpenFile represents a file that was deleted but is still held open.
 type DeletedOpenFile struct {
 	PID       int
@@ -897,6 +906,7 @@ type GlobalMetrics struct {
 	Mounts           []MountStats
 	DeletedOpen    []DeletedOpenFile
 	BigFiles       []BigFile
+	BigDirs        []BigDir
 	FilelessProcs  []FilelessProcess
 	Security       SecurityMetrics
 	Logs           LogMetrics
