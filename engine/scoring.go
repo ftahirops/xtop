@@ -114,18 +114,29 @@ func domainConfidence(evs []model.Evidence) float64 {
 		return 0
 	}
 
-	// Average confidence of fired evidence
-	var sumConf float64
+	// Average confidence + peak strength of fired evidence
+	var sumConf, maxStrength float64
 	var count int
 	for _, e := range evs {
 		if e.Strength >= 0.35 {
 			sumConf += e.Confidence
 			count++
+			if e.Strength > maxStrength {
+				maxStrength = e.Strength
+			}
 		}
 	}
 	avgConf := sumConf / float64(count)
 
 	conf := 0.3 + 0.2*float64(fired-1) + 0.5*avgConf
+	// Cap by peak signal strength: a domain whose strongest evidence is only
+	// marginally over threshold cannot be near-certain, no matter how many weak
+	// signals piled up or how measurable they were. Prevents 93%+ confidence on
+	// weak/misattributed causes (many barely-fired signals used to saturate the
+	// count term to 0.98).
+	if cap := 0.5 + 0.5*maxStrength; conf > cap {
+		conf = cap
+	}
 	if conf < 0 {
 		conf = 0
 	}
