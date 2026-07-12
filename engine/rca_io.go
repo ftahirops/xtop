@@ -262,8 +262,12 @@ func findIOCulprit(curr *model.Snapshot, rates *model.RateSnapshot, r *model.RCA
 	// 3) D-state process, 4) top IO reader.
 	// Always exclude xtop itself and kernel threads.
 
-	// If IO is caused by memory reclaim (swap storm), blame the memory hog, not IO victim
-	if rates != nil && (rates.SwapInRate > 0 || rates.DirectReclaimRate > 0) {
+	// If IO is caused by memory reclaim (swap storm), blame the memory hog, not
+	// the IO victim — but only when swap/reclaim is MEANINGFUL. The old `> 0`
+	// gate let a trace of swap-in hijack culprit selection away from the real
+	// heavy writer. Thresholds mirror the swap-activity warn (1 MB/s) and an
+	// active-reclaim level (100 pages/s).
+	if rates != nil && (rates.SwapInRate >= ioCulpritSwapMinMBs || rates.DirectReclaimRate >= ioCulpritReclaimMinRate) {
 		var maxRSS uint64
 		for _, pr := range rates.ProcessRates {
 			if isKernelThread(pr.Comm) || isSelfProcess(pr.Comm) {

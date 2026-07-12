@@ -51,6 +51,10 @@ const (
 	ioDstateBumpScore      = 60   // forced score when D-state count is high
 	fsFullGrowthDampenConf = 0.4  // confidence when FS full but not growing
 	fsFullUsedPctNoGrowth  = 95.0 // usedPct below this + no growth → dampen
+	// Culprit attribution: only blame the memory hog for IO when swap/reclaim is
+	// meaningful (not a trace), otherwise the real IO writer is the culprit.
+	ioCulpritSwapMinMBs     = 1.0   // MB/s swap-in to attribute IO to memory
+	ioCulpritReclaimMinRate = 100.0 // pages/s direct reclaim to attribute IO to memory
 
 	// --- Memory domain ---
 	memOOMMinScore          = 70    // floor score when OOM detected + trust gate

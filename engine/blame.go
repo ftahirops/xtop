@@ -19,7 +19,7 @@ func ComputeBlame(result *model.AnalysisResult, curr *model.Snapshot, rates *mod
 	case BottleneckCPU:
 		entries = blameCPU(result, rates)
 	case BottleneckMemory:
-		entries = blameMemory(rates)
+		entries = blameMemory(result, rates)
 	case BottleneckIO:
 		entries = blameIO(result, rates)
 	case BottleneckNetwork:
@@ -146,8 +146,11 @@ func blameCPU(result *model.AnalysisResult, rates *model.RateSnapshot) []model.B
 		})
 	}
 
-	// If steal is the dominant issue, blame hypervisor
-	if rates.CPUStealPct > rates.CPUBusyPct*0.3 && rates.CPUStealPct > 5 {
+	// If steal is active, blame the hypervisor. Gate on the SAME signal the
+	// narrative uses (cpu.steal evidence active) rather than an ad-hoc
+	// steal>busy*0.3 threshold — otherwise WHO and WHY diverge in the band where
+	// the steal evidence fired but steal% stayed under busy%*0.3.
+	if stealActive {
 		entries = append([]model.BlameEntry{{
 			Comm: "hypervisor-steal",
 			Metrics: map[string]string{
@@ -160,7 +163,7 @@ func blameCPU(result *model.AnalysisResult, rates *model.RateSnapshot) []model.B
 	return entries
 }
 
-func blameMemory(rates *model.RateSnapshot) []model.BlameEntry {
+func blameMemory(result *model.AnalysisResult, rates *model.RateSnapshot) []model.BlameEntry {
 	type agg struct {
 		comm   string
 		pid    int
@@ -211,6 +214,19 @@ func blameMemory(rates *model.RateSnapshot) []model.BlameEntry {
 			Metrics:    metrics,
 			ImpactPct:  p.memPct,
 		})
+	}
+
+	// Kernel slab leak: the memory is unreclaimable kernel slab, not any
+	// userspace process. Prepend a kernel-slab entry so WHO agrees with the
+	// "kernel slab leak" narrative instead of blaming an innocent top-RSS process.
+	if hasActiveEvidence(result, BottleneckMemory, "mem.slab.leak") {
+		entries = append([]model.BlameEntry{{
+			Comm: "kernel-slab",
+			Metrics: map[string]string{
+				"slab": "unreclaimable kernel memory",
+			},
+			ImpactPct: 100,
+		}}, entries...)
 	}
 	return entries
 }
