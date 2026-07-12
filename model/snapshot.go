@@ -263,6 +263,12 @@ type AnalysisResult struct {
 	// collectors). Lets consumers avoid over-reading a reduced-signal verdict.
 	Coverage CoverageInfo `json:"coverage,omitempty"`
 
+	// PrimaryVerified is true when the formal verifier confirmed the primary
+	// bottleneck's cause (Tier A/B). The verifier is additive — Health is still
+	// score-driven — so when this is false on a degraded/critical result, the
+	// UI/API should label the verdict "unverified".
+	PrimaryVerified bool `json:"primary_verified"`
+
 	// Facts is the typed-evidence layer (NEXTGEN Phase 2). Each entry
 	// is a single observation with full provenance — see Fact in
 	// model/fact.go. Phase 2 emits these in parallel to the legacy

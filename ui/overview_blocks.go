@@ -280,7 +280,13 @@ func renderRCABox(result *model.AnalysisResult, width int) string {
 
 		// --- WHAT: short bottleneck name only ---
 		whatStr := result.PrimaryBottleneck
-		sb.WriteString(boxRow(dimStyle.Render("WHAT:  ")+sevStyle.Render(truncate(whatStr, maxField)), innerW) + "\n")
+		whatLine := dimStyle.Render("WHAT:  ") + sevStyle.Render(truncate(whatStr, maxField))
+		// Additive verifier: label a degraded/critical verdict the formal
+		// verifier did not confirm (Finding #4: additive + label unverified).
+		if result.Health >= model.HealthDegraded && !result.PrimaryVerified {
+			whatLine += " " + dimStyle.Render("(unverified)")
+		}
+		sb.WriteString(boxRow(whatLine, innerW) + "\n")
 
 		// --- WHY: narrative root cause (human explanation, not raw metrics) ---
 		why := ""

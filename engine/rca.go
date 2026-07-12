@@ -397,7 +397,14 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History, 
 		case entry.TopCgroup != "":
 			c.RootEntityID = "cgroup:" + entry.TopCgroup
 		}
-		result.VerifiedCauses = append(result.VerifiedCauses, v.Verify(c, result.Facts, result.Entities))
+		vc := v.Verify(c, result.Facts, result.Entities)
+		result.VerifiedCauses = append(result.VerifiedCauses, vc)
+		// Additive verification: record whether the PRIMARY bottleneck's cause
+		// was confirmed, so the UI/API can label an unverified verdict. Health
+		// remains score-driven (Finding #4: additive + label).
+		if entry.Bottleneck == result.PrimaryBottleneck {
+			result.PrimaryVerified = isVerifiedTier(vc.Tier)
+		}
 	}
 
 	// NEXTGEN Phase 1B: the score-band Health decision is owned by
