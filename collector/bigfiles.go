@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,9 +22,17 @@ type BigFileCollector struct {
 
 	mu        sync.Mutex
 	cache     []model.BigFile
+	cacheDirs []model.BigDir
 	lastScan  time.Time
 	triggered bool // set externally when disk pressure detected
 	firstRun  bool // true = skip expensive scan on first tick; set false after first Collect
+}
+
+// dirAgg accumulates a directory subtree's recursive total during the walk.
+type dirAgg struct {
+	bytes uint64
+	files int
+	depth int
 }
 
 func (b *BigFileCollector) Name() string { return "bigfiles" }
@@ -61,6 +70,7 @@ func (b *BigFileCollector) Collect(snap *model.Snapshot) error {
 		b.firstRun = false
 		b.mu.Unlock()
 		snap.Global.BigFiles = b.cache
+		snap.Global.BigDirs = b.cacheDirs
 		return nil
 	}
 	b.mu.Unlock()
@@ -69,6 +79,7 @@ func (b *BigFileCollector) Collect(snap *model.Snapshot) error {
 		// Return cached results
 		b.mu.Lock()
 		snap.Global.BigFiles = b.cache
+		snap.Global.BigDirs = b.cacheDirs
 		b.mu.Unlock()
 		return nil
 	}
@@ -83,13 +94,14 @@ func (b *BigFileCollector) Collect(snap *model.Snapshot) error {
 	}
 
 	var files []model.BigFile
+	dirs := make(map[string]*dirAgg)
 	budget := 3000 // max stat() calls per scan
 
 	for _, dir := range scanDirs {
 		if budget <= 0 {
 			break
 		}
-		budget = walkDir(dir, minSize, &files, budget, 0)
+		budget, _, _ = walkDir(dir, minSize, &files, dirs, budget, 0)
 	}
 
 	// Sort by size descending
@@ -101,26 +113,82 @@ func (b *BigFileCollector) Collect(snap *model.Snapshot) error {
 		files = files[:maxFiles]
 	}
 
+	// Roll the per-directory totals up into the top disjoint subtrees.
+	bigDirs := topDirs(dirs, minSize, maxFiles)
+
 	// Update cache
 	b.mu.Lock()
 	b.cache = files
+	b.cacheDirs = bigDirs
 	b.lastScan = time.Now()
 	b.mu.Unlock()
 
 	snap.Global.BigFiles = files
+	snap.Global.BigDirs = bigDirs
 	return nil
 }
 
-// walkDir walks a directory tree collecting large files, with a depth limit and budget.
-func walkDir(dir string, minSize uint64, files *[]model.BigFile, budget int, depth int) int {
+// topDirs selects the largest non-nested directory subtrees from the walk.
+// Candidates below the scan roots (depth >= 1) that meet minSize are ranked by
+// recursive size; a directory is skipped if an already-selected directory is
+// one of its ancestors, so the result lists disjoint hot spots (e.g. show
+// /var/lib/docker/volumes rather than both it and its parent).
+func topDirs(dirs map[string]*dirAgg, minSize uint64, max int) []model.BigDir {
+	type cand struct {
+		path string
+		agg  *dirAgg
+	}
+	cands := make([]cand, 0, len(dirs))
+	for p, a := range dirs {
+		if a.depth >= 1 && a.bytes >= minSize {
+			cands = append(cands, cand{p, a})
+		}
+	}
+	sort.Slice(cands, func(i, j int) bool {
+		return cands[i].agg.bytes > cands[j].agg.bytes
+	})
+
+	var out []model.BigDir
+	var picked []string
+	for _, c := range cands {
+		if len(out) >= max {
+			break
+		}
+		nested := false
+		for _, p := range picked {
+			if strings.HasPrefix(c.path, p+"/") {
+				nested = true
+				break
+			}
+		}
+		if nested {
+			continue
+		}
+		picked = append(picked, c.path)
+		out = append(out, model.BigDir{
+			Path:      c.path,
+			SizeBytes: c.agg.bytes,
+			FileCount: c.agg.files,
+		})
+	}
+	return out
+}
+
+// walkDir walks a directory tree collecting large files, with a depth limit and
+// budget. It also records each directory's recursive size into dirs (du-style)
+// and returns the remaining budget plus this subtree's total bytes and file count.
+func walkDir(dir string, minSize uint64, files *[]model.BigFile, dirs map[string]*dirAgg, budget, depth int) (int, uint64, int) {
 	if budget <= 0 || depth > 5 {
-		return budget
+		return budget, 0, 0
 	}
 
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return budget
+		return budget, 0, 0
 	}
+
+	var subtreeBytes uint64
+	var subtreeFiles int
 
 	for _, e := range entries {
 		if budget <= 0 {
@@ -143,7 +211,11 @@ func walkDir(dir string, minSize uint64, files *[]model.BigFile, budget int, dep
 			case "/var/lib/docker/overlay2", "/var/lib/containerd":
 				continue
 			}
-			budget = walkDir(fullPath, minSize, files, budget, depth+1)
+			var childBytes uint64
+			var childFiles int
+			budget, childBytes, childFiles = walkDir(fullPath, minSize, files, dirs, budget, depth+1)
+			subtreeBytes += childBytes
+			subtreeFiles += childFiles
 			continue
 		}
 
@@ -155,6 +227,8 @@ func walkDir(dir string, minSize uint64, files *[]model.BigFile, budget int, dep
 		}
 
 		size := uint64(info.Size())
+		subtreeBytes += size
+		subtreeFiles++
 		if size >= minSize {
 			*files = append(*files, model.BigFile{
 				Path:      fullPath,
@@ -165,5 +239,6 @@ func walkDir(dir string, minSize uint64, files *[]model.BigFile, budget int, dep
 		}
 	}
 
-	return budget
+	dirs[dir] = &dirAgg{bytes: subtreeBytes, files: subtreeFiles, depth: depth}
+	return budget, subtreeBytes, subtreeFiles
 }

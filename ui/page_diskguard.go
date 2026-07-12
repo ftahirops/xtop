@@ -300,6 +300,39 @@ func renderDiskGuardPage(snap *model.Snapshot, rates *model.RateSnapshot, result
 	}
 	sb.WriteString(boxSection("BIGGEST FILES", bigLines, iw))
 
+	// Section 3b: TOP DIRECTORIES (du-style recursive rollup of the walk)
+	var dirLines []string
+	dirHdr := fmt.Sprintf("%s %s %s",
+		styledPad(dimStyle.Render("SIZE"), 10),
+		styledPad(dimStyle.Render("FILES"), 10),
+		dimStyle.Render("DIRECTORY"))
+	dirLines = append(dirLines, dirHdr)
+
+	if snap != nil && len(snap.Global.BigDirs) > 0 {
+		shown := 0
+		for _, bd := range snap.Global.BigDirs {
+			if shown >= 6 {
+				break
+			}
+			sizeStr := fmtBytes(bd.SizeBytes)
+			if bd.SizeBytes > 1024*1024*1024 {
+				sizeStr = critStyle.Render(sizeStr)
+			} else if bd.SizeBytes > 100*1024*1024 {
+				sizeStr = warnStyle.Render(sizeStr)
+			}
+			filesStr := dimStyle.Render(fmt.Sprintf("%d", bd.FileCount))
+			line := fmt.Sprintf("%s %s %s",
+				styledPad(sizeStr, 10),
+				styledPad(filesStr, 10),
+				truncate(bd.Path, 80))
+			dirLines = append(dirLines, line)
+			shown++
+		}
+	} else {
+		dirLines = append(dirLines, dimStyle.Render("  no directories > 50MB in scanned paths"))
+	}
+	sb.WriteString(boxSection("TOP DIRECTORIES", dirLines, iw))
+
 	// Section 4: DELETED-BUT-OPEN FILES
 	var delLines []string
 	delHdr := fmt.Sprintf("%s %s %s %s",
