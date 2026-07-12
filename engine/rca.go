@@ -370,6 +370,16 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History, 
 	// proc host — within the engine's per-tick budget.
 	result.Entities = BuildEntityGraph(curr)
 
+	// Readiness #2: detect config/param drift and correlate it into the RCA
+	// scores BEFORE journal, verification, and finalization — so a drift-driven
+	// boost flows into health, the verifier (via the drift Facts it appends),
+	// and journal suspect selection, instead of mutating the score after the
+	// verdict is already decided. Guarded on e (nil-engine test path is inert).
+	if e != nil {
+		result.Changes = e.detectChanges(curr)
+		correlateConfigDrift(result, result.Changes, curr.Timestamp)
+	}
+
 	// P2.4 / readiness #3: Tier-1 journal RCA runs BEFORE verification and
 	// finalization so its evidence can strengthen VerifiedCauses and the verdict
 	// in the same tick (it was previously injected post-finalize, purely as
