@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sync"
@@ -220,8 +221,18 @@ func probeHTTP(t probeTarget) model.HealthProbeResult {
 	r.LatencyMs = float64(time.Since(start).Microseconds()) / 1000
 
 	if err != nil {
-		r.Status = "CRIT"
-		r.Detail = truncateStr(err.Error(), 60)
+		// Distinguish "service down" from "up but no HTTP response". A vhost-only
+		// server (e.g. nginx `return 444` for requests with no matching Host/SNI)
+		// accepts the TCP connection then closes it with no reply — the probe hits
+		// bare 127.0.0.1 with no Host header. That is NOT an outage, so only CRIT
+		// when the port itself refuses/does not accept a connection.
+		if tcpPortOpen(t.target) {
+			r.Status = "WARN"
+			r.Detail = "port open, no HTTP response (vhost-only?)"
+		} else {
+			r.Status = "CRIT"
+			r.Detail = truncateStr(err.Error(), 60)
+		}
 		return r
 	}
 	defer resp.Body.Close()
@@ -357,6 +368,34 @@ func (h *HealthCheckCollector) scanCertFiles() {
 	}
 
 	h.cached = remaining
+}
+
+// tcpPortOpen reports whether the host:port behind an http(s) URL accepts a TCP
+// connection. Used to tell "service up but no HTTP reply" (e.g. nginx return 444
+// on a vhost-only host) apart from "service down" (connection refused/timeout).
+func tcpPortOpen(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	host := u.Hostname()
+	if host == "" {
+		return false
+	}
+	port := u.Port()
+	if port == "" {
+		if u.Scheme == "https" {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, port), 2*time.Second)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
 }
 
 func truncateStr(s string, maxLen int) string {

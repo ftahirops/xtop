@@ -151,6 +151,8 @@ func renderAppsResourceShare(snap *model.Snapshot, iw int) string {
 	sb.WriteString("\n")
 	sb.WriteString(titleStyle.Render("RESOURCE SHARE"))
 	sb.WriteString(dimStyle.Render("   per-dimension rank · capacity share · headroom  (no composite % — each dim is independent)"))
+	sb.WriteString("\n")
+	sb.WriteString(dimStyle.Render("   Ranks:  C=CPU  M=Mem  I=IO  N=Net   ·   #n = this app's rank in that dimension (#1 = top consumer)   ·   — = not ranked"))
 	sb.WriteString("\n\n")
 
 	// Detect active bottleneck from the first app's Share.BottleneckDimension
