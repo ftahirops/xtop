@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"strings"
 	"time"
 
 	"github.com/ftahirops/xtop/model"
@@ -108,8 +109,9 @@ func stampFactBaselines(result *model.AnalysisResult, hist *History) {
 }
 
 // stampFactDurations mirrors Evidence.SustainedForSec into the matching
-// Fact.Duration on each RCAEntry. Facts and Evidence share the same ID
-// convention (cpu.psi.avg10 etc.), so the join is by-key.
+// Fact.Duration on each RCAEntry. Facts and Evidence usually share the same ID,
+// so the join is by-key; PSI is the exception (evidence "<d>.psi" vs fact
+// "<d>.psi.avg10"), handled by a suffix fallback below.
 //
 // NEXTGEN Phase 4: the temporal-ordering gate reads Fact.Duration to
 // decide if a candidate's evidence sustained long enough to count.
@@ -130,7 +132,14 @@ func stampFactDurations(result *model.AnalysisResult) {
 		}
 		for j := range entry.Facts {
 			f := &entry.Facts[j]
-			if sec, ok := susByID[f.ID]; ok {
+			sec, ok := susByID[f.ID]
+			if !ok && strings.HasSuffix(f.ID, ".avg10") {
+				// PSI facts are emitted as "<domain>.psi.avg10" but the paired
+				// evidence is "<domain>.psi" — fall back to the base ID so PSI
+				// durations get stamped (temporal gate depends on this).
+				sec, ok = susByID[strings.TrimSuffix(f.ID, ".avg10")]
+			}
+			if ok {
 				f.Duration = time.Duration(sec * float64(time.Second))
 			}
 		}
