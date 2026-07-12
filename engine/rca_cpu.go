@@ -18,10 +18,17 @@ func analyzeCPU(db *AdaptiveThresholdDB, curr *model.Snapshot, rates *model.Rate
 	if nCPUs == 0 {
 		nCPUs = 1
 	}
-	// Use Load1 for run queue: kernel-smoothed average, not instantaneous procs_running
-	// (Gregg: Load1 is already a 1-minute EWMA, less noise than point-in-time sample)
-	rqRatio := curr.Global.CPU.LoadAvg.Load1 / float64(nCPUs)
-	running := curr.Global.CPU.LoadAvg.Load1 // for display
+	// Run queue = instantaneous runnable tasks (procs_running from /proc/loadavg),
+	// NOT Load1. Load1 is a 1-minute EWMA that badly under-reports short saturation
+	// bursts: 13 runnable on 6 cores (ratio 2.17, saturated) shows as Load1 3.2
+	// (ratio 0.53, under threshold), which starved the cpu.runqueue evidence and
+	// mis-routed pattern selection. Fall back to Load1 only if procs_running is
+	// unavailable (0).
+	running := float64(curr.Global.CPU.LoadAvg.Running)
+	if running == 0 {
+		running = curr.Global.CPU.LoadAvg.Load1
+	}
+	rqRatio := running / float64(nCPUs)
 
 	var ctxRate, busyPct, stealPct, iowaitPct float64
 	var maxThrottlePct float64
@@ -229,13 +236,11 @@ func analyzeCPU(db *AdaptiveThresholdDB, curr *model.Snapshot, rates *model.Rate
 			r.Score = cpuSafeMaxScore
 		}
 	}
-	if stealPct > cpuStealBonusThreshold && v2TrustGate(r.EvidenceV2) {
-		r.Score += cpuStealBonusScore
-	}
-	if r.Score < rcaT.ScoreFloor {
-		r.Score = 0
-	}
-	cap100(&r.Score)
+	// Steal bonus augments an already-real CPU bottleneck; it must not resurrect a
+	// floored score, and requires the cpu.steal evidence to have actually fired
+	// (not merely any trusted evidence via v2TrustGate).
+	stealGate := stealPct > cpuStealBonusThreshold && evidenceFired(r.EvidenceV2, "cpu.steal")
+	r.Score = applyScoreBonus(r.Score, cpuStealBonusScore, rcaT.ScoreFloor, stealGate)
 	r.EvidenceGroups = evidenceGroupsFired(r.EvidenceV2, evidenceStrengthMin)
 	r.Checks = evidenceToChecks(r.EvidenceV2)
 

@@ -23,7 +23,10 @@ var narrativeTemplates = []narrativeRule{
 	{ids: []string{"mem.swap.activity", "io.psi"}, text: "Memory pressure causing IO storm via swap thrashing", priority: 95},
 	{ids: []string{"mem.reclaim.direct", "io.disk.latency"}, text: "Memory reclaim driving disk latency", priority: 93},
 	{ids: []string{"mem.oom.kills"}, text: "OOM crisis — kernel killing processes to free memory", priority: 92},
-	{ids: []string{"mem.swap.activity", "mem.psi", "io.disk.latency"}, minMatch: 2, text: "Memory pressure cascading into IO latency via swap", priority: 90},
+	// All three required: a "via swap" narrative must have swap evidence. With
+	// minMatch:2 the non-swap pair (mem.psi + io.disk.latency) fired this on hosts
+	// with no swap activity at all.
+	{ids: []string{"mem.swap.activity", "mem.psi", "io.disk.latency"}, text: "Memory pressure cascading into IO latency via swap", priority: 90},
 
 	// CPU multi-signal
 	{ids: []string{"cpu.cgroup.throttle", "cpu.runqueue"}, text: "CPU throttle cascade — cgroup limits saturating run queue", priority: 80},

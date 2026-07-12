@@ -51,6 +51,10 @@ const (
 	ioDstateBumpScore      = 60   // forced score when D-state count is high
 	fsFullGrowthDampenConf = 0.4  // confidence when FS full but not growing
 	fsFullUsedPctNoGrowth  = 95.0 // usedPct below this + no growth → dampen
+	// Culprit attribution: only blame the memory hog for IO when swap/reclaim is
+	// meaningful (not a trace), otherwise the real IO writer is the culprit.
+	ioCulpritSwapMinMBs     = 1.0   // MB/s swap-in to attribute IO to memory
+	ioCulpritReclaimMinRate = 100.0 // pages/s direct reclaim to attribute IO to memory
 
 	// --- Memory domain ---
 	memOOMMinScore          = 70    // floor score when OOM detected + trust gate
@@ -366,6 +370,25 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History, 
 	// proc host — within the engine's per-tick budget.
 	result.Entities = BuildEntityGraph(curr)
 
+	// Readiness #2: detect config/param drift and correlate it into the RCA
+	// scores BEFORE journal, verification, and finalization — so a drift-driven
+	// boost flows into health, the verifier (via the drift Facts it appends),
+	// and journal suspect selection, instead of mutating the score after the
+	// verdict is already decided. Guarded on e (nil-engine test path is inert).
+	if e != nil {
+		result.Changes = e.detectChanges(curr)
+		// curr.Timestamp (snapshot-aligned) is intentional; drift recency uses abs age.
+		correlateConfigDrift(result, result.Changes, curr.Timestamp)
+	}
+
+	// P2.4 / readiness #3: Tier-1 journal RCA runs BEFORE verification and
+	// finalization so its evidence can strengthen VerifiedCauses and the verdict
+	// in the same tick (it was previously injected post-finalize, purely as
+	// after-the-fact context). Needs result.RCA (scored suspects) and
+	// result.Entities, both available here. Best-effort; no-op when no journal
+	// query fn is configured (e.g. the test path).
+	injectJournalTier1(result, curr, e)
+
 	// NEXTGEN Phase 4: derive candidates from each RCA entry and run
 	// them through the verifier. Output is VerifiedCauses — abstaining
 	// by default (Tier D) when proof is weak. Runs additive to the
@@ -393,7 +416,14 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History, 
 		case entry.TopCgroup != "":
 			c.RootEntityID = "cgroup:" + entry.TopCgroup
 		}
-		result.VerifiedCauses = append(result.VerifiedCauses, v.Verify(c, result.Facts, result.Entities))
+		vc := v.Verify(c, result.Facts, result.Entities)
+		result.VerifiedCauses = append(result.VerifiedCauses, vc)
+		// Additive verification: record whether the PRIMARY bottleneck's cause
+		// was confirmed, so the UI/API can label an unverified verdict. Health
+		// remains score-driven (Finding #4: additive + label).
+		if entry.Bottleneck == result.PrimaryBottleneck {
+			result.PrimaryVerified = isVerifiedTier(vc.Tier)
+		}
 	}
 
 	// NEXTGEN Phase 1B: the score-band Health decision is owned by
@@ -555,6 +585,12 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History, 
 	// Narrative engine: build human-readable root cause explanation
 	result.Narrative = BuildNarrative(result, curr, rates)
 
+	// Inject config-drift remediation suggestions gathered during correlation
+	// (which ran before the narrative existed) now that the narrative is built.
+	if result.Narrative != nil && len(result.ConfigDriftSuggestions) > 0 {
+		result.Narrative.Evidence = append(result.Narrative.Evidence, result.ConfigDriftSuggestions...)
+	}
+
 	// Enrich narrative with app-specific context (e.g., "MySQL slow because IO")
 	if result.Narrative != nil && curr != nil {
 		EnrichNarrativeWithApps(result.Narrative, result, curr.Global.Apps.Instances)
@@ -622,12 +658,6 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History, 
 	// visually contradict the health verdict.
 	// Gate-passing paths (Health != Inconclusive) are unaffected.
 	clampInconclusiveScore(result)
-
-	// P2.4: Tier-1 journal RCA — on-demand journal evidence for the top
-	// suspect services identified above. Runs AFTER all suspects are known
-	// and AFTER result.Entities is built so InjectJournalEvidence can scope
-	// Facts to the right entity. Best-effort: never fails the tick.
-	injectJournalTier1(result, curr, e)
 
 	// NEXTGEN Phase 5: persist the frame to the corpus for offline
 	// replay. Best-effort, dedup'd to 1 write/sec, only triggers on

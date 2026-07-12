@@ -556,63 +556,15 @@ func (e *Engine) Tick() (*model.Snapshot, *model.RateSnapshot, *model.AnalysisRe
 		peers := e.GetPeerIncidents()
 		result = AnalyzeRCA(snap, rates, e.History, peers, e)
 
-		// Change detection: track new/stopped processes and recent package changes
-		if e.changeDetector != nil {
-			result.Changes = e.changeDetector.DetectChanges(snap)
-		}
-		// Config drift: walk the watchlist of /etc/* configs; merge any newly-
-		// detected modifications into Changes so they appear in Recent Activity.
-		if e.configDrift != nil {
-			result.Changes = append(result.Changes, e.configDrift.Tick()...)
-
-			// If an incident is active, look back 30 minutes for config drift
-			// events. A config change that landed shortly before degradation
-			// is the single highest-yield piece of RCA context we can surface.
-			if result != nil && result.Health > model.HealthOK {
-				recent := e.configDrift.RecentWithin(time.Now(), 30*time.Minute)
-				if len(recent) > 0 && result.Narrative != nil {
-					hint := formatConfigDriftHint(recent)
-					if hint != "" {
-						result.Narrative.Evidence = append(
-							[]string{hint},
-							result.Narrative.Evidence...,
-						)
-					}
+		// Config-drift narrative hint (presentation only — reads finalized
+		// Health). Detection + score correlation already ran inside AnalyzeRCA.
+		if e.configDrift != nil && result != nil && result.Health > model.HealthOK && result.Narrative != nil {
+			recent := e.configDrift.RecentWithin(time.Now(), 30*time.Minute)
+			if len(recent) > 0 {
+				if hint := formatConfigDriftHint(recent); hint != "" {
+					result.Narrative.Evidence = append([]string{hint}, result.Narrative.Evidence...)
 				}
 			}
-		}
-
-		// P4.5 — kernel-parameter drift (sysctl / /proc/sys).
-		// Runs every 30 ticks (~30 s at 1 Hz). Best-effort: panics are
-		// recovered so a bad Snapshot() never aborts the tick.
-		e.tickCount++
-		if e.configDriftEnabled && e.paramDriftDetector != nil && e.tickCount%30 == 0 {
-			func() {
-				defer func() { recover() }() //nolint:errcheck
-				live, err := e.configSnapshotFn()
-				if err != nil || len(live) == 0 {
-					return
-				}
-				now := time.Now()
-				changes, newBaselines := e.paramDriftDetector.Detect(live, now)
-				if len(newBaselines) > 0 {
-					// Stage for the next SaveBaselineState flush.
-					e.pendingParamBaselines = append(e.pendingParamBaselines, newBaselines...)
-				}
-				if len(changes) > 0 && result != nil {
-					result.Changes = append(result.Changes, changes...)
-				}
-			}()
-		}
-
-		// Phase 4.4 — config-drift onset correlation: if any config_drift_*
-		// changes are recent (within driftCorrelationWindow) and share a
-		// domain with the active bottleneck, boost that candidate's score
-		// and attach the drift as a typed Fact. Runs after result.Changes
-		// is fully populated so both file-level and param-level drift are
-		// considered.
-		if result != nil {
-			correlateConfigDrift(result, result.Changes, time.Now())
 		}
 
 		// Confidence calibration: detect incident completions to record outcomes,
@@ -864,6 +816,16 @@ func (e *Engine) Tick() (*model.Snapshot, *model.RateSnapshot, *model.AnalysisRe
 			snap.Global.CPU.NumCPUs,
 			snap.Global.Memory.Total,
 		)
+	}
+
+	// Stamp signal coverage so consumers know whether this was a full or
+	// reduced-signal (lean/fleet) analysis.
+	if result != nil {
+		mode := "full"
+		if e.mode == collector.ModeLean {
+			mode = "lean"
+		}
+		result.Coverage = model.CoverageInfo{Mode: mode, OmittedSignals: collector.OmittedSignals(e.mode)}
 	}
 
 	return snap, rates, result

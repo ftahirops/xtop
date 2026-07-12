@@ -508,13 +508,11 @@ func analyzeNetwork(db *AdaptiveThresholdDB, curr *model.Snapshot, rates *model.
 		r.Score = int(float64(r.Score) * severityMultiplier)
 	}
 
-	if totalDrops > netEvDropsMin && rates.CPUSoftIRQPct > netEvSoftIRQMin && v2TrustGate(r.EvidenceV2) {
-		r.Score += netDropsSoftIRQBonus
-	}
-	if r.Score < rcaT.ScoreFloor {
-		r.Score = 0
-	}
-	cap100(&r.Score)
+	// Drops+softirq bonus: gate on the actual net.drops evidence firing (not the
+	// raw metric above a tiny display minimum) and apply after the floor so it
+	// can't resurrect a sub-threshold network domain.
+	dropsGate := evidenceFired(r.EvidenceV2, "net.drops") && rates.CPUSoftIRQPct > netEvSoftIRQMin
+	r.Score = applyScoreBonus(r.Score, netDropsSoftIRQBonus, rcaT.ScoreFloor, dropsGate)
 	r.EvidenceGroups = evidenceGroupsFired(r.EvidenceV2, evidenceStrengthMin)
 	r.Checks = evidenceToChecks(r.EvidenceV2)
 

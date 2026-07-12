@@ -17,6 +17,34 @@ var slotWeights = map[string]float64{
 // v2TrustGate returns true if evidence meets the v2 trust requirements:
 // 2+ groups with strength >= 0.35 AND at least 1 measured with confidence >= 0.8
 // AND evidence comes from at least 2 different weight categories (diversity check).
+// evidenceFired reports whether an evidence ID is present with non-zero strength.
+func evidenceFired(evs []model.Evidence, id string) bool {
+	for _, e := range evs {
+		if e.ID == id && e.Strength > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// applyScoreBonus applies a domain score bonus with correct ordering: the score
+// floor is applied FIRST, and the bonus only augments a score that already
+// cleared the floor. This prevents a sub-threshold domain from being resurrected
+// into a bottleneck purely by a bonus (e.g. a few % steal, or minor packet
+// drops). Result is capped at 100.
+func applyScoreBonus(score, bonus, floor int, gate bool) int {
+	if score < floor {
+		score = 0
+	}
+	if score > 0 && gate {
+		score += bonus
+	}
+	if score > 100 {
+		score = 100
+	}
+	return score
+}
+
 func v2TrustGate(evs []model.Evidence) bool {
 	groups := evidenceGroupsFired(evs, 0.35)
 	if groups < 2 {
@@ -86,18 +114,29 @@ func domainConfidence(evs []model.Evidence) float64 {
 		return 0
 	}
 
-	// Average confidence of fired evidence
-	var sumConf float64
+	// Average confidence + peak strength of fired evidence
+	var sumConf, maxStrength float64
 	var count int
 	for _, e := range evs {
 		if e.Strength >= 0.35 {
 			sumConf += e.Confidence
 			count++
+			if e.Strength > maxStrength {
+				maxStrength = e.Strength
+			}
 		}
 	}
 	avgConf := sumConf / float64(count)
 
 	conf := 0.3 + 0.2*float64(fired-1) + 0.5*avgConf
+	// Cap by peak signal strength: a domain whose strongest evidence is only
+	// marginally over threshold cannot be near-certain, no matter how many weak
+	// signals piled up or how measurable they were. Prevents 93%+ confidence on
+	// weak/misattributed causes (many barely-fired signals used to saturate the
+	// count term to 0.98).
+	if cap := 0.5 + 0.5*maxStrength; conf > cap {
+		conf = cap
+	}
 	if conf < 0 {
 		conf = 0
 	}

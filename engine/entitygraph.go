@@ -31,6 +31,13 @@ func domainNameFromBottleneck(b string) string {
 	return string(domainFromBottleneck(b))
 }
 
+// isVerifiedTier reports whether a verification tier counts as "verified" for
+// labeling purposes: Tier A (confirmed) and B (verified) are trusted; Tier C
+// (probable) and D (inconclusive/abstain) are not, and should be labeled.
+func isVerifiedTier(t model.VerificationTier) bool {
+	return t == model.TierAConfirmed || t == model.TierBVerified
+}
+
 // factIDsForDomain returns the IDs of every Fact in the given domain.
 // O(len(facts)) per call — fine at ~30 facts/tick.
 func factIDsForDomain(facts []model.Fact, d model.Domain) []string {
