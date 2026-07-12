@@ -236,13 +236,11 @@ func analyzeCPU(db *AdaptiveThresholdDB, curr *model.Snapshot, rates *model.Rate
 			r.Score = cpuSafeMaxScore
 		}
 	}
-	if stealPct > cpuStealBonusThreshold && v2TrustGate(r.EvidenceV2) {
-		r.Score += cpuStealBonusScore
-	}
-	if r.Score < rcaT.ScoreFloor {
-		r.Score = 0
-	}
-	cap100(&r.Score)
+	// Steal bonus augments an already-real CPU bottleneck; it must not resurrect a
+	// floored score, and requires the cpu.steal evidence to have actually fired
+	// (not merely any trusted evidence via v2TrustGate).
+	stealGate := stealPct > cpuStealBonusThreshold && evidenceFired(r.EvidenceV2, "cpu.steal")
+	r.Score = applyScoreBonus(r.Score, cpuStealBonusScore, rcaT.ScoreFloor, stealGate)
 	r.EvidenceGroups = evidenceGroupsFired(r.EvidenceV2, evidenceStrengthMin)
 	r.Checks = evidenceToChecks(r.EvidenceV2)
 

@@ -109,6 +109,19 @@ func analyzeMemory(db *AdaptiveThresholdDB, curr *model.Snapshot, rates *model.R
 	// only when swap is genuinely active.
 	wSwap, cSwap := thresholdAdaptive(db, "mem.swap.activity", 1, 20, curr)
 	swapActivity := swapInRate + swapOutRate
+
+	// Direct reclaim without PSI confirmation is normal cache-pressure reclaim,
+	// not a "reclaim storm". Gate its STRENGTH (not just confidence) on PSI —
+	// the pattern matcher keys off strength, so a confidence-only dampener let
+	// Direct Reclaim Storm fire with PSI=0.
+	reclaimEv := emitEvidence("mem.reclaim.direct", model.DomainMemory,
+		directReclaimRate, w3, c3, true, reclaimConf,
+		fmt.Sprintf("direct reclaim=%.0f pages/s", directReclaimRate), "1s",
+		nil, nil)
+	if memSome < memPSISomeMinForReclaim {
+		reclaimEv.Strength = 0
+	}
+
 	r.EvidenceV2 = append(r.EvidenceV2,
 		emitEvidence("mem.swap.activity", model.DomainMemory,
 			swapActivity, wSwap, cSwap, true, 0.85,
@@ -122,10 +135,7 @@ func analyzeMemory(db *AdaptiveThresholdDB, curr *model.Snapshot, rates *model.R
 			usedPct, w2, c2, true, 0.9,
 			fmt.Sprintf("MemAvailable=%.1f%% (%s free)", availPct, formatB(mem.Available)), "1s",
 			nil, nil),
-		emitEvidence("mem.reclaim.direct", model.DomainMemory,
-			directReclaimRate, w3, c3, true, reclaimConf, // measured from vmstat, confidence gated by PSI
-			fmt.Sprintf("direct reclaim=%.0f pages/s", directReclaimRate), "1s",
-			nil, nil),
+		reclaimEv,
 		// Split swap: swap-in is worse than swap-out (Gregg: swap-in = demand paging failure)
 		emitEvidence("mem.swap.in", model.DomainMemory,
 			swapInRate, 1, 30, true, 0.85,
