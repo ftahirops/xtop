@@ -372,6 +372,11 @@ type AnalysisResult struct {
 	// Narrative engine output
 	Narrative *Narrative
 
+	// ConfigDriftSuggestions holds "SUGGESTED: ..." remediation lines produced
+	// by config-drift correlation, which runs before the narrative is built.
+	// They are appended to Narrative.Evidence after BuildNarrative. Transient.
+	ConfigDriftSuggestions []string `json:"-"`
+
 	// Temporal causality chain
 	TemporalChain *TemporalChain
 

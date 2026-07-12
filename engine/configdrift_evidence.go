@@ -286,15 +286,18 @@ func correlateConfigDrift(result *model.AnalysisResult, changes []model.SystemCh
 			driftFacts := InjectConfigDriftEvidence(nil, []model.SystemChange{rd.ch}, now)
 			result.Facts = append(result.Facts, driftFacts...)
 
-			// Surface a suggested (never applied) remediation in the narrative
-			// when this drift is the primary or a contributing bottleneck.
-			if result.Narrative != nil {
-				key, oldVal, newVal := parseDetailParts(rd.ch.Detail)
-				if hint := suggestedRemediation(key, oldVal, newVal); hint != "" {
-					result.Narrative.Evidence = append(
-						result.Narrative.Evidence,
-						"SUGGESTED: "+hint,
-					)
+			// Surface a suggested (never applied) remediation when this drift is
+			// the primary or a contributing bottleneck. correlateConfigDrift runs
+			// BEFORE the narrative is built (readiness #2), so stash it on the
+			// result; AnalyzeRCA injects it into Narrative.Evidence after
+			// BuildNarrative. Also append directly when a Narrative already exists
+			// (isolated-correlation callers/tests that build it up front).
+			key, oldVal, newVal := parseDetailParts(rd.ch.Detail)
+			if hint := suggestedRemediation(key, oldVal, newVal); hint != "" {
+				line := "SUGGESTED: " + hint
+				result.ConfigDriftSuggestions = append(result.ConfigDriftSuggestions, line)
+				if result.Narrative != nil {
+					result.Narrative.Evidence = append(result.Narrative.Evidence, line)
 				}
 			}
 

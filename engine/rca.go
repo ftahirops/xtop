@@ -377,6 +377,7 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History, 
 	// verdict is already decided. Guarded on e (nil-engine test path is inert).
 	if e != nil {
 		result.Changes = e.detectChanges(curr)
+		// curr.Timestamp (snapshot-aligned) is intentional; drift recency uses abs age.
 		correlateConfigDrift(result, result.Changes, curr.Timestamp)
 	}
 
@@ -583,6 +584,12 @@ func AnalyzeRCA(curr *model.Snapshot, rates *model.RateSnapshot, hist *History, 
 
 	// Narrative engine: build human-readable root cause explanation
 	result.Narrative = BuildNarrative(result, curr, rates)
+
+	// Inject config-drift remediation suggestions gathered during correlation
+	// (which ran before the narrative existed) now that the narrative is built.
+	if result.Narrative != nil && len(result.ConfigDriftSuggestions) > 0 {
+		result.Narrative.Evidence = append(result.Narrative.Evidence, result.ConfigDriftSuggestions...)
+	}
 
 	// Enrich narrative with app-specific context (e.g., "MySQL slow because IO")
 	if result.Narrative != nil && curr != nil {
