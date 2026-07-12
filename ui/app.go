@@ -1392,15 +1392,19 @@ func (m Model) View() string {
 	// Sticky RCA: use pinned result for RCA-heavy views (overview, beginner, explain)
 	// Live metrics on detail pages always use current m.result
 	rcaResult, resolvedAgo := m.displayResult()
+	// Render the overview as one consistent frame: when rcaResult is pinned, use
+	// the snapshot/rates captured with it so live metrics don't contradict the
+	// pinned analysis.
+	dispSnap, dispRates := m.displayFrame()
 
 	var content string
 	// Beginner mode: render simplified page on overview
 	if m.beginnerMode && m.page == PageOverview {
-		content = renderBeginnerPage(m.snap, m.rates, rcaResult, resolvedAgo, renderW, m.height)
+		content = renderBeginnerPage(dispSnap, dispRates, rcaResult, resolvedAgo, renderW, m.height)
 	} else {
 		switch m.page {
 		case PageOverview:
-			content = renderOverview(m.snap, m.rates, rcaResult, m.engine.History, smartDisks, m.probeManager, m.layoutMode, m.overviewCompact, renderW, m.height, m.intermediateMode)
+			content = renderOverview(dispSnap, dispRates, rcaResult, m.engine.History, smartDisks, m.probeManager, m.layoutMode, m.overviewCompact, renderW, m.height, m.intermediateMode)
 		case PageCPU:
 			content = renderCPUPage(m.snap, m.rates, m.result, m.probeManager, renderW, m.height, m.intermediateMode)
 		case PageMemory:
@@ -2056,6 +2060,9 @@ func (m *Model) updatePinnedRCA() {
 			shouldPin = true
 		} else if m.result.PrimaryScore > m.pinnedResult.PrimaryScore {
 			shouldPin = true // new finding is worse
+		} else if m.result.PrimaryBottleneck != m.pinnedResult.PrimaryBottleneck {
+			shouldPin = true // a DIFFERENT cause is now primary — don't let the
+			// stale pin mask it just because its score isn't strictly higher
 		} else if !m.resolvedAt.IsZero() && now.Sub(m.resolvedAt) > 15*time.Second {
 			shouldPin = true // old pin is in decay phase, replace with fresh finding
 		}
@@ -2223,6 +2230,18 @@ func (m *Model) displayResult() (result *model.AnalysisResult, resolvedAgo int) 
 		m.result.PinnedResolvedSec = 0
 	}
 	return m.result, 0
+}
+
+// displayFrame returns the snapshot and rates that match displayResult(), so the
+// overview renders one internally-consistent frame. When a pinned result is
+// shown, its captured snapshot/rates are used instead of the live ones —
+// otherwise live panels (e.g. CPU busy%) contradict the pinned analysis and its
+// derived Capacity/evidence in the same frame.
+func (m *Model) displayFrame() (*model.Snapshot, *model.RateSnapshot) {
+	if m.pinnedResult != nil && m.pinnedSnap != nil {
+		return m.pinnedSnap, m.pinnedRates
+	}
+	return m.snap, m.rates
 }
 
 // updatePinnedNetSummary pins the network intelligence summary during degraded/critical conditions.
