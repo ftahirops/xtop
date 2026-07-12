@@ -866,6 +866,16 @@ func (e *Engine) Tick() (*model.Snapshot, *model.RateSnapshot, *model.AnalysisRe
 		)
 	}
 
+	// Stamp signal coverage so consumers know whether this was a full or
+	// reduced-signal (lean/fleet) analysis.
+	if result != nil {
+		mode := "full"
+		if e.mode == collector.ModeLean {
+			mode = "lean"
+		}
+		result.Coverage = model.CoverageInfo{Mode: mode, OmittedSignals: collector.OmittedSignals(e.mode)}
+	}
+
 	return snap, rates, result
 }
 

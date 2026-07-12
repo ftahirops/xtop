@@ -248,9 +248,20 @@ type CollectionHealth struct {
 }
 
 // AnalysisResult is the full output of one analysis cycle.
+// CoverageInfo describes the signal coverage behind an AnalysisResult.
+type CoverageInfo struct {
+	Mode           string   `json:"mode"`                      // "full" | "lean"
+	OmittedSignals []string `json:"omitted_signals,omitempty"` // collectors not run in this mode
+}
+
 type AnalysisResult struct {
 	Health     HealthLevel
 	Confidence int // 0-100
+
+	// Coverage reports which collector mode produced this analysis and which
+	// signal classes were not observable (e.g. lean/fleet mode omits several
+	// collectors). Lets consumers avoid over-reading a reduced-signal verdict.
+	Coverage CoverageInfo `json:"coverage,omitempty"`
 
 	// Facts is the typed-evidence layer (NEXTGEN Phase 2). Each entry
 	// is a single observation with full provenance — see Fact in

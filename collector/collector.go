@@ -103,6 +103,28 @@ func NewRegistryMode(mode Mode) *Registry {
 	return &Registry{collectors: richCollectors()}
 }
 
+// OmittedSignals returns the collector names present in rich mode but excluded
+// from the given mode's collector set (nil for rich). Computed as rich−lean so
+// it never drifts from the actual registries. Lets fleet/API consumers know
+// which RCA signal classes were not observable for a given tick.
+func OmittedSignals(mode Mode) []string {
+	if mode != ModeLean {
+		return nil
+	}
+	lean := make(map[string]bool)
+	for _, c := range leanCollectors() {
+		lean[c.Name()] = true
+	}
+	var omitted []string
+	for _, c := range richCollectors() {
+		if !lean[c.Name()] {
+			omitted = append(omitted, c.Name())
+		}
+	}
+	sort.Strings(omitted)
+	return omitted
+}
+
 func richCollectors() []Collector {
 	return []Collector{
 		&SysInfoCollector{},
