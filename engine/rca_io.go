@@ -109,9 +109,13 @@ func analyzeIO(db *AdaptiveThresholdDB, curr *model.Snapshot, rates *model.RateS
 		float64(worstQueueDepth), w, c, true, 0.75,
 		fmt.Sprintf("queue depth=%d (%s)", worstQueueDepth, worstQueueDev), "1s",
 		nil, nil))
+	// Thresholds are in MB (warn 5, crit 20); mem.Writeback is bytes, so convert.
+	// Previously the raw byte count was compared against 5/20, pinning strength
+	// at 1.0 on every host with any writeback at all.
 	w, c = thresholdAdaptive(db, "io.writeback", 5, 20, curr)
+	writebackMB := float64(mem.Writeback) / (1024 * 1024)
 	r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("io.writeback", model.DomainIO,
-		float64(mem.Writeback), w, c, true, 0.7,
+		writebackMB, w, c, true, 0.7,
 		fmt.Sprintf("writeback=%s", formatB(mem.Writeback)), "1s",
 		nil, nil))
 
@@ -131,14 +135,19 @@ func analyzeIO(db *AdaptiveThresholdDB, curr *model.Snapshot, rates *model.RateS
 		buildFact("io.disk.util", "util_pct", model.DomainIO, worstUtil, "%", utilWarn, 0.85, now, "diskstats", nil),
 		buildFactScoped("io.disk.queuedepth", "queue_depth", model.DomainIO, float64(worstQueueDepth), "count", qdWarn, 0.75, now, "diskstats",
 			deviceEntityID(worstQueueDev), map[string]string{"device": worstQueueDev}),
-		buildFact("io.writeback", "writeback_bytes", model.DomainIO, float64(mem.Writeback), "bytes", wbWarn, 0.7, now, "procfs", nil),
+		buildFact("io.writeback", "writeback_mb", model.DomainIO, float64(mem.Writeback)/(1024*1024), "MB", wbWarn, 0.7, now, "procfs", nil),
 	)
 
 	// Filesystem full: only fire if there is actual growth (not just a large static FS)
 	if fsFull {
 		w, c = thresholdAdaptive(db, "io.fsfull", 85, 95, curr)
 		conf := 0.9
-		if worstFreePct > fsFullUsedPctNoGrowth && worstGrowthBPS < 1024 {
+		// Dampen confidence when the FS is full-ish but static: usedPct below the
+		// no-growth threshold AND not actively growing. Was comparing worstFreePct
+		// (free%) against the used% constant (95) — always false, so a static
+		// 85-95%-full mount hijacked the narrative at full 0.9 confidence.
+		usedPct := 100 - worstFreePct
+		if usedPct < fsFullUsedPctNoGrowth && worstGrowthBPS < 1024 {
 			conf = fsFullGrowthDampenConf // dampen if not actively growing
 		}
 		r.EvidenceV2 = append(r.EvidenceV2, emitEvidence("io.fsfull", model.DomainIO,
