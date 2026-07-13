@@ -74,13 +74,16 @@ func runtimeFromCgroup(content string) string {
 	switch {
 	case strings.Contains(content, "kubepods"):
 		return "k8s"
-	case strings.Contains(content, "docker"):
+	// Match a CONTAINER's cgroup ("docker-<id>.scope" or "/docker/<id>"), not the
+	// daemon's own service cgroup ("/system.slice/docker.service"), so dockerd
+	// itself reads as native.
+	case strings.Contains(content, "docker-") || strings.Contains(content, "/docker/"):
 		return "docker"
-	case strings.Contains(content, "containerd"):
-		return "containerd"
 	case strings.Contains(content, "libpod"), strings.Contains(content, "podman"):
 		return "podman"
-	case strings.Contains(content, "/lxc"):
+	case strings.Contains(content, "cri-containerd") || strings.Contains(content, "containerd-"):
+		return "containerd"
+	case strings.Contains(content, "/lxc/") || strings.Contains(content, "lxc-"):
 		return "lxc"
 	default:
 		return "native"
