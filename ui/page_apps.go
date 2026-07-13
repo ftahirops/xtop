@@ -70,10 +70,12 @@ func renderAppsPage(snap *model.Snapshot, result *model.AnalysisResult, selected
 	colConn := 7
 	colThr := 9
 	colHlth := 8
+	colRun := 11
 
-	header := fmt.Sprintf("  %s %s %s %s %s %s %s %s %s",
+	header := fmt.Sprintf("  %s %s %s %s %s %s %s %s %s %s",
 		styledPad(dimStyle.Render("#"), colNum),
 		styledPad(dimStyle.Render("App"), colApp),
+		styledPad(dimStyle.Render("Runtime"), colRun),
 		styledPad(dimStyle.Render("PID"), colPID),
 		styledPad(dimStyle.Render("Port"), colPort),
 		styledPad(dimStyle.Render("RSS"), colRSS),
@@ -105,13 +107,31 @@ func renderAppsPage(snap *model.Snapshot, result *model.AnalysisResult, selected
 			verStr = "—"
 		}
 
-		row := fmt.Sprintf("  %s %s %s %s %s %s %s %s %s",
+		// Runtime: dim "native", highlight containerised.
+		runStr := app.Runtime
+		if runStr == "" {
+			runStr = "—"
+		}
+		runStyled := valueStyle.Render(runStr)
+		if runStr == "native" || runStr == "—" {
+			runStyled = dimStyle.Render(runStr)
+		}
+
+		// Conns: "—" while deep collection is pending (guardian/first tick) — the
+		// count wasn't measured yet, so don't show a misleading 0.
+		connStr := fmt.Sprintf("%d", app.Connections)
+		if app.DeepPending {
+			connStr = "—"
+		}
+
+		row := fmt.Sprintf("  %s %s %s %s %s %s %s %s %s %s",
 			styledPad(dimStyle.Render(fmt.Sprintf("%d", i+1)), colNum),
 			styledPad(valueStyle.Render(name), colApp),
+			styledPad(runStyled, colRun),
 			styledPad(valueStyle.Render(fmt.Sprintf("%d", app.PID)), colPID),
 			styledPad(valueStyle.Render(portStr), colPort),
 			styledPad(valueStyle.Render(rssStr), colRSS),
-			styledPad(valueStyle.Render(fmt.Sprintf("%d", app.Connections)), colConn),
+			styledPad(valueStyle.Render(connStr), colConn),
 			styledPad(valueStyle.Render(fmt.Sprintf("%d", app.Threads)), colThr),
 			styledPad(healthStr, colHlth),
 			dimStyle.Render(verStr))

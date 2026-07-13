@@ -30,6 +30,15 @@ type AppInstance struct {
 	HealthScore  int      `json:"health_score"`
 	HealthIssues []string `json:"health_issues,omitempty"`
 
+	// Runtime is where the app runs: "docker", "containerd", "podman", "k8s",
+	// "lxc", or "native" (bare host process). Derived from the PID's cgroup.
+	Runtime string `json:"runtime,omitempty"`
+
+	// DeepPending is true for a tier-1-lite instance (first tick or guardian
+	// throttling deep probes): version and connection count were NOT measured
+	// yet, so consumers must render them as "—", not a misleading 0.
+	DeepPending bool `json:"deep_pending,omitempty"`
+
 	// Config
 	ConfigPath string `json:"config_path,omitempty"`
 	NeedsCreds bool   `json:"needs_creds"`

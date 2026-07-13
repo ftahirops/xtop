@@ -57,6 +57,36 @@ func cachedBtime() float64 {
 
 // countTCPConnections counts established TCP connections to a given local port.
 // Parses /proc/net/tcp (and tcp6) looking for connections in ESTABLISHED state (0A=LISTEN, 01=ESTABLISHED).
+// detectRuntime returns where a PID runs — "docker", "containerd", "podman",
+// "k8s", "lxc", or "native" — by inspecting its cgroup. Cheap (one read);
+// returns "native" if the cgroup can't be read.
+func detectRuntime(pid int) string {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/cgroup", pid))
+	if err != nil {
+		return "native"
+	}
+	return runtimeFromCgroup(string(data))
+}
+
+// runtimeFromCgroup classifies a cgroup file's contents. Ordered most-specific
+// first: kubepods (k8s) wins over the container runtime beneath it.
+func runtimeFromCgroup(content string) string {
+	switch {
+	case strings.Contains(content, "kubepods"):
+		return "k8s"
+	case strings.Contains(content, "docker"):
+		return "docker"
+	case strings.Contains(content, "containerd"):
+		return "containerd"
+	case strings.Contains(content, "libpod"), strings.Contains(content, "podman"):
+		return "podman"
+	case strings.Contains(content, "/lxc"):
+		return "lxc"
+	default:
+		return "native"
+	}
+}
+
 func countTCPConnections(port int) int {
 	count := 0
 	portHex := fmt.Sprintf("%04X", port)
