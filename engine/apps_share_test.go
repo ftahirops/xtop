@@ -187,3 +187,33 @@ func TestRankApps_ZeroValuesUnranked(t *testing.T) {
 		t.Errorf("idle app rank = %d, want 0 (unranked)", apps[1].Share.RankCPU)
 	}
 }
+
+// TestEnrichAppResourceShare_TreeRSSBeatsSampledSum reproduces the Share memory
+// undercount: ProcessRates is a top-N sample, so a multi-worker app (postgres
+// backends, nginx workers) has most of its tree missing from the sample. The
+// app module already measured the FULL tree RSS (AppInstance.RSSMB); the Share
+// must not report less memory than that. Live case: PG tree = 2094MB but Share
+// showed 298MB (only the sampled PIDs).
+func TestEnrichAppResourceShare_TreeRSSBeatsSampledSum(t *testing.T) {
+	snap, rates := synthScene(
+		4,
+		16*1024*1024*1024,
+		[]model.AppInstance{
+			{ID: "pg", AppType: "postgresql", DisplayName: "PostgreSQL", PID: 100,
+				RSSMB: 2094}, // module-measured full tree RSS
+		},
+		[]model.ProcessRate{
+			// Only the postmaster made the top-N sample; backends missing.
+			{PID: 100, CPUPct: 10, RSS: 298 * 1024 * 1024},
+		},
+		50,
+	)
+
+	EnrichAppResourceShare(snap, rates, nil, nil)
+
+	got := snap.Global.Apps.Instances[0].Share.MemRSSBytes
+	want := uint64(2094) * 1024 * 1024
+	if got < want {
+		t.Fatalf("Share.MemRSSBytes=%d undercounts the measured tree RSS %d", got, want)
+	}
+}

@@ -81,8 +81,13 @@ func EnrichAppResourceShare(snap *model.Snapshot, rates *model.RateSnapshot, res
 		if s.CPUCoresUsed == 0 && a.CPUPct > 0 {
 			s.CPUCoresUsed = a.CPUPct / 100.0
 		}
-		if s.MemRSSBytes == 0 && a.RSSMB > 0 {
-			s.MemRSSBytes = uint64(a.RSSMB * 1024 * 1024)
+		// ProcessRates is a top-N SAMPLE: multi-worker apps (postgres backends,
+		// nginx workers) have most of their tree missing from it, which
+		// undercounted Share memory up to 7x while the RSS column on the same
+		// page showed the module's full-tree number. The module's RSSMB is the
+		// authoritative tree measurement — never report less than it.
+		if treeRSS := uint64(a.RSSMB * 1024 * 1024); treeRSS > s.MemRSSBytes {
+			s.MemRSSBytes = treeRSS
 		}
 		s.NetConns = a.Connections
 

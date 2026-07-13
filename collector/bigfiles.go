@@ -21,8 +21,9 @@ type BigFileCollector struct {
 	MinSize   uint64 // minimum file size in bytes (default 50MB)
 
 	mu        sync.Mutex
-	cache     []model.BigFile
-	cacheDirs []model.BigDir
+	cache        []model.BigFile
+	cacheDirs    []model.BigDir
+	cachePartial bool
 	lastScan  time.Time
 	triggered bool // set externally when disk pressure detected
 	firstRun  bool // true = skip expensive scan on first tick; set false after first Collect
@@ -68,6 +69,7 @@ func (b *BigFileCollector) Collect(snap *model.Snapshot) error {
 	// Skip expensive full-directory walk on first tick
 	if b.firstRun {
 		b.firstRun = false
+		snap.Global.BigDirsPartial = b.cachePartial
 		b.mu.Unlock()
 		snap.Global.BigFiles = b.cache
 		snap.Global.BigDirs = b.cacheDirs
@@ -80,6 +82,7 @@ func (b *BigFileCollector) Collect(snap *model.Snapshot) error {
 		b.mu.Lock()
 		snap.Global.BigFiles = b.cache
 		snap.Global.BigDirs = b.cacheDirs
+		snap.Global.BigDirsPartial = b.cachePartial
 		b.mu.Unlock()
 		return nil
 	}
@@ -115,16 +118,21 @@ func (b *BigFileCollector) Collect(snap *model.Snapshot) error {
 
 	// Roll the per-directory totals up into the top disjoint subtrees.
 	bigDirs := topDirs(dirs, minSize, maxFiles)
+	// Budget exhausted mid-walk → the directory totals are lower bounds, not
+	// authoritative du output. Surface that so the UI can say so.
+	partial := budget <= 0
 
 	// Update cache
 	b.mu.Lock()
 	b.cache = files
 	b.cacheDirs = bigDirs
+	b.cachePartial = partial
 	b.lastScan = time.Now()
 	b.mu.Unlock()
 
 	snap.Global.BigFiles = files
 	snap.Global.BigDirs = bigDirs
+	snap.Global.BigDirsPartial = partial
 	return nil
 }
 

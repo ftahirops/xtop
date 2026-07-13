@@ -230,9 +230,9 @@ func renderBtopIOCell(rates *model.RateSnapshot, cellW int) string {
 	var totalRead, totalWrite float64
 
 	if rates != nil {
+		// Totals via SumDiskThroughput so dm/md layers aren't double-counted.
+		totalRead, totalWrite = model.SumDiskThroughput(rates.DiskRates)
 		for _, d := range rates.DiskRates {
-			totalRead += d.ReadMBs
-			totalWrite += d.WriteMBs
 			if d.UtilPct > worstUtil {
 				worstUtil = d.UtilPct
 				worstAwait = d.AvgAwaitMs
