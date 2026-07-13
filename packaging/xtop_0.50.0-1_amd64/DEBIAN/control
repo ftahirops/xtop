@@ -1,0 +1,38 @@
+Package: xtop
+Version: 0.50.0-1
+Section: admin
+Priority: optional
+Architecture: amd64
+Depends: libc6
+Recommends: postgresql, journalctl
+Installed-Size: 37740
+Maintainer: Farhan Tahir <farhan.003@gmail.com>
+Homepage: https://github.com/ftahirops/xtop
+Description: Incident-first root-cause analysis console for Linux
+ v0.50.0 — The correctness release: adversarially-verified RCA engine
+ audit (27 findings, 7 structural classes, all fixed) plus a 22-page /
+ 486-parameter verification of every displayed value against live
+ /proc, ss, df, and cgroup ground truth.
+ .
+   RCA engine correctness
+     * specific-cause narratives require their defining evidence
+       (no "hypervisor steal" without steal, no "swap thrashing"
+       on non-swapping hosts)
+     * run queue from instantaneous procs_running, not Load1
+     * confidence capped by evidence strength
+     * WHO always agrees with WHY (slab leaks blame the kernel)
+     * pinned RCA renders one consistent frame
+     * Proxmox/journal/config-drift evidence flows into scoring
+       before the verdict is finalized
+     * unverified verdicts labeled; lean mode surfaces coverage
+ .
+   Reporting accuracy
+     * LVM/RAID disk throughput/IOPS/top-writer no longer doubled
+     * MySQL 8 event scheduler no longer trips a bogus kill-query CRIT
+     * runtime census scans all of /proc; app memory uses full-tree RSS
+     * vhost-only web servers probe as WARN, not down
+     * partial disk scans labeled; warm-up shows dashes, not zeros
+ .
+   New
+     * DiskGuard TOP DIRECTORIES (du-style rollups)
+     * Apps Runtime column (docker/k8s/native) + readable Ranks

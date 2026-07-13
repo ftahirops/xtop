@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/xtop-v0.49.0-00d4aa?style=for-the-badge&logo=linux&logoColor=white" alt="version"/>
+  <img src="https://img.shields.io/badge/xtop-v0.50.0-00d4aa?style=for-the-badge&logo=linux&logoColor=white" alt="version"/>
   <img src="https://img.shields.io/badge/Go-1.25+-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="go"/>
   <img src="https://img.shields.io/badge/eBPF-Powered-ff6600?style=for-the-badge&logo=linux&logoColor=white" alt="ebpf"/>
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="license"/>
@@ -38,6 +38,31 @@
 </p>
 
 ---
+
+## What is new in v0.50.0
+
+**The correctness release: a full adversarially-verified audit of the RCA engine (27 findings, 7 structural classes — all fixed) plus a 22-page / 486-parameter verification of every displayed value against live `/proc`, `ss`, `df`, and cgroup ground truth.**
+
+**RCA engine correctness**
+- No more misattribution: "hypervisor stealing CPU" can no longer fire without real steal; "swap thrashing" can no longer fire on non-swapping hosts (the defining evidence of every specific-cause pattern is now required)
+- Run-queue saturation measured from instantaneous `procs_running`, not the Load1 EWMA
+- Confidence is capped by evidence strength — weak signals can't display 93%
+- WHO always agrees with WHY (kernel slab leaks blame the kernel; hypervisor narratives blame the hypervisor)
+- One consistent frame: pinned RCA results render with their own snapshot, never mixed with live numbers
+- Evidence pipeline ordering fixed: Proxmox VM memory, journal Tier-1, and config-drift evidence now flow into scoring/verification before the verdict is finalized
+- Unverified verdicts are labeled `(unverified)`; lean/fleet mode surfaces its reduced signal coverage
+
+**Reporting accuracy (verification sweep)**
+- LVM/RAID hosts no longer double-count disk throughput/IOPS/top-writer (dm layers re-report the physical device's IO)
+- MySQL 8's event scheduler no longer trips a permanent bogus "kill this query" CRIT
+- Runtime census scans all of `/proc` (9 node processes now show as 9, not 1); apps RESOURCE SHARE memory uses full-tree RSS
+- Vhost-only web servers (nginx `return 444`) probe as WARN "port open", not down
+- Partial disk scans say so ("sizes are at-least"); warm-up shows "—" instead of misleading zeros
+- Thresholds page now documents the engine's real base thresholds and slot-based scoring
+
+**New**
+- DiskGuard "TOP DIRECTORIES": du-style disjoint directory rollups in the existing scan pass
+- Apps table: Runtime column (docker/k8s/containerd/podman/native), self-explanatory Ranks column
 
 ## What is new in v0.49.0
 
