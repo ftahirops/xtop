@@ -215,6 +215,7 @@ func (m *Manager) Collect(snap *model.Snapshot) error {
 					Port:        entry.app.Port,
 					Status:      "active",
 					HealthScore: 100,
+					DeepPending: true, // conns/version not measured in the lite path
 					RSSMB:       readProcRSS(entry.app.PID),
 					Threads:     readProcThreads(entry.app.PID),
 					FDs:         readProcFDs(entry.app.PID),
@@ -230,6 +231,8 @@ func (m *Manager) Collect(snap *model.Snapshot) error {
 			if inst.ID == "" {
 				inst.ID = fmt.Sprintf("%s-%d", entry.module.Type(), entry.app.Index)
 			}
+			// Where does it run: docker / native / k8s / … (cheap cgroup read).
+			inst.Runtime = detectRuntime(entry.app.PID)
 			// Compute delta-based CPU% (real-time, not lifetime average)
 			curTicks := readProcCPUTicks(entry.app.PID)
 			if entry.prevTicks > 0 && curTicks >= entry.prevTicks {
