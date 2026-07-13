@@ -308,6 +308,9 @@ func renderDiskGuardPage(snap *model.Snapshot, rates *model.RateSnapshot, result
 		dimStyle.Render("DIRECTORY"))
 	dirLines = append(dirLines, dirHdr)
 
+	// When the scan's stat budget was exhausted mid-walk the sizes are lower
+	// bounds, not full du totals — say so instead of presenting them as exact.
+	dirsPartial := snap != nil && snap.Global.BigDirsPartial
 	if snap != nil && len(snap.Global.BigDirs) > 0 {
 		shown := 0
 		for _, bd := range snap.Global.BigDirs {
@@ -315,6 +318,9 @@ func renderDiskGuardPage(snap *model.Snapshot, rates *model.RateSnapshot, result
 				break
 			}
 			sizeStr := fmtBytes(bd.SizeBytes)
+			if dirsPartial {
+				sizeStr = "≥" + sizeStr
+			}
 			if bd.SizeBytes > 1024*1024*1024 {
 				sizeStr = critStyle.Render(sizeStr)
 			} else if bd.SizeBytes > 100*1024*1024 {
@@ -331,7 +337,11 @@ func renderDiskGuardPage(snap *model.Snapshot, rates *model.RateSnapshot, result
 	} else {
 		dirLines = append(dirLines, dimStyle.Render("  no directories > 50MB in scanned paths"))
 	}
-	sb.WriteString(boxSection("TOP DIRECTORIES", dirLines, iw))
+	dirTitle := "TOP DIRECTORIES"
+	if dirsPartial {
+		dirTitle = "TOP DIRECTORIES (partial scan — sizes are at-least)"
+	}
+	sb.WriteString(boxSection(dirTitle, dirLines, iw))
 
 	// Section 4: DELETED-BUT-OPEN FILES
 	var delLines []string

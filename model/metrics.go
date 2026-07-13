@@ -907,6 +907,7 @@ type GlobalMetrics struct {
 	DeletedOpen    []DeletedOpenFile
 	BigFiles       []BigFile
 	BigDirs        []BigDir
+	BigDirsPartial bool // scan stat-budget exhausted: BigDirs sizes are lower bounds
 	FilelessProcs  []FilelessProcess
 	Security       SecurityMetrics
 	Logs           LogMetrics

@@ -96,14 +96,16 @@ func renderTrendBlock(result *model.AnalysisResult, history *engine.History, wid
 		swapIO[i] = r.SwapInRate + r.SwapOutRate
 		reclaim[i] = r.DirectReclaimRate
 
-		// Worst disk util/await/throughput
+		// Worst disk util/await + total throughput (SumDiskThroughput counts
+		// each byte once — dm/md layers re-report the physical device's IO).
 		for _, d := range r.DiskRates {
 			if d.UtilPct > ioUtil[i] {
 				ioUtil[i] = d.UtilPct
 				ioAwait[i] = d.AvgAwaitMs
 			}
-			ioThru[i] += d.ReadMBs + d.WriteMBs
 		}
+		thruR, thruW := model.SumDiskThroughput(r.DiskRates)
+		ioThru[i] = thruR + thruW
 
 		// Network aggregates
 		for _, nr := range r.NetRates {

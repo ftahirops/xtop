@@ -333,26 +333,18 @@ func extractSubsystems(snap *model.Snapshot, rates *model.RateSnapshot, result *
 		{"Queue depth", qdVal},
 	}
 
-	// Read/write throughput
+	// Read/write throughput + IOPS. SumDisk* count each byte once — on LVM/RAID
+	// hosts /proc/diskstats reports the same IO at both the dm/md layer and the
+	// physical device, and a naive sum doubled every number here.
 	readMBs := float64(0)
 	writeMBs := float64(0)
-	if rates != nil {
-		for _, d := range rates.DiskRates {
-			readMBs += d.ReadMBs
-			writeMBs += d.WriteMBs
-		}
-	}
-	io.Details = append(io.Details, kv{"Throughput", fmt.Sprintf("R:%.1f W:%.1f MB/s", readMBs, writeMBs)})
-
-	// IOPS
 	readIOPS := float64(0)
 	writeIOPS := float64(0)
 	if rates != nil {
-		for _, d := range rates.DiskRates {
-			readIOPS += d.ReadIOPS
-			writeIOPS += d.WriteIOPS
-		}
+		readMBs, writeMBs = model.SumDiskThroughput(rates.DiskRates)
+		readIOPS, writeIOPS = model.SumDiskIOPS(rates.DiskRates)
 	}
+	io.Details = append(io.Details, kv{"Throughput", fmt.Sprintf("R:%.1f W:%.1f MB/s", readMBs, writeMBs)})
 	io.Details = append(io.Details, kv{"IOPS", fmt.Sprintf("R:%.0f W:%.0f", readIOPS, writeIOPS)})
 
 	if result != nil && len(result.IOOwners) > 0 {

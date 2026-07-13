@@ -3,6 +3,7 @@
 package collector
 
 import (
+	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -91,5 +92,22 @@ func TestTopDirsRespectsMax(t *testing.T) {
 	}
 	if out[0].SizeBytes != 500 || out[1].SizeBytes != 400 {
 		t.Errorf("expected largest two by size, got %+v", out)
+	}
+}
+
+// TestWalkDirBudgetExhaustionSignals verifies the walk reports budget
+// exhaustion so callers can mark results as a partial (lower-bound) scan
+// instead of presenting truncated sizes as authoritative du output.
+func TestWalkDirBudgetExhaustionSignals(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i < 5; i++ {
+		writeFile(t, filepath.Join(root, "d", fmt.Sprintf("f%d", i)), 10)
+	}
+
+	var files []model.BigFile
+	dirs := make(map[string]*dirAgg)
+	budget, _, _ := walkDir(root, 0, &files, dirs, 2, 0)
+	if budget > 0 {
+		t.Fatalf("expected budget exhausted (<=0), got %d", budget)
 	}
 }

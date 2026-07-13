@@ -1,8 +1,10 @@
 package cgroup
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/ftahirops/xtop/model"
 	"github.com/ftahirops/xtop/util"
@@ -78,9 +80,23 @@ func readV2IO(path string, cg *model.CgroupMetrics) {
 	if err != nil {
 		return
 	}
+	sumV2IOLines(lines, isLayeredMajMin, cg)
+}
+
+// sumV2IOLines accumulates io.stat rows into cg, skipping layered
+// (device-mapper) rows: on LVM hosts io.stat reports the SAME bytes at both
+// the dm row (252:0) and the physical row (8:0), so summing all rows doubled
+// every cgroup's IO and the Top-writer attribution built on it.
+func sumV2IOLines(lines []string, isLayered func(majmin string) bool, cg *model.CgroupMetrics) {
 	for _, line := range lines {
 		fields := strings.Fields(line)
-		for _, f := range fields {
+		if len(fields) == 0 {
+			continue
+		}
+		if isLayered(fields[0]) {
+			continue
+		}
+		for _, f := range fields[1:] {
 			parts := strings.SplitN(f, "=", 2)
 			if len(parts) != 2 {
 				continue
@@ -98,4 +114,27 @@ func readV2IO(path string, cg *model.CgroupMetrics) {
 			}
 		}
 	}
+}
+
+// layeredMajMin caches whether a MAJ:MIN is a device-mapper device
+// (has /sys/dev/block/MAJ:MIN/dm). Device numbers are stable for the
+// life of the host, so a grow-only cache is safe.
+var (
+	layeredMu    sync.Mutex
+	layeredCache = map[string]bool{}
+)
+
+func isLayeredMajMin(majmin string) bool {
+	layeredMu.Lock()
+	v, ok := layeredCache[majmin]
+	layeredMu.Unlock()
+	if ok {
+		return v
+	}
+	_, err := os.Stat("/sys/dev/block/" + majmin + "/dm")
+	layered := err == nil
+	layeredMu.Lock()
+	layeredCache[majmin] = layered
+	layeredMu.Unlock()
+	return layered
 }
