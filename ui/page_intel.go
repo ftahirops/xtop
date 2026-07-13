@@ -264,7 +264,11 @@ func renderIntelImpactContent(scores []model.ImpactScore, iw int) string {
 			styledPad(dimStyle.Render(fmt.Sprintf("#%d", s.Rank)), 6),
 			styledPad(valueStyle.Render(fmt.Sprintf("%d", s.PID)), 8),
 			styledPad(valueStyle.Render(name), 16),
-			styledPad(valueStyle.Render(fmt.Sprintf("%.1f", s.CPUSaturation*100)), 8),
+			// Real CPU% (s.CPUPct), not CPUSaturation: saturation is normalized
+			// to the largest consumer, so the #1 row always read "100.0" under a
+			// "CPU%" header regardless of actual use. The normalized component
+			// still appears in the breakdown line below as CPU=.
+			styledPad(valueStyle.Render(fmt.Sprintf("%.1f", s.CPUPct)), 8),
 			styledPad(valueStyle.Render(rssStr), 10),
 			styledPad(dimStyle.Render(ioStr), 10),
 			style.Render(impactStr))

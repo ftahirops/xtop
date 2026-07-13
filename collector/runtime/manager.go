@@ -44,10 +44,17 @@ func (m *Manager) Collect(snap *model.Snapshot) error {
 	if skipDetection.Load() {
 		return nil
 	}
-	// Run detection scan every 30s
+	// Run detection scan every 30s against a FULL /proc scan. snap.Processes
+	// is the top-N-by-activity sample, so using it here made the census
+	// materially undercount idle interpreters (e.g. "Node.js (1 procs)" while
+	// 9 node processes ran). The per-process rows were right; the counts lied.
 	if time.Since(m.lastScan) >= scanInterval {
+		allProcs := scanAllComms()
+		if len(allProcs) == 0 {
+			allProcs = snap.Processes // transient /proc walk failure — degrade to the sample
+		}
 		for _, mod := range m.modules {
-			mod.Detect(snap.Processes)
+			mod.Detect(allProcs)
 		}
 		m.lastScan = time.Now()
 	}

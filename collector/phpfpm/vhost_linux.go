@@ -24,10 +24,12 @@ type vhostInfo struct {
 // and returns one vhostInfo per server_name / ServerName found.
 func discoverVhosts() []vhostInfo {
 	var out []vhostInfo
-	out = append(out, parseNginxDir("/www/server/panel/vhost/nginx")...)     // aaPanel
-	out = append(out, parseNginxDir("/etc/nginx/sites-enabled")...)         // Debian/Ubuntu
-	out = append(out, parseNginxDir("/etc/nginx/conf.d")...)                // RHEL default + custom
-	out = append(out, parseNginxDir("/etc/nginx/plesk.conf.d/vhosts")...)   // Plesk
+	out = append(out, parseNginxDir("/www/server/panel/vhost/nginx", true)...) // aaPanel
+	// Debian nginx includes sites-enabled/* with NO extension filter, so
+	// extensionless vhost files (e.g. "xgenstack") are live config too.
+	out = append(out, parseNginxDir("/etc/nginx/sites-enabled", false)...)     // Debian/Ubuntu
+	out = append(out, parseNginxDir("/etc/nginx/conf.d", true)...)             // RHEL default + custom
+	out = append(out, parseNginxDir("/etc/nginx/plesk.conf.d/vhosts", true)...) // Plesk
 	out = append(out, parseApacheDir("/etc/apache2/sites-enabled")...)      // Debian/Ubuntu
 	out = append(out, parseApacheDir("/etc/httpd/conf.d")...)               // RHEL
 	out = append(out, parseApacheDir("/etc/apache2/plesk.conf.d/vhosts")...) // Plesk
@@ -73,7 +75,11 @@ func scoreVhost(v vhostInfo) int {
 	return len(v.DocRoot) + len(v.AccessLog) + len(v.PHPSocket)
 }
 
-func parseNginxDir(dir string) []vhostInfo {
+// parseNginxDir parses every vhost file in dir. requireConfExt mirrors the
+// nginx include semantics for that directory: conf.d is included as "*.conf",
+// but Debian's sites-enabled is included as "*" — every file there is live
+// config regardless of extension.
+func parseNginxDir(dir string, requireConfExt bool) []vhostInfo {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
@@ -84,7 +90,13 @@ func parseNginxDir(dir string) []vhostInfo {
 			continue
 		}
 		name := e.Name()
-		if !strings.HasSuffix(name, ".conf") {
+		if requireConfExt && !strings.HasSuffix(name, ".conf") {
+			continue
+		}
+		// skip editor/package-manager leftovers that nginx would also choke on
+		// or that aren't config (harmless to parse, but avoid obvious noise)
+		if strings.HasSuffix(name, ".bak") || strings.HasSuffix(name, "~") ||
+			strings.HasSuffix(name, ".dpkg-old") || strings.HasSuffix(name, ".swp") {
 			continue
 		}
 		// skip aaPanel's framework files
