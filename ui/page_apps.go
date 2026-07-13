@@ -151,8 +151,6 @@ func renderAppsResourceShare(snap *model.Snapshot, iw int) string {
 	sb.WriteString("\n")
 	sb.WriteString(titleStyle.Render("RESOURCE SHARE"))
 	sb.WriteString(dimStyle.Render("   per-dimension rank · capacity share · headroom  (no composite % — each dim is independent)"))
-	sb.WriteString("\n")
-	sb.WriteString(dimStyle.Render("   Ranks:  C=CPU  M=Mem  I=IO  N=Net   ·   #n = this app's rank in that dimension (#1 = top consumer)   ·   — = not ranked"))
 	sb.WriteString("\n\n")
 
 	// Detect active bottleneck from the first app's Share.BottleneckDimension
@@ -180,7 +178,7 @@ func renderAppsResourceShare(snap *model.Snapshot, iw int) string {
 	colMem := 18   // "12.3/32G (38%)"
 	colIO := 14    // "45 MB/s (37%)"
 	colConn := 8
-	colRank := 18  // "CPU#1 MEM#2 IO#3"
+	colRank := 24  // spelled-out ranked dims, e.g. "CPU#1 Mem#2 IO#2 Net#1"
 	colBottle := 0
 	if activeDim != "" {
 		colBottle = 10 // "72%"
@@ -194,7 +192,7 @@ func renderAppsResourceShare(snap *model.Snapshot, iw int) string {
 		styledPad(dimStyle.Render("Mem (RSS/%)"), colMem), sep,
 		styledPad(dimStyle.Render("IO MB/s"), colIO), sep,
 		styledPad(dimStyle.Render("Conns"), colConn), sep,
-		styledPad(dimStyle.Render("Ranks"), colRank))
+		styledPad(dimStyle.Render("Ranks (#1=top consumer)"), colRank))
 	if activeDim != "" {
 		header += sep + styledPad(warnStyle.Render("Bottleneck%"), colBottle)
 	}
@@ -393,17 +391,25 @@ func impactScoreCell(score float64) string {
 	}
 }
 
-// fmtRankQuad renders compact per-dim ranks like "C#1 M#2 I#— N#3". Unranked
-// dimensions render as "—" to avoid confusing them with "rank zero."
+// fmtRankQuad renders per-dimension ranks with spelled-out labels, showing only
+// the dimensions this app is actually ranked in, e.g. "CPU#3 Mem#4 IO#1"
+// (#1 = the top consumer in that dimension). Returns "—" when the app is
+// unranked in every dimension. Self-explanatory in-column — no legend needed.
 func fmtRankQuad(c, m, io, n int) string {
-	fmtOne := func(r int) string {
-		if r == 0 {
-			return "—"
+	parts := make([]string, 0, 4)
+	add := func(label string, r int) {
+		if r > 0 {
+			parts = append(parts, fmt.Sprintf("%s#%d", label, r))
 		}
-		return fmt.Sprintf("#%d", r)
 	}
-	return fmt.Sprintf("C%s M%s I%s N%s",
-		fmtOne(c), fmtOne(m), fmtOne(io), fmtOne(n))
+	add("CPU", c)
+	add("Mem", m)
+	add("IO", io)
+	add("Net", n)
+	if len(parts) == 0 {
+		return "—"
+	}
+	return strings.Join(parts, " ")
 }
 
 // topBy returns the top-N apps by a picker function, rendered as (name,
