@@ -5,6 +5,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/ftahirops/xtop/model"
 )
 
 // readProcRSSMB reads VmRSS from /proc/PID/status and returns MB.
@@ -120,4 +122,32 @@ func readProcCPUPct(pid int) float64 {
 	// Actual CPU% would need delta calculation. Return total ticks as proxy.
 	_ = utime + stime
 	return 0 // can't compute instantaneous CPU% from a single read
+}
+
+// scanAllComms walks /proc and returns PID+Comm for EVERY process — the fields
+// the runtime Detect() modules match on. snap.Processes is a top-N sample, so
+// using it for the census made idle interpreters invisible ("Node.js (1
+// procs)" while 9 node processes ran). Cost: one small read per PID (~1-2ms
+// for a few hundred processes), and detection only runs every 30s.
+func scanAllComms() []model.ProcessMetrics {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil
+	}
+	procs := make([]model.ProcessMetrics, 0, len(entries))
+	for _, e := range entries {
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil {
+			continue
+		}
+		comm, err := os.ReadFile("/proc/" + e.Name() + "/comm")
+		if err != nil {
+			continue
+		}
+		procs = append(procs, model.ProcessMetrics{
+			PID:  pid,
+			Comm: strings.TrimSpace(string(comm)),
+		})
+	}
+	return procs
 }

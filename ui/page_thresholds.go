@@ -59,14 +59,18 @@ func renderThresholdsPage(snap *model.Snapshot, rates *model.RateSnapshot, resul
 		}
 	}
 
+	// WARN/CRIT values below mirror the ENGINE's base thresholds (the literals
+	// passed to thresholdAdaptive in engine/rca_*.go). If you change one there,
+	// change it here — this page is documentation of the engine's behavior and
+	// had drifted from it (6 stale pairs found by the verification sweep).
 	cpuEntries := []thresholdEntry{
-		makeEntry("CPU Busy", busyPct, "%", 0, 80, 100, fmt.Sprintf("%d cores", nCPU), "/proc/stat"),
-		makeEntry("CPU PSI some", psiCPU, "%", 0, 5, 25, "100%", "/proc/pressure/cpu"),
-		makeEntry("Run Queue Ratio", rqRatio, "x", 0, 1.5, 3.0, fmt.Sprintf("%.0fx", float64(nCPU)), "/proc/loadavg runnable/cores"),
-		makeEntry("Ctx Switches/core", ctxPerCore, "/s", 0, 30000, 100000, "~200K/core", "/proc/pid/status aggregate"),
+		makeEntry("CPU Busy", busyPct, "%", 0, 60, 90, fmt.Sprintf("%d cores", nCPU), "/proc/stat"),
+		makeEntry("CPU PSI some", psiCPU, "%", 0, 5, 20, "100%", "/proc/pressure/cpu"),
+		makeEntry("Run Queue Ratio", rqRatio, "x", 0, 1.0, 2.0, fmt.Sprintf("%.0fx", float64(nCPU)), "/proc/loadavg runnable/cores"),
+		makeEntry("Ctx Switches/core", ctxPerCore, "/s", 0, 2000, 10000, "~200K/core", "/proc/stat ctxt"),
 		makeEntry("CPU Steal", stealPct, "%", 0, 5, 15, "100%", "hypervisor (VM only)"),
-		makeEntry("SoftIRQ CPU", softPct, "%", 0, 5, 15, "100%", "/proc/stat"),
-		makeEntry("Cgroup Throttle", maxThrottle, "%", 0, 5, 30, "100%", "cpu.stat nr_throttled"),
+		makeEntry("SoftIRQ CPU", softPct, "%", 0, 5, 25, "100%", "/proc/stat"),
+		makeEntry("Cgroup Throttle", maxThrottle, "%", 0, 5, 25, "100%", "cpu.stat nr_throttled"),
 	}
 
 	// ── Memory Thresholds ──
@@ -98,10 +102,9 @@ func renderThresholdsPage(snap *model.Snapshot, rates *model.RateSnapshot, resul
 		makeEntry("MemAvailable", availPct, "% free", 100, 20, 5, fmtBytes(mem.Total), "/proc/meminfo (avail<thresh=bad)"),
 		makeEntry("MEM PSI full", psiMem, "%", 0, 2, 15, "100%", "/proc/pressure/memory"),
 		makeEntry("Dirty Pages", dirtyPct, "% RAM", 0, 5, 20, fmtBytes(mem.Total), "/proc/meminfo Dirty"),
-		makeEntry("Swap In Rate", swapIn, "MB/s", 0, 0.1, 10, "disk speed", "/proc/vmstat pswpin"),
-		makeEntry("Swap Out Rate", swapOut, "MB/s", 0, 0.1, 10, "disk speed", "/proc/vmstat pswpout"),
-		makeEntry("Direct Reclaim", directR, "pg/s", 0, 1, 1000, "unlimited", "/proc/vmstat pgscan_direct"),
-		makeEntry("Major Faults", majFaultR, "/s", 0, 10, 500, "unlimited", "/proc/vmstat pgmajfault"),
+		makeEntry("Swap Activity", swapIn+swapOut, "MB/s", 0, 1, 20, "disk speed", "/proc/vmstat pswpin+pswpout"),
+		makeEntry("Direct Reclaim", directR, "pg/s", 0, 10, 500, "unlimited", "/proc/vmstat pgscan_direct"),
+		makeEntry("Major Faults", majFaultR, "/s", 0, 10, 200, "unlimited", "/proc/vmstat pgmajfault"),
 	}
 	// ── Disk IO Thresholds ──
 	psiIO := snap.Global.PSI.IO.Full.Avg10
@@ -125,8 +128,8 @@ func renderThresholdsPage(snap *model.Snapshot, rates *model.RateSnapshot, resul
 	}
 	ioEntries := []thresholdEntry{
 		makeEntry("IO PSI full", psiIO, "%", 0, 2, 15, "100%", "/proc/pressure/io"),
-		makeEntry("Disk Utilization", worstUtil, "%", 0, 80, 98, "100%", "/proc/diskstats io_ticks"),
-		makeEntry("Disk Await", worstAwait, "ms", 0, 20, 200, "unbounded", "/proc/diskstats (SSD<1ms, HDD~10ms)"),
+		makeEntry("Disk Utilization", worstUtil, "%", 0, 70, 95, "100%", "/proc/diskstats io_ticks"),
+		makeEntry("Disk Await", worstAwait, "ms", 0, 20, 80, "unbounded", "/proc/diskstats (SSD<1ms, HDD~10ms)"),
 		makeEntry("D-state Procs", float64(dCount), "", 0, 1, 10, "nr_procs", "/proc/pid/stat state=D"),
 		makeEntry("Dirty % of RAM", dirtyPct, "%", 0, 5, 20, "vm.dirty_ratio", "/proc/meminfo"),
 	}
@@ -251,43 +254,54 @@ func renderThresholdsPage(snap *model.Snapshot, rates *model.RateSnapshot, resul
 	sb.WriteString(renderThresholdSection("Network", netEntries, iw, showAll))
 
 	// ── RCA Score Thresholds ──
+	// This panel documents the ENGINE's actual slot-based scoring
+	// (engine/scoring.go weightedDomainScore): evidence is normalized against
+	// its adaptive warn/crit thresholds into a 0..1 strength; each signal maps
+	// to a weight slot; the best strength×confidence per slot is taken and the
+	// weighted sum ×100 is the domain score. The previous panel described a
+	// superseded per-signal clamp scheme that no longer existed in the engine.
 	var rcaLines []string
-	rcaLines = append(rcaLines, dimStyle.Render(fmt.Sprintf("%-25s %8s %10s %12s %8s", "SIGNAL", "WEIGHT", "CLAMP MAX", "FIRES WHEN", "STATUS")))
+	rcaLines = append(rcaLines, dimStyle.Render("Score = 100 × Σ slot_weight × best(strength × confidence) per slot"))
+	rcaLines = append(rcaLines, dimStyle.Render("strength = normalize(value, WARN, CRIT): 0 below WARN, 1 at CRIT, linear between"))
 	rcaLines = append(rcaLines, "")
-
-	rcaLines = append(rcaLines, titleStyle.Render("IO Score (4 evidence groups, need 2+):"))
-	rcaLines = append(rcaLines, rcaLine("IO PSI some", 35, "50%", ">5%", psiIO > 5))
-	rcaLines = append(rcaLines, rcaLine("IO PSI full", 25, "10%", ">1%", snap.Global.PSI.IO.Full.Avg10 > 1))
-	rcaLines = append(rcaLines, rcaLine("D-state tasks", 15, "10", ">0", dCount > 0))
-	rcaLines = append(rcaLines, rcaLine("Disk await", 15, "50ms", ">10ms", worstAwait > 10))
-	rcaLines = append(rcaLines, rcaLine("Disk util", 10, "95%", ">80%", worstUtil > 80))
+	rcaLines = append(rcaLines, titleStyle.Render("Slot weights (all domains):"))
+	rcaLines = append(rcaLines, "  PSI 35%  ·  Latency 25%  ·  Queue 20%  ·  Secondary 20%")
 
 	rcaLines = append(rcaLines, "")
-	rcaLines = append(rcaLines, titleStyle.Render("Memory Score (6 evidence groups, need 2+):"))
-	rcaLines = append(rcaLines, rcaLine("MEM PSI some", 30, "50%", ">5%", snap.Global.PSI.Memory.Some.Avg10 > 5))
-	rcaLines = append(rcaLines, rcaLine("MEM PSI full", 25, "10%", ">1%", psiMem > 1))
-	rcaLines = append(rcaLines, rcaLine("Swap IO rate", 20, "50 MB/s", ">0.1 MB/s", swapIn+swapOut > 0.1))
-	rcaLines = append(rcaLines, rcaLine("Direct reclaim ratio", 15, "60%", ">0", directR > 0))
-	rcaLines = append(rcaLines, rcaLine("Major faults", 10, "500/s", ">10/s", majFaultR > 10))
+	rcaLines = append(rcaLines, dimStyle.Render(fmt.Sprintf("%-25s %8s %10s %12s %8s", "SIGNAL (fires at WARN)", "WARN", "CRIT", "NOW", "STATUS")))
+	rcaLines = append(rcaLines, titleStyle.Render("IO signals:"))
+	rcaLines = append(rcaLines, rcaLine("IO PSI some", 5, "20%", fmt.Sprintf("%.1f%%", psiIO), psiIO > 5))
+	rcaLines = append(rcaLines, rcaLine("D-state tasks", 1, "10", fmt.Sprintf("%d", dCount), dCount >= 1))
+	rcaLines = append(rcaLines, rcaLine("Disk await (ms)", 20, "80", fmt.Sprintf("%.0f", worstAwait), worstAwait > 20))
+	rcaLines = append(rcaLines, rcaLine("Disk util (%)", 70, "95", fmt.Sprintf("%.0f", worstUtil), worstUtil > 70))
+
+	rcaLines = append(rcaLines, "")
+	rcaLines = append(rcaLines, titleStyle.Render("Memory signals:"))
+	rcaLines = append(rcaLines, rcaLine("MEM PSI some", 5, "20%", fmt.Sprintf("%.1f%%", snap.Global.PSI.Memory.Some.Avg10), snap.Global.PSI.Memory.Some.Avg10 > 5))
+	rcaLines = append(rcaLines, rcaLine("Swap activity (MB/s)", 1, "20", fmt.Sprintf("%.1f", swapIn+swapOut), swapIn+swapOut > 1))
+	rcaLines = append(rcaLines, rcaLine("Direct reclaim (pg/s)", 10, "500", fmt.Sprintf("%.0f", directR), directR > 10))
+	rcaLines = append(rcaLines, rcaLine("Major faults (/s)", 10, "200", fmt.Sprintf("%.0f", majFaultR), majFaultR > 10))
 	oomDelta := rates != nil && rates.OOMKillDelta > 0
-	rcaLines = append(rcaLines, rcaLine("OOM kills", 0, "—", ">0/s", oomDelta))
+	rcaLines = append(rcaLines, rcaLine("OOM kills", 1, "1", "-", oomDelta))
 
 	rcaLines = append(rcaLines, "")
-	rcaLines = append(rcaLines, titleStyle.Render("CPU Score (5 evidence groups, need 2+):"))
-	rcaLines = append(rcaLines, rcaLine("CPU PSI some", 35, "50%", ">5%", psiCPU > 5))
-	rcaLines = append(rcaLines, rcaLine("CPU PSI full", 20, "10%", ">1%", snap.Global.PSI.CPU.Full.Avg10 > 1))
-	rcaLines = append(rcaLines, rcaLine("Run queue ratio", 15, "3.0x", ">1.5x", rqRatio > 1.5))
-	rcaLines = append(rcaLines, rcaLine("Ctx switch rate", 15, "150K/s", ">30K/core", ctxPerCore > 30000))
-	rcaLines = append(rcaLines, rcaLine("Cgroup throttle", 15, "50%", ">5%", maxThrottle > 5))
+	rcaLines = append(rcaLines, titleStyle.Render("CPU signals:"))
+	rcaLines = append(rcaLines, rcaLine("CPU PSI some", 5, "20%", fmt.Sprintf("%.1f%%", psiCPU), psiCPU > 5))
+	rcaLines = append(rcaLines, rcaLine("Run queue ratio", 1, "2.0x", fmt.Sprintf("%.1fx", rqRatio), rqRatio > 1.0))
+	rcaLines = append(rcaLines, rcaLine("Ctx switches/core", 2000, "10000", fmt.Sprintf("%.0f", ctxPerCore), ctxPerCore > 2000))
+	rcaLines = append(rcaLines, rcaLine("CPU steal (%)", 5, "15", fmt.Sprintf("%.1f", stealPct), stealPct > 5))
+	rcaLines = append(rcaLines, rcaLine("Cgroup throttle (%)", 5, "25", fmt.Sprintf("%.1f", maxThrottle), maxThrottle > 5))
 
 	rcaLines = append(rcaLines, "")
-	rcaLines = append(rcaLines, titleStyle.Render("Network Score (7 evidence groups, need 2+):"))
-	rcaLines = append(rcaLines, rcaLine("Packet drops", 35, "100/s", ">1/s", totalDrops > 1))
-	rcaLines = append(rcaLines, rcaLine("TCP retransmits", 25, "100/s", ">5/s", retransR > 5))
-	rcaLines = append(rcaLines, rcaLine("Conntrack pct", 15, "100%", ">70%", ctPct > 70))
-	rcaLines = append(rcaLines, rcaLine("SoftIRQ CPU", 15, "25%", ">5%", softPct > 5))
-	rcaLines = append(rcaLines, rcaLine("TCP state anomaly", 10, "—", "TW>5K|CW>100", st.TimeWait > 5000 || st.CloseWait > 100))
+	rcaLines = append(rcaLines, titleStyle.Render("Network signals:"))
+	rcaLines = append(rcaLines, rcaLine("Packet drops (/s)", 1, "100", fmt.Sprintf("%.0f", totalDrops), totalDrops > 1))
+	rcaLines = append(rcaLines, rcaLine("TCP retrans ratio (%)", 1, "5", fmt.Sprintf("%.1f", retransR), retransR > 1))
+	rcaLines = append(rcaLines, rcaLine("Conntrack (%)", 70, "95", fmt.Sprintf("%.0f", ctPct), ctPct > 70))
+	rcaLines = append(rcaLines, rcaLine("SoftIRQ CPU (%)", 5, "25", fmt.Sprintf("%.1f", softPct), softPct > 5))
+	rcaLines = append(rcaLines, rcaLine("TIME_WAIT", 3000, "15000", fmt.Sprintf("%d", st.TimeWait), st.TimeWait > 3000))
 
+	rcaLines = append(rcaLines, "")
+	rcaLines = append(rcaLines, dimStyle.Render("WARN/CRIT are the engine's base values; adaptive learning can raise (never lower) them per host."))
 	rcaLines = append(rcaLines, "")
 	rcaLines = append(rcaLines, titleStyle.Render("Health Classification:"))
 	rcaLines = append(rcaLines, fmt.Sprintf("  Score >= 60 + 2+ evidence groups = %s", critStyle.Render("CRITICAL")))
@@ -428,11 +442,13 @@ func renderThresholdSection(title string, entries []thresholdEntry, iw int, show
 	return boxSection(title, lines, iw)
 }
 
-func rcaLine(signal string, weight int, clampMax, firesWhen string, fired bool) string {
+// rcaLine renders one signal row: name, base WARN, base CRIT, current value,
+// and whether the signal is currently past WARN (strength > 0 → contributing).
+func rcaLine(signal string, warn int, crit, now string, fired bool) string {
 	statusStr := dimStyle.Render("idle")
 	if fired {
 		statusStr = critStyle.Render("FIRED")
 	}
-	return fmt.Sprintf("  %-24s  w=%2d  clamp=%8s  fires: %-14s %s",
-		signal, weight, clampMax, firesWhen, statusStr)
+	return fmt.Sprintf("  %-24s %7d %10s %12s   %s",
+		signal, warn, crit, now, statusStr)
 }

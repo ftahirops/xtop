@@ -593,7 +593,10 @@ func DiagMySQL() model.ServiceDiag {
 		}
 	}
 
-	// SHOW PROCESSLIST — long running queries
+	// SHOW PROCESSLIST — long running queries. Only client work (Query/Execute)
+	// counts: background threads report Time as seconds-since-thread-start, so
+	// the event scheduler ("Daemon", Time=uptime) and replication threads used
+	// to trip a permanent bogus CRIT advising to kill them on every MySQL 8 host.
 	plOut, err := runCmd("mysql", "-N", "-e", "SHOW PROCESSLIST")
 	if err == nil {
 		longCount := 0
@@ -601,7 +604,7 @@ func DiagMySQL() model.ServiceDiag {
 			fields := strings.Split(line, "\t")
 			if len(fields) >= 6 {
 				timeSec := atoiSafe(fields[5])
-				if timeSec > 30 && fields[4] != "Sleep" {
+				if timeSec > 30 && isClientQueryCommand(fields[4]) {
 					longCount++
 					if timeSec > 60 {
 						addFinding(&sd, model.DiagCrit, "performance",
@@ -1274,4 +1277,20 @@ func DiagAll(target string) []model.ServiceDiag {
 		}
 	}
 	return results
+}
+
+// isClientQueryCommand reports whether a SHOW PROCESSLIST Command value is
+// actual client work whose Time column means "how long this statement has been
+// running". Background threads (Daemon = event scheduler, Binlog Dump,
+// Replica/Slave IO/SQL, Connect) report Time as seconds since the THREAD
+// started — i.e. server uptime — and must never be flagged as long-running
+// queries (let alone with "consider killing the query" advice).
+func isClientQueryCommand(cmd string) bool {
+	switch cmd {
+	case "Sleep", "Daemon", "Connect",
+		"Binlog Dump", "Binlog Dump GTID", "Group Replication",
+		"Replica IO", "Replica SQL", "Slave_IO", "Slave_SQL":
+		return false
+	}
+	return true
 }
