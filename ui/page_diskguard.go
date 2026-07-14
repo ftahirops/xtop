@@ -267,6 +267,12 @@ func renderDiskGuardPage(snap *model.Snapshot, rates *model.RateSnapshot, result
 
 	sb.WriteString(boxSection("TOP WRITERS", writerLines, iw))
 
+	// Sections 3/3b/3c: biggest files, top directories, recent growth.
+	// Source selection: prefer the dux live index when available (exact
+	// full-filesystem numbers + growth); fall back to the built-in
+	// budget-bounded walker otherwise.
+	useDux := snap != nil && snap.Global.DuxOK
+
 	// Section 3: BIGGEST FILES
 	var bigLines []string
 	bigHdr := fmt.Sprintf("%s %s %s",
@@ -275,9 +281,16 @@ func renderDiskGuardPage(snap *model.Snapshot, rates *model.RateSnapshot, result
 		dimStyle.Render("FILE"))
 	bigLines = append(bigLines, bigHdr)
 
-	if snap != nil && len(snap.Global.BigFiles) > 0 {
+	bigFiles := []model.BigFile(nil)
+	if snap != nil {
+		bigFiles = snap.Global.BigFiles
+		if useDux && len(snap.Global.DuxFiles) > 0 {
+			bigFiles = snap.Global.DuxFiles
+		}
+	}
+	if len(bigFiles) > 0 {
 		shown := 0
-		for _, bf := range snap.Global.BigFiles {
+		for _, bf := range bigFiles {
 			if shown >= 6 {
 				break
 			}
@@ -298,9 +311,13 @@ func renderDiskGuardPage(snap *model.Snapshot, rates *model.RateSnapshot, result
 	} else {
 		bigLines = append(bigLines, dimStyle.Render("  no files > 50MB found"))
 	}
-	sb.WriteString(boxSection("BIGGEST FILES", bigLines, iw))
+	bigTitle := "BIGGEST FILES"
+	if useDux {
+		bigTitle = "BIGGEST FILES (dux index — whole filesystem)"
+	}
+	sb.WriteString(boxSection(bigTitle, bigLines, iw))
 
-	// Section 3b: TOP DIRECTORIES (du-style recursive rollup of the walk)
+	// Section 3b: TOP DIRECTORIES (du-style)
 	var dirLines []string
 	dirHdr := fmt.Sprintf("%s %s %s",
 		styledPad(dimStyle.Render("SIZE"), 10),
@@ -308,12 +325,19 @@ func renderDiskGuardPage(snap *model.Snapshot, rates *model.RateSnapshot, result
 		dimStyle.Render("DIRECTORY"))
 	dirLines = append(dirLines, dirHdr)
 
-	// When the scan's stat budget was exhausted mid-walk the sizes are lower
-	// bounds, not full du totals — say so instead of presenting them as exact.
-	dirsPartial := snap != nil && snap.Global.BigDirsPartial
-	if snap != nil && len(snap.Global.BigDirs) > 0 {
+	// When the walker's stat budget was exhausted mid-walk the sizes are lower
+	// bounds, not full du totals — say so. The dux index has no such limit.
+	dirsPartial := snap != nil && snap.Global.BigDirsPartial && !useDux
+	bigDirs := []model.BigDir(nil)
+	if snap != nil {
+		bigDirs = snap.Global.BigDirs
+		if useDux && len(snap.Global.DuxDirs) > 0 {
+			bigDirs = snap.Global.DuxDirs
+		}
+	}
+	if len(bigDirs) > 0 {
 		shown := 0
-		for _, bd := range snap.Global.BigDirs {
+		for _, bd := range bigDirs {
 			if shown >= 6 {
 				break
 			}
@@ -338,10 +362,38 @@ func renderDiskGuardPage(snap *model.Snapshot, rates *model.RateSnapshot, result
 		dirLines = append(dirLines, dimStyle.Render("  no directories > 50MB in scanned paths"))
 	}
 	dirTitle := "TOP DIRECTORIES"
-	if dirsPartial {
+	if useDux {
+		dirTitle = "TOP DIRECTORIES (dux index — exact)"
+	} else if dirsPartial {
 		dirTitle = "TOP DIRECTORIES (partial scan — sizes are at-least)"
 	}
 	sb.WriteString(boxSection(dirTitle, dirLines, iw))
+
+	// Section 3c: RECENT GROWTH — per-path growth from the dux live index.
+	// Only rendered when dux is available; the walker cannot measure this.
+	if useDux && len(snap.Global.DuxGrowth) > 0 {
+		var growLines []string
+		growLines = append(growLines, fmt.Sprintf("%s %s",
+			styledPad(dimStyle.Render("GREW BY"), 12),
+			dimStyle.Render("PATH")))
+		shown := 0
+		for _, g := range snap.Global.DuxGrowth {
+			if shown >= 6 || g.DeltaBytes <= 0 {
+				break // sorted descending; stop at shrinking paths
+			}
+			deltaStr := "+" + fmtBytes(uint64(g.DeltaBytes))
+			if g.DeltaBytes > 1024*1024*1024 {
+				deltaStr = critStyle.Render(deltaStr)
+			} else if g.DeltaBytes > 100*1024*1024 {
+				deltaStr = warnStyle.Render(deltaStr)
+			}
+			growLines = append(growLines, fmt.Sprintf("%s %s",
+				styledPad(deltaStr, 12),
+				truncate(g.Path, 90)))
+			shown++
+		}
+		sb.WriteString(boxSection("RECENT GROWTH (last 15m — dux live index)", growLines, iw))
+	}
 
 	// Section 4: DELETED-BUT-OPEN FILES
 	var delLines []string

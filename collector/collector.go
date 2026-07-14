@@ -140,6 +140,7 @@ func richCollectors() []Collector {
 		&DeletedOpenCollector{MaxFiles: 20},
 		&FilelessCollector{},
 		&BigFileCollector{MaxFiles: 10, MinSize: 50 * 1024 * 1024, firstRun: true},
+		&DuxCollector{}, // dux live-index view (silent no-op when dux absent)
 		&ProcessCollector{MaxProcs: 50},
 		&IdentityCollector{},
 		&SecurityCollector{},

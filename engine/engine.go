@@ -745,6 +745,7 @@ func (e *Engine) Tick() (*model.Snapshot, *model.RateSnapshot, *model.AnalysisRe
 		if worst == "WARN" || worst == "CRIT" {
 			e.registry.TriggerByName("bigfiles")
 			e.registry.TriggerByName("deleted_open")
+			e.registry.TriggerByName("dux") // fresh growth data for "what's filling the disk"
 		}
 
 		// Push to multi-resolution buffer if enabled
