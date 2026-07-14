@@ -210,6 +210,12 @@ type BigDir struct {
 	FileCount int // number of regular files counted in the subtree
 }
 
+// GrowthEntry is one path's recent size change, from the dux live index.
+type GrowthEntry struct {
+	Path       string
+	DeltaBytes int64
+}
+
 // DeletedOpenFile represents a file that was deleted but is still held open.
 type DeletedOpenFile struct {
 	PID       int
@@ -908,6 +914,15 @@ type GlobalMetrics struct {
 	BigFiles       []BigFile
 	BigDirs        []BigDir
 	BigDirsPartial bool // scan stat-budget exhausted: BigDirs sizes are lower bounds
+
+	// Dux live-index view (populated only when the `dux` CLI + its persistent
+	// index are present on the host). Unlike the budget-bounded walker above,
+	// these are exact full-filesystem numbers, and DuxGrowth is per-path recent
+	// growth — something the walker cannot measure at all.
+	DuxOK     bool          // dux available and last query succeeded
+	DuxDirs   []BigDir      // top directories by exact recursive size
+	DuxFiles  []BigFile     // top files by exact size
+	DuxGrowth []GrowthEntry // fastest-growing paths in the recent window
 	FilelessProcs  []FilelessProcess
 	Security       SecurityMetrics
 	Logs           LogMetrics
